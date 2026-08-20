@@ -37,6 +37,7 @@ import (
 	"io/fs"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -517,6 +518,7 @@ const (
 	oidEntModel    = "1.3.6.1.2.1.47.1.1.1.1.13" // entPhysicalModelName
 	oidEntSerial   = "1.3.6.1.2.1.47.1.1.1.1.11" // entPhysicalSerialNum
 	oidEntSoftware = "1.3.6.1.2.1.47.1.1.1.1.10" // entPhysicalSoftwareRev
+	oidEntClass    = "1.3.6.1.2.1.47.1.1.1.1.5"  // entPhysicalClass
 )
 
 var reVersion = regexp.MustCompile(`\d+\.\d+(?:\.\d+)*`)
@@ -549,15 +551,17 @@ func deriveStandardMetadata(ctx context.Context, c *Client) map[string]string {
 			}
 		}
 	}
-	// ENTITY-MIB: colunas walked, primeira linha não-vazia (o chassi é a 1ª
-	// entidade física na maioria dos devices). Autoritativo quando responde.
-	if m := walkFirstNonEmpty(ctx, c, oidEntModel); m != "" {
+	// ENTITY-MIB: seleciona a entidade chassis, não o primeiro componente
+	// retornado. Em alguns MikroTik o primeiro item é um controlador interno
+	// (por exemplo tilegx-ehci.0), que não representa o equipamento.
+	chassis := walkEntityClass(ctx, c, oidEntClass, 3)
+	if m := walkEntityValue(ctx, c, oidEntModel, chassis); m != "" {
 		out["model"] = m
 	}
-	if s := walkFirstNonEmpty(ctx, c, oidEntSerial); s != "" {
+	if s := walkEntityValue(ctx, c, oidEntSerial, chassis); s != "" {
 		out["serial_number"] = s
 	}
-	if sw := walkFirstNonEmpty(ctx, c, oidEntSoftware); sw != "" {
+	if sw := walkEntityValue(ctx, c, oidEntSoftware, chassis); sw != "" {
 		out["version"] = sw // ENTITY software rev é mais preciso que o parse do sysDescr
 	}
 	return out
@@ -576,6 +580,50 @@ func walkFirstNonEmpty(ctx context.Context, c *Client, root string) string {
 		}
 	}
 	return ""
+}
+
+// walkEntityClass devolve os índices ENTITY-MIB cuja classe bate com a pedida.
+// entPhysicalClass=3 é chassis. O índice é o sufixo final comum às colunas.
+func walkEntityClass(ctx context.Context, c *Client, root string, class int) map[string]bool {
+	out := make(map[string]bool)
+	pdus, err := c.WalkAll(ctx, root)
+	if err != nil {
+		return out
+	}
+	prefix := strings.TrimPrefix(root, ".") + "."
+	for _, pd := range pdus {
+		name := strings.TrimPrefix(pd.Name, ".")
+		if !strings.HasPrefix(name, prefix) || intValue(pduString(pd)) != class {
+			continue
+		}
+		out[strings.TrimPrefix(name, prefix)] = true
+	}
+	return out
+}
+
+func walkEntityValue(ctx context.Context, c *Client, root string, indexes map[string]bool) string {
+	if len(indexes) == 0 {
+		return ""
+	}
+	pdus, err := c.WalkAll(ctx, root)
+	if err != nil {
+		return ""
+	}
+	prefix := strings.TrimPrefix(root, ".") + "."
+	for _, pd := range pdus {
+		name := strings.TrimPrefix(pd.Name, ".")
+		if strings.HasPrefix(name, prefix) && indexes[strings.TrimPrefix(name, prefix)] {
+			if value := strings.TrimSpace(pduString(pd)); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func intValue(value string) int {
+	n, _ := strconv.Atoi(strings.TrimSpace(value))
+	return n
 }
 
 // parseSysDescr extrai (os_name, os_version) do sysDescr pra vendors comuns.
