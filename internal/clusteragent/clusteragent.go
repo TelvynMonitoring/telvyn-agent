@@ -37,6 +37,7 @@ import (
 // eventos (timeline) + métricas kube-state (pods por fase, réplicas de deployment).
 type Ingest interface {
 	PostK8sEvents(ctx context.Context, payload map[string]any) error
+	PostK8sResources(ctx context.Context, payload map[string]any) error
 	PostMetrics(ctx context.Context, metrics []*collectorv1.Metric) error
 }
 
@@ -51,6 +52,7 @@ type Config struct {
 	IncludeNormal bool          // manda também eventos type=Normal (default só Warning)
 	EventLimit    int           // ?limit= do LIST (default 1000)
 	KubeState     bool          // emite métricas kube-state (pods por fase + deployments)
+	Inventory     bool          // envia snapshot autoritativo de recursos Kubernetes
 }
 
 // Agent faz o loop de coleta+push do cluster (eventos + kube-state).
@@ -129,6 +131,9 @@ func (a *Agent) Run(ctx context.Context) {
 // collect roda um ciclo: eventos (timeline) + kube-state (métricas de estado).
 func (a *Agent) collect(ctx context.Context) {
 	a.pushEvents(ctx)
+	if a.cfg.Inventory {
+		a.pushInventory(ctx)
+	}
 	if a.cfg.KubeState {
 		a.pushKubeState(ctx)
 	}
@@ -151,6 +156,134 @@ func (a *Agent) pushEvents(ctx context.Context) {
 		return
 	}
 	a.log.Info("eventos do cluster enviados", "count", n)
+}
+
+// pushInventory envia um snapshot completo. A sequência usa nanosegundos do
+// relógio para continuar monotônica também após reinício normal do pod; o
+// backend rejeita snapshots atrasados e tombstona recursos ausentes.
+func (a *Agent) pushInventory(ctx context.Context) {
+	resources, err := a.collectInventory(ctx)
+	if err != nil {
+		a.log.Warn("inventário Kubernetes falhou", "err", err)
+		return
+	}
+	payload := map[string]any{
+		"cluster":       a.cfg.Cluster,
+		"snapshot":      true,
+		"sync_sequence": time.Now().UnixNano(),
+		"resources":     resources,
+	}
+	if err := a.ingest.PostK8sResources(ctx, payload); err != nil {
+		a.log.Warn("push de inventário Kubernetes falhou", "err", err, "count", len(resources))
+		return
+	}
+	a.log.Info("inventário Kubernetes enviado", "count", len(resources))
+}
+
+type resourceList struct {
+	Items    []json.RawMessage `json:"items"`
+	Metadata struct {
+		Continue string `json:"continue"`
+	} `json:"metadata"`
+}
+
+type inventoryResourceSpec struct {
+	kind string
+	path string
+}
+
+var inventoryResourceSpecs = []inventoryResourceSpec{
+	{kind: "Pod", path: "/api/v1/pods"},
+	{kind: "Namespace", path: "/api/v1/namespaces"},
+	{kind: "Node", path: "/api/v1/nodes"},
+	{kind: "Service", path: "/api/v1/services"},
+	{kind: "Deployment", path: "/apis/apps/v1/deployments"},
+	{kind: "StatefulSet", path: "/apis/apps/v1/statefulsets"},
+	{kind: "DaemonSet", path: "/apis/apps/v1/daemonsets"},
+	{kind: "ReplicaSet", path: "/apis/apps/v1/replicasets"},
+	{kind: "Job", path: "/apis/batch/v1/jobs"},
+	{kind: "CronJob", path: "/apis/batch/v1/cronjobs"},
+}
+
+func (a *Agent) collectInventory(ctx context.Context) ([]map[string]any, error) {
+	resources := make([]map[string]any, 0, 256)
+	for _, spec := range inventoryResourceSpecs {
+		kind := spec.kind
+		err := a.apiGetPaged(ctx, spec.path, func(body []byte) (string, error) {
+			var list resourceList
+			if err := json.Unmarshal(body, &list); err != nil {
+				return "", fmt.Errorf("decode %s: %w", kind, err)
+			}
+			for _, raw := range list.Items {
+				resource, err := inventoryResource(kind, raw)
+				if err != nil {
+					return "", err
+				}
+				resources = append(resources, resource)
+			}
+			return list.Metadata.Continue, nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return resources, nil
+}
+
+func inventoryResource(kind string, raw []byte) (map[string]any, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("decode %s resource: %w", kind, err)
+	}
+	metadata, _ := obj["metadata"].(map[string]any)
+	uid, _ := metadata["uid"].(string)
+	name, _ := metadata["name"].(string)
+	if uid == "" || name == "" {
+		return nil, fmt.Errorf("%s resource missing metadata.uid/name", kind)
+	}
+	resource := map[string]any{
+		"kind":             kind,
+		"uid":              uid,
+		"name":             name,
+		"namespace":        stringField(metadata, "namespace"),
+		"resource_version": stringField(metadata, "resourceVersion"),
+		"labels":           mapField(metadata, "labels"),
+		"conditions":       []any{},
+		"deleted":          false,
+	}
+	if status, ok := obj["status"].(map[string]any); ok {
+		resource["phase"] = stringField(status, "phase")
+		resource["status"] = stringField(status, "reason")
+		if conditions, ok := status["conditions"].([]any); ok {
+			resource["conditions"] = conditions
+		}
+	}
+	if spec, ok := obj["spec"].(map[string]any); ok {
+		resource["node_name"] = stringField(spec, "nodeName")
+	}
+	if owners, ok := metadata["ownerReferences"].([]any); ok {
+		for _, owner := range owners {
+			if ref, ok := owner.(map[string]any); ok {
+				resource["workload_kind"] = stringField(ref, "kind")
+				resource["workload_name"] = stringField(ref, "name")
+				break
+			}
+		}
+	}
+	return resource, nil
+}
+
+func stringField(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
+func mapField(m map[string]any, key string) map[string]any {
+	v, _ := m[key].(map[string]any)
+	if v == nil {
+		return map[string]any{}
+	}
+	return v
 }
 
 // pushKubeState coleta contagem de pods por (namespace, fase) + réplicas de

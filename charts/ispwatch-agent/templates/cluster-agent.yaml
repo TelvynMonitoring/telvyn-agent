@@ -28,13 +28,17 @@ metadata:
 rules:
   # Least-privilege: concede só o que o cluster-agent realmente chama.
   # - events: timeline de eventos (F2).
-  # - pods: kube-state (contagem por namespace/fase → k8s.namespace.pod_count).
-  # - apps/deployments: saúde de workload (réplicas desired/ready/available).
+  # - core resources: inventário autoritativo de pods, namespaces, nodes e
+  #   services; events continuam alimentando a timeline.
+  # - apps/batch resources: inventário de workloads e kube-state.
   - apiGroups: [""]
-    resources: ["events", "pods"]
+    resources: ["events", "pods", "namespaces", "nodes", "services"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
-    resources: ["deployments"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
