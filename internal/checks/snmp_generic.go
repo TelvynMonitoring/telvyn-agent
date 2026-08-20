@@ -27,8 +27,8 @@ import (
 	"sync"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
 	"github.com/ispwatch/collector/internal/snmp"
+	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 
 // DeviceMetadataPusher emite a identidade do device (metadata.device) pro gateway.
@@ -47,8 +47,8 @@ func SetDeviceMetadataPusher(p DeviceMetadataPusher) { deviceMetaPusher = p }
 type snmpClientFactory func(p snmp.Params) (snmpGenericRunner, error)
 
 // snmpGenericRunner abstrai as operacoes que snmp.generic faz:
-//   1. Get(ctx, [sysObjectID])   — para auto-detect
-//   2. snmp.Profile.Collect(...) — para emitir metricas
+//  1. Get(ctx, [sysObjectID])   — para auto-detect
+//  2. snmp.Profile.Collect(...) — para emitir metricas
 //
 // Em prod e um *snmp.Client embrulhado. No test e um stub.
 type snmpGenericRunner interface {
@@ -230,7 +230,7 @@ func (c *snmpGenericCheck) Run(ctx context.Context) ([]*collectorv1.Metric, erro
 // maybeEmitDeviceMetadata coleta e emite metadata.device no máximo a cada 15min
 // (e na primeira execução). Fail-soft: nunca afeta a coleta de métricas.
 func (c *snmpGenericCheck) maybeEmitDeviceMetadata(ctx context.Context, runner snmpGenericRunner, profile *snmp.Profile) {
-	if deviceMetaPusher == nil || profile == nil || profile.Metadata == nil {
+	if deviceMetaPusher == nil || profile == nil {
 		return
 	}
 	c.mu.Lock()
