@@ -484,6 +484,14 @@ func (p *Profile) Collect(ctx context.Context, c *Client, hostID string, staticT
 // Fail-soft em tudo: campo que não responder é omitido.
 func (p *Profile) CollectDeviceMetadata(ctx context.Context, c *Client) map[string]string {
 	out := deriveStandardMetadata(ctx, c)
+	if strings.EqualFold(out["vendor"], "mikrotik") {
+		// MikroTik publica identidade confiável no MIKROTIK-MIB. O ENTITY-MIB
+		// costuma listar componentes internos antes do RouterBOARD (ex.: USB
+		// controller), então ele não deve vencer estes OIDs específicos.
+		readMetadataOID(ctx, c, "model", "1.3.6.1.4.1.14988.1.1.7.9", out)
+		readMetadataOID(ctx, c, "serial_number", "1.3.6.1.4.1.14988.1.1.7.3", out)
+		readMetadataOID(ctx, c, "version", "1.3.6.1.4.1.14988.1.1.7.4", out)
+	}
 	if p.Metadata == nil {
 		return out
 	}
@@ -508,6 +516,16 @@ func (p *Profile) CollectDeviceMetadata(ctx context.Context, c *Client) map[stri
 		}
 	}
 	return out
+}
+
+func readMetadataOID(ctx context.Context, c *Client, field, oid string, out map[string]string) {
+	pdus, err := c.Get(ctx, []string{oid})
+	if err != nil || len(pdus) == 0 {
+		return
+	}
+	if value := strings.TrimSpace(pduString(pdus[0])); value != "" {
+		out[field] = value
+	}
 }
 
 // OIDs padrão de identidade (SNMPv2-MIB + ENTITY-MIB) — respondidos por
