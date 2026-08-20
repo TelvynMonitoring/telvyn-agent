@@ -484,13 +484,14 @@ func (p *Profile) Collect(ctx context.Context, c *Client, hostID string, staticT
 // Fail-soft em tudo: campo que não responder é omitido.
 func (p *Profile) CollectDeviceMetadata(ctx context.Context, c *Client) map[string]string {
 	out := deriveStandardMetadata(ctx, c)
+	applyProfileIdentityTags(ctx, c, p, out)
 	if strings.EqualFold(out["vendor"], "mikrotik") {
 		// MikroTik publica identidade confiável no MIKROTIK-MIB. O ENTITY-MIB
 		// costuma listar componentes internos antes do RouterBOARD (ex.: USB
 		// controller), então ele não deve vencer estes OIDs específicos.
-		readMetadataOID(ctx, c, "model", "1.3.6.1.4.1.14988.1.1.7.9", out)
-		readMetadataOID(ctx, c, "serial_number", "1.3.6.1.4.1.14988.1.1.7.3", out)
-		readMetadataOID(ctx, c, "version", "1.3.6.1.4.1.14988.1.1.7.4", out)
+		readMetadataOID(ctx, c, "model", "1.3.6.1.4.1.14988.1.1.7.9.0", out)
+		readMetadataOID(ctx, c, "serial_number", "1.3.6.1.4.1.14988.1.1.7.3.0", out)
+		readMetadataOID(ctx, c, "version", "1.3.6.1.4.1.14988.1.1.7.4.0", out)
 	}
 	if p.Metadata == nil {
 		return out
@@ -518,6 +519,47 @@ func (p *Profile) CollectDeviceMetadata(ctx context.Context, c *Client) map[stri
 	return out
 }
 
+// applyProfileIdentityTags aproveita a identidade que alguns perfis já
+// carregam como tags estáticas ou como OIDs de identificação. Isso vale para
+// qualquer fabricante: não há uma lista especial de vendors aqui.
+func applyProfileIdentityTags(ctx context.Context, c *Client, p *Profile, out map[string]string) {
+	if p == nil {
+		return
+	}
+	for _, tag := range p.MetricTags {
+		applyIdentityTag(ctx, c, tag.Tag, tag.Value, tag.Symbol, out)
+	}
+	for _, metric := range p.Metrics {
+		for _, tag := range metric.MetricTags {
+			applyIdentityTag(ctx, c, tag.Tag, tag.Value, tag.Symbol, out)
+		}
+	}
+}
+
+func applyIdentityTag(ctx context.Context, c *Client, tag, value string, symbol *ProfileSymbol, out map[string]string) {
+	name := strings.ToLower(strings.TrimSpace(tag))
+	field := ""
+	switch {
+	case strings.Contains(name, "vendor") || strings.Contains(name, "manufacturer"):
+		field = "vendor"
+	case strings.Contains(name, "serial"):
+		field = "serial_number"
+	case strings.Contains(name, "model"):
+		field = "model"
+	default:
+		return
+	}
+	if value == "" && symbol != nil && symbol.OID != "" {
+		pdus, err := c.Get(ctx, []string{symbol.OID})
+		if err == nil && len(pdus) > 0 {
+			value = pduString(pdus[0])
+		}
+	}
+	if value = strings.TrimSpace(value); value != "" {
+		out[field] = value
+	}
+}
+
 func readMetadataOID(ctx context.Context, c *Client, field, oid string, out map[string]string) {
 	pdus, err := c.Get(ctx, []string{oid})
 	if err != nil || len(pdus) == 0 {
@@ -533,6 +575,7 @@ func readMetadataOID(ctx context.Context, c *Client, field, oid string, out map[
 const (
 	oidSysDescr    = "1.3.6.1.2.1.1.1.0"         // sysDescr
 	oidSysObjectID = "1.3.6.1.2.1.1.2.0"         // sysObjectID
+	oidSysName     = "1.3.6.1.2.1.1.5.0"         // sysName
 	oidEntModel    = "1.3.6.1.2.1.47.1.1.1.1.13" // entPhysicalModelName
 	oidEntSerial   = "1.3.6.1.2.1.47.1.1.1.1.11" // entPhysicalSerialNum
 	oidEntSoftware = "1.3.6.1.2.1.47.1.1.1.1.10" // entPhysicalSoftwareRev
@@ -547,16 +590,29 @@ var reVersion = regexp.MustCompile(`\d+\.\d+(?:\.\d+)*`)
 // ENTITY-MIB). Fail-soft: o que não responder fica de fora.
 func deriveStandardMetadata(ctx context.Context, c *Client) map[string]string {
 	out := make(map[string]string)
-	if pdus, err := c.Get(ctx, []string{oidSysDescr, oidSysObjectID}); err == nil {
+	if pdus, err := c.Get(ctx, []string{oidSysDescr, oidSysObjectID, oidSysName}); err == nil {
 		for _, pd := range pdus {
 			name := strings.TrimPrefix(pd.Name, ".")
 			switch {
 			case strings.HasPrefix(name, "1.3.6.1.2.1.1.1"): // sysDescr
-				if osn, osv := parseSysDescr(pduString(pd)); osn != "" {
+				descr := strings.TrimSpace(pduString(pd))
+				if osn, osv := parseSysDescr(descr); osn != "" {
 					out["os_name"] = osn
 					if osv != "" {
 						out["version"] = osv
 					}
+				}
+				if descr != "" && out["model"] == "" {
+					// sysDescr é a única identidade disponível em muitos ONUs,
+					// OLTs e appliances. Guardá-lo evita inventário vazio sem
+					// fingir que conhecemos o modelo exato.
+					if out["os_name"] == "" {
+						out["os_name"] = "SNMP"
+					}
+					if osv := reVersion.FindString(descr); osv != "" {
+						out["version"] = osv
+					}
+					out["model"] = descr
 				}
 			case strings.HasPrefix(name, "1.3.6.1.2.1.1.2"): // sysObjectID
 				soid := strings.TrimSpace(pduString(pd))
@@ -565,6 +621,10 @@ func deriveStandardMetadata(ctx context.Context, c *Client) map[string]string {
 					if v := vendorFromSysObjectID(soid); v != "" {
 						out["vendor"] = v
 					}
+				}
+			case strings.HasPrefix(name, "1.3.6.1.2.1.1.5"): // sysName
+				if value := strings.TrimSpace(pduString(pd)); value != "" {
+					out["sys_name"] = value
 				}
 			}
 		}
@@ -678,7 +738,8 @@ func parseSysDescr(d string) (osName, osVersion string) {
 }
 
 // vendorFromSysObjectID mapeia o enterprise number (1.3.6.1.4.1.<N>…) pro nome
-// do vendor. Só os IANA PEN de rede mais comuns (conservador).
+// do vendor. Quando o PEN não está no catálogo local, devolve o identificador
+// enterprise-N: ainda é uma identidade útil e não finge conhecer o fabricante.
 func vendorFromSysObjectID(oid string) string {
 	const ent = "1.3.6.1.4.1."
 	o := strings.TrimPrefix(strings.TrimSpace(oid), ".")
@@ -719,7 +780,7 @@ func vendorFromSysObjectID(oid string) string {
 	case "2352":
 		return "Nokia"
 	}
-	return ""
+	return "enterprise-" + n
 }
 
 // executeDiscoveryRule walks keys, walks items, joins por rowSuffix e devolve
