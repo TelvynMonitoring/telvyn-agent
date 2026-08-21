@@ -84,6 +84,8 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return modules["VULNERABILIDADES"]
 	case "k8s/events", "k8s/pod-languages":
 		return modules["KUBERNETES"]
+	case "k8s/resources":
+		return modules["KUBERNETES"]
 	case "host/services":
 		return modules["INFRAESTRUTURA"]
 	default:
@@ -254,6 +256,19 @@ func (e *IngestExporter) PostK8sEvents(ctx context.Context, payload map[string]a
 		return err
 	}
 	return e.PostRaw(ctx, "k8s/events", "application/json", body)
+}
+
+// PostK8sResources envia um snapshot do inventário Kubernetes. O backend
+// mantém identidade/estado separado das métricas do kubelet.
+func (e *IngestExporter) PostK8sResources(ctx context.Context, payload map[string]any) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return e.PostRaw(ctx, "k8s/resources", "application/json", body)
 }
 
 // PostHostServices encaminha os serviços descobertos numa máquina (processos que
