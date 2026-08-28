@@ -33,6 +33,10 @@ func (r *stubRow) Scan(dest ...any) error {
 			*v = r.vals[i].(int64)
 		case *float64:
 			*v = r.vals[i].(float64)
+		case *string:
+			*v = r.vals[i].(string)
+		case *any:
+			*v = r.vals[i]
 		default:
 			return errors.New("stubRow: unsupported dest type")
 		}

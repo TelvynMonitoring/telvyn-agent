@@ -568,6 +568,59 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			}
 		}()
 	})
+	runtime.SetQueryStatsPusher(func(postCtx context.Context, stats checks.DatabaseQueryStats) error {
+		queries := make([]otlp.DatabaseQueryStat, 0, len(stats.Queries))
+		for _, q := range stats.Queries {
+			queries = append(queries, otlp.DatabaseQueryStat{
+				QueryID: q.QueryID, Text: q.Text, Calls: q.Calls,
+				TotalMS: q.TotalMS, MeanMS: q.MeanMS, Rows: q.Rows,
+			})
+		}
+		return exporter.PostDatabaseQueryStats(postCtx, otlp.DatabaseQueryStatsPayload{
+			DBServer: stats.DBServer, DBName: stats.DBName,
+			WindowSeconds: stats.WindowSeconds, Queries: queries,
+		})
+	})
+	runtime.SetCatalogPusher(func(postCtx context.Context, catalog checks.DatabaseCatalog) error {
+		tables := make([]otlp.DatabaseCatalogTable, 0, len(catalog.Tables))
+		for _, table := range catalog.Tables {
+			columns := make([]otlp.DatabaseCatalogColumn, 0, len(table.Columns))
+			for _, column := range table.Columns {
+				columns = append(columns, otlp.DatabaseCatalogColumn{
+					Name: column.Name, Ordinal: column.Ordinal, DataType: column.DataType,
+					Nullable: column.Nullable, HasDefault: column.HasDefault,
+				})
+			}
+			indexes := make([]otlp.DatabaseCatalogIndex, 0, len(table.Indexes))
+			for _, index := range table.Indexes {
+				indexes = append(indexes, otlp.DatabaseCatalogIndex{
+					Name: index.Name, Definition: index.Definition,
+					Unique: index.Unique, Primary: index.Primary,
+				})
+			}
+			constraints := make([]otlp.DatabaseCatalogConstraint, 0, len(table.Constraints))
+			for _, constraint := range table.Constraints {
+				constraints = append(constraints, otlp.DatabaseCatalogConstraint{
+					Name: constraint.Name, ConstraintType: constraint.ConstraintType,
+					Definition: constraint.Definition,
+				})
+			}
+			tables = append(tables, otlp.DatabaseCatalogTable{
+				SchemaName: table.SchemaName, TableName: table.TableName, TableKind: table.TableKind,
+				TotalSizeBytes: table.TotalSizeBytes, TableSizeBytes: table.TableSizeBytes,
+				IndexSizeBytes: table.IndexSizeBytes, EstimatedRows: table.EstimatedRows,
+				SeqScans: table.SeqScans, IndexScans: table.IndexScans, DeadRows: table.DeadRows,
+				LastVacuum: table.LastVacuum, LastAutoVacuum: table.LastAutoVacuum,
+				LastAnalyze: table.LastAnalyze, LastAutoAnalyze: table.LastAutoAnalyze,
+				Columns: columns, Indexes: indexes, Constraints: constraints,
+			})
+		}
+		return exporter.PostDatabaseCatalog(postCtx, otlp.DatabaseCatalogPayload{
+			DBServer: catalog.DBServer, DBName: catalog.DBName,
+			ServerVersion: catalog.ServerVersion, DatabaseSizeBytes: catalog.DatabaseSizeBytes,
+			Fingerprint: catalog.Fingerprint, Truncated: catalog.Truncated, Tables: tables,
+		})
+	})
 
 	pollSecs := 15
 	if v := strings.TrimSpace(getenvOr("ISPWATCH_CHECKS_POLL_SECONDS", "")); v != "" {

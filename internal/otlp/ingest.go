@@ -88,6 +88,10 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return modules["KUBERNETES"]
 	case "host/services":
 		return modules["INFRAESTRUTURA"]
+	case "db/query-stats":
+		return modules["BANCOS_DADOS"]
+	case "db/catalog":
+		return modules["BANCOS_DADOS"]
 	default:
 		return true
 	}
@@ -284,6 +288,104 @@ func (e *IngestExporter) PostHostServices(ctx context.Context, payload map[strin
 		return err
 	}
 	return e.PostRaw(ctx, "host/services", "application/json", body)
+}
+
+// DatabaseQueryStatsPayload é o agregado de uma janela de pg_stat_statements.
+// Os valores das linhas são deltas, não contadores cumulativos.
+type DatabaseQueryStatsPayload struct {
+	DBServer      string              `json:"db_server"`
+	DBName        string              `json:"db_name"`
+	WindowSeconds int                 `json:"window_seconds"`
+	Queries       []DatabaseQueryStat `json:"queries"`
+}
+
+type DatabaseQueryStat struct {
+	QueryID string  `json:"query_id"`
+	Text    string  `json:"text"`
+	Calls   int64   `json:"calls"`
+	TotalMS float64 `json:"total_ms"`
+	MeanMS  float64 `json:"mean_ms"`
+	Rows    int64   `json:"rows"`
+}
+
+// PostDatabaseQueryStats publica uma janela no sinal próprio de banco. Query
+// stats são agregados e não devem virar uma série por consulta no VM.
+func (e *IngestExporter) PostDatabaseQueryStats(ctx context.Context, payload DatabaseQueryStatsPayload) error {
+	if len(payload.Queries) == 0 {
+		return nil
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return e.PostRaw(ctx, "db/query-stats", "application/json", body)
+}
+
+// DatabaseCatalogPayload é um snapshot de metadados. Não contém linhas de
+// negócio: apenas estrutura e estatísticas agregadas do banco.
+type DatabaseCatalogPayload struct {
+	DBServer          string                 `json:"db_server"`
+	DBName            string                 `json:"db_name"`
+	ServerVersion     string                 `json:"server_version"`
+	DatabaseSizeBytes int64                  `json:"database_size_bytes"`
+	Fingerprint       string                 `json:"fingerprint"`
+	Truncated         bool                   `json:"truncated"`
+	Tables            []DatabaseCatalogTable `json:"tables"`
+}
+
+type DatabaseCatalogTable struct {
+	SchemaName      string                      `json:"schema_name"`
+	TableName       string                      `json:"table_name"`
+	TableKind       string                      `json:"table_kind"`
+	TotalSizeBytes  int64                       `json:"total_size_bytes"`
+	TableSizeBytes  int64                       `json:"table_size_bytes"`
+	IndexSizeBytes  int64                       `json:"index_size_bytes"`
+	EstimatedRows   int64                       `json:"estimated_rows"`
+	SeqScans        int64                       `json:"seq_scans"`
+	IndexScans      int64                       `json:"index_scans"`
+	DeadRows        int64                       `json:"dead_rows"`
+	LastVacuum      string                      `json:"last_vacuum"`
+	LastAutoVacuum  string                      `json:"last_autovacuum"`
+	LastAnalyze     string                      `json:"last_analyze"`
+	LastAutoAnalyze string                      `json:"last_autoanalyze"`
+	Columns         []DatabaseCatalogColumn     `json:"columns"`
+	Indexes         []DatabaseCatalogIndex      `json:"indexes"`
+	Constraints     []DatabaseCatalogConstraint `json:"constraints"`
+}
+
+type DatabaseCatalogColumn struct {
+	Name       string `json:"name"`
+	Ordinal    int    `json:"ordinal"`
+	DataType   string `json:"data_type"`
+	Nullable   bool   `json:"nullable"`
+	HasDefault bool   `json:"has_default"`
+}
+
+type DatabaseCatalogIndex struct {
+	Name       string `json:"name"`
+	Definition string `json:"definition"`
+	Unique     bool   `json:"unique"`
+	Primary    bool   `json:"primary"`
+}
+
+type DatabaseCatalogConstraint struct {
+	Name           string `json:"name"`
+	ConstraintType string `json:"type"`
+	Definition     string `json:"definition"`
+}
+
+// PostDatabaseCatalog publica o snapshot no sinal próprio de banco. Os
+// metadados são mantidos separados do fluxo de métricas para não explodir
+// cardinalidade no VictoriaMetrics.
+func (e *IngestExporter) PostDatabaseCatalog(ctx context.Context, payload DatabaseCatalogPayload) error {
+	if payload.DBServer == "" || payload.DBName == "" {
+		return fmt.Errorf("database catalog: db_server e db_name são obrigatórios")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return e.PostRaw(ctx, "db/catalog", "application/json", body)
 }
 
 // ---- Logs (OTLP JSON) -------------------------------------------------
