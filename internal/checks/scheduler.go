@@ -79,6 +79,12 @@ type Runtime struct {
 	// quisesse saber por quê precisava de SSH na máquina do cliente. nil =
 	// ninguém reporta (testes, modo mTLS legado).
 	statusReporter StatusReporter
+	// queryStatsPusher recebe agregados de pg_stat_statements. A falha no envio
+	// não transforma uma coleta local bem-sucedida em falha do check.
+	queryStatsPusher QueryStatsPusher
+	// catalogPusher recebe snapshots estruturais de bancos. A falha no envio
+	// não transforma uma coleta local bem-sucedida em falha do check.
+	catalogPusher CatalogPusher
 }
 
 // StatusReporter recebe o estado de um check quando ele MUDA (passou a falhar,
@@ -86,6 +92,13 @@ type Runtime struct {
 // um agente com 50 checks quebrados viraria 50 POSTs por minuto sem novidade
 // nenhuma — "desde quando" o backend calcula sozinho.
 type StatusReporter func(checkID string, ok bool, message string)
+
+// QueryStatsPusher encaminha estatísticas já agregadas por janela para o
+// endpoint de banco do Telvyn. Fica opcional para preservar checks legados.
+type QueryStatsPusher func(context.Context, DatabaseQueryStats) error
+
+// CatalogPusher encaminha um snapshot de metadados estruturais do banco.
+type CatalogPusher func(context.Context, DatabaseCatalog) error
 
 // runningCheck guarda o estado de uma check rodando: cancel pra parar e wg
 // pra esperar conclusão graciosa.
@@ -98,13 +111,19 @@ type runningCheck struct {
 // SetWorkerPools configura os semáforos de concorrência. Chamar antes de
 // Reload/ApplyDelta. snmp/icmp = 0 desliga o limite (run unbounded).
 func (r *Runtime) SetWorkerPools(snmp, icmp int) {
-	if snmp > 0 { r.snmpSem = make(chan struct{}, snmp) }
-	if icmp > 0 { r.icmpSem = make(chan struct{}, icmp) }
+	if snmp > 0 {
+		r.snmpSem = make(chan struct{}, snmp)
+	}
+	if icmp > 0 {
+		r.icmpSem = make(chan struct{}, icmp)
+	}
 }
 
 // SetJitter define o jitter máximo em ms aplicado no primeiro tick.
 func (r *Runtime) SetJitter(jitterMs int) {
-	if jitterMs > 0 { r.jitterMs = jitterMs }
+	if jitterMs > 0 {
+		r.jitterMs = jitterMs
+	}
 }
 
 // New creates a checks.Runtime. log and registry may be nil — defaults are
@@ -179,7 +198,9 @@ func (r *Runtime) ApplyDelta(added []*collectorv1.CheckConfig, deletedIDs []stri
 
 // startCheck arranca uma nova goroutine pra check; assume reloadMu held.
 func (r *Runtime) startCheck(c Check) {
-	if r.parent == nil { return }
+	if r.parent == nil {
+		return
+	}
 	ctx, cancel := context.WithCancel(r.parent)
 	done := make(chan struct{})
 	rc := &runningCheck{cancel: cancel, done: done}
@@ -196,9 +217,13 @@ func (r *Runtime) startCheck(c Check) {
 func (r *Runtime) stopCheck(id string) bool {
 	r.checksMu.Lock()
 	rc, ok := r.checks[id]
-	if ok { delete(r.checks, id) }
+	if ok {
+		delete(r.checks, id)
+	}
 	r.checksMu.Unlock()
-	if !ok { return false }
+	if !ok {
+		return false
+	}
 	rc.cancel()
 	select {
 	case <-rc.done:
@@ -209,7 +234,8 @@ func (r *Runtime) stopCheck(id string) bool {
 }
 
 func (r *Runtime) countRunning() int {
-	r.checksMu.Lock(); defer r.checksMu.Unlock()
+	r.checksMu.Lock()
+	defer r.checksMu.Unlock()
 	return len(r.checks)
 }
 
@@ -373,15 +399,19 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 	var sem chan struct{}
 	if c, ok := any(c).(interface{ Kind() string }); ok {
 		switch c.Kind() {
-		case "snmp": sem = r.snmpSem
-		case "icmp": sem = r.icmpSem
+		case "snmp":
+			sem = r.snmpSem
+		case "icmp":
+			sem = r.icmpSem
 		}
 	}
 	// Fallback: detecta pelo prefixo do ID (mais frouxo).
 	if sem == nil {
 		switch {
-		case startsWith(c.ID(), "snmp."): sem = r.snmpSem
-		case startsWith(c.ID(), "icmp."): sem = r.icmpSem
+		case startsWith(c.ID(), "snmp."):
+			sem = r.snmpSem
+		case startsWith(c.ID(), "icmp."):
+			sem = r.icmpSem
 		}
 	}
 
@@ -413,7 +443,17 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			}
 		}
 		runCtx, cancel := context.WithTimeout(ctx, runTimeout)
-		metrics, err := c.Run(runCtx)
+		var metrics []*collectorv1.Metric
+		var queryStats *DatabaseQueryStats
+		var catalog *DatabaseCatalog
+		var err error
+		if queryCheck, ok := any(c).(QueryStatsCheck); ok {
+			queryStats, err = queryCheck.RunQueryStats(runCtx)
+		} else if catalogCheck, ok := any(c).(CatalogCheck); ok {
+			catalog, err = catalogCheck.RunCatalog(runCtx)
+		} else {
+			metrics, err = c.Run(runCtx)
+		}
 		runErr := runCtx.Err()
 		cancel()
 
@@ -436,6 +476,12 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		}
 		consecutiveErrors.Store(0)
 		reportar(true, "")
+		if queryStats != nil {
+			r.pushQueryStats(c.ID(), *queryStats)
+		}
+		if catalog != nil {
+			r.pushCatalog(c.ID(), *catalog)
+		}
 		if len(metrics) > 0 {
 			r.emit(metrics)
 		}
@@ -450,6 +496,40 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			runOnce()
 		}
 	}
+}
+
+func (r *Runtime) pushQueryStats(checkID string, stats DatabaseQueryStats) {
+	r.mu.Lock()
+	pusher := r.queryStatsPusher
+	parent := r.parent
+	r.mu.Unlock()
+	if pusher == nil || parent == nil || len(stats.Queries) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+		defer cancel()
+		if err := pusher(ctx, stats); err != nil {
+			r.log.Warn("postgres query stats: envio falhou", "check_id", checkID, "err", err)
+		}
+	}()
+}
+
+func (r *Runtime) pushCatalog(checkID string, catalog DatabaseCatalog) {
+	r.mu.Lock()
+	pusher := r.catalogPusher
+	parent := r.parent
+	r.mu.Unlock()
+	if pusher == nil || parent == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+		defer cancel()
+		if err := pusher(ctx, catalog); err != nil {
+			r.log.Warn("postgres catalog: envio falhou", "check_id", checkID, "err", err)
+		}
+	}()
 }
 
 func startsWith(s, prefix string) bool {
@@ -483,6 +563,20 @@ func (r *Runtime) runTimeout(interval time.Duration) time.Duration {
 func (r *Runtime) SetStatusReporter(f StatusReporter) {
 	r.mu.Lock()
 	r.statusReporter = f
+	r.mu.Unlock()
+}
+
+// SetQueryStatsPusher instala o envio opcional de estatísticas por consulta.
+func (r *Runtime) SetQueryStatsPusher(f QueryStatsPusher) {
+	r.mu.Lock()
+	r.queryStatsPusher = f
+	r.mu.Unlock()
+}
+
+// SetCatalogPusher instala o envio opcional de snapshots de catálogo.
+func (r *Runtime) SetCatalogPusher(f CatalogPusher) {
+	r.mu.Lock()
+	r.catalogPusher = f
 	r.mu.Unlock()
 }
 

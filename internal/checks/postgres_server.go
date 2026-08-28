@@ -152,25 +152,9 @@ func newPostgresServerCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 // newPostgresServerCheckWithFactory permite injetar um pool factory em test
 // (stub que não abre conexão TCP) ou em prod (defaultPgxPoolFactory).
 func newPostgresServerCheckWithFactory(cfg *collectorv1.CheckConfig, factory pgxPoolFactory) (Check, error) {
-	params := cfg.GetParams()
-	dsn := params["dsn"]
-	if dsn == "" {
-		return nil, fmt.Errorf("postgres.server: param 'dsn' obrigatório")
-	}
-
-	// Pool creation. O factory retorna um pool já configurado (MaxConns=2,
-	// MinConns=0 no caso default); aqui rodamos Ping com timeout pra
-	// validar reachability. Pitfall 5: se Ping fail, fechar o pool antes
-	// de retornar erro (no leak).
-	pool, err := factory(context.Background(), dsn)
+	pool, err := openPostgresPool(cfg, factory, "postgres.server")
 	if err != nil {
-		return nil, fmt.Errorf("postgres.server: %w", err)
-	}
-	pingCtx, cancel := context.WithTimeout(context.Background(), postgresPingTimeout)
-	defer cancel()
-	if err := pool.Ping(pingCtx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("postgres.server: unreachable: %w", err)
+		return nil, err
 	}
 
 	interval := cfg.GetInterval().AsDuration()
@@ -193,6 +177,27 @@ func newPostgresServerCheckWithFactory(cfg *collectorv1.CheckConfig, factory pgx
 		staticTags: tags,
 		pool:       pool,
 	}, nil
+}
+
+// openPostgresPool centraliza a validação do DSN e do reachability para os
+// checks PostgreSQL. Cada check recebe o próprio pool: uma extensão ausente
+// não derruba o check de saúde.
+func openPostgresPool(cfg *collectorv1.CheckConfig, factory pgxPoolFactory, kind string) (pgxPool, error) {
+	dsn := cfg.GetParams()["dsn"]
+	if dsn == "" {
+		return nil, fmt.Errorf("%s: param 'dsn' obrigatório", kind)
+	}
+	pool, err := factory(context.Background(), dsn)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", kind, err)
+	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), postgresPingTimeout)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("%s: unreachable: %w", kind, err)
+	}
+	return pool, nil
 }
 
 func (c *postgresServer) ID() string              { return c.id }
