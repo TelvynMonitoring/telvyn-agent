@@ -596,6 +596,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 				indexes = append(indexes, otlp.DatabaseCatalogIndex{
 					Name: index.Name, Definition: index.Definition,
 					Unique: index.Unique, Primary: index.Primary,
+					Scans: index.Scans, TuplesRead: index.TuplesRead,
+					TuplesFetched: index.TuplesFetched, SizeBytes: index.SizeBytes,
 				})
 			}
 			constraints := make([]otlp.DatabaseCatalogConstraint, 0, len(table.Constraints))
@@ -619,6 +621,13 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			DBServer: catalog.DBServer, DBName: catalog.DBName,
 			ServerVersion: catalog.ServerVersion, DatabaseSizeBytes: catalog.DatabaseSizeBytes,
 			Fingerprint: catalog.Fingerprint, Truncated: catalog.Truncated, Tables: tables,
+		})
+	})
+	runtime.SetExplainPusher(func(postCtx context.Context, plan checks.DatabaseExplainPlan) error {
+		return exporter.PostDatabaseExplain(postCtx, otlp.DatabaseExplainPayload{
+			RequestID: plan.RequestID, CheckID: plan.CheckID,
+			DBServer: plan.DBServer, DBName: plan.DBName,
+			PlanJSON: plan.PlanJSON, Error: plan.Error,
 		})
 	})
 

@@ -64,10 +64,14 @@ type DatabaseCatalogColumn struct {
 }
 
 type DatabaseCatalogIndex struct {
-	Name       string `json:"name"`
-	Definition string `json:"definition"`
-	Unique     bool   `json:"unique"`
-	Primary    bool   `json:"primary"`
+	Name          string `json:"name"`
+	Definition    string `json:"definition"`
+	Unique        bool   `json:"unique"`
+	Primary       bool   `json:"primary"`
+	Scans         int64  `json:"scans"`
+	TuplesRead    int64  `json:"tuples_read"`
+	TuplesFetched int64  `json:"tuples_fetched"`
+	SizeBytes     int64  `json:"size_bytes"`
 }
 
 type DatabaseCatalogConstraint struct {
@@ -130,10 +134,15 @@ const sqlPostgresCatalog = `WITH table_catalog AS (
            'name', ic.relname,
            'definition', pg_get_indexdef(i.indexrelid),
            'unique', i.indisunique,
-           'primary', i.indisprimary
+           'primary', i.indisprimary,
+           'scans', COALESCE(si.idx_scan, 0)::bigint,
+           'tuples_read', COALESCE(si.idx_tup_read, 0)::bigint,
+           'tuples_fetched', COALESCE(si.idx_tup_fetch, 0)::bigint,
+           'size_bytes', pg_relation_size(i.indexrelid)::bigint
          ) ORDER BY ic.relname)
          FROM pg_index i
          JOIN pg_class ic ON ic.oid = i.indexrelid
+         LEFT JOIN pg_stat_user_indexes si ON si.indexrelid = i.indexrelid
          WHERE i.indrelid = c.oid), '[]'::json) AS indexes,
          COALESCE((SELECT json_agg(json_build_object(
            'name', con.conname,

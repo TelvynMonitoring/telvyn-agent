@@ -158,7 +158,7 @@ func validateReadOnlyQuery(query string) error {
 	if strings.Contains(query, ";") || strings.Contains(lower, "--") || strings.Contains(lower, "/*") {
 		return fmt.Errorf("consulta deve ser uma única leitura")
 	}
-	for _, fragment := range []string{"select into", "set_config", "dblink_exec", "dblink_connect", "lo_import", "lo_export", "pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_advisory_lock", "nextval(", "setval("} {
+	for _, fragment := range []string{"select into", "set_config", "dblink_exec", "dblink_connect", "lo_import", "lo_export", "pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_sleep", "pg_advisory_lock", "pg_try_advisory_lock", "pg_advisory_unlock", "nextval(", "setval("} {
 		if strings.Contains(normalized, fragment) {
 			return fmt.Errorf("operação não permitida")
 		}
