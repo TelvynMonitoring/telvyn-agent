@@ -92,6 +92,8 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return modules["BANCOS_DADOS"]
 	case "db/catalog":
 		return modules["BANCOS_DADOS"]
+	case "db/explain":
+		return modules["BANCOS_DADOS"]
 	default:
 		return true
 	}
@@ -117,8 +119,9 @@ func NewIngestExporter(base, token, hostID, clusterName, version string, log *sl
 	}
 }
 
-// PostRaw encaminha um corpo OTLP já codificado pro signal indicado
-// ("traces" | "metrics" | "logs"), preservando o Content-Type original.
+// PostRaw encaminha um corpo já codificado pro signal indicado
+// ("traces" | "metrics" | "logs" | "db/catalog" | "db/explain"), preservando
+// o Content-Type original.
 func (e *IngestExporter) PostRaw(ctx context.Context, signal, contentType string, body []byte) error {
 	if len(body) == 0 {
 		return nil
@@ -362,10 +365,14 @@ type DatabaseCatalogColumn struct {
 }
 
 type DatabaseCatalogIndex struct {
-	Name       string `json:"name"`
-	Definition string `json:"definition"`
-	Unique     bool   `json:"unique"`
-	Primary    bool   `json:"primary"`
+	Name          string `json:"name"`
+	Definition    string `json:"definition"`
+	Unique        bool   `json:"unique"`
+	Primary       bool   `json:"primary"`
+	Scans         int64  `json:"scans"`
+	TuplesRead    int64  `json:"tuples_read"`
+	TuplesFetched int64  `json:"tuples_fetched"`
+	SizeBytes     int64  `json:"size_bytes"`
 }
 
 type DatabaseCatalogConstraint struct {
@@ -386,6 +393,32 @@ func (e *IngestExporter) PostDatabaseCatalog(ctx context.Context, payload Databa
 		return err
 	}
 	return e.PostRaw(ctx, "db/catalog", "application/json", body)
+}
+
+// DatabaseExplainPayload é o resultado de uma solicitação pontual de plano.
+// O plano é JSON do PostgreSQL; EXPLAIN sem ANALYZE nunca executa a consulta.
+type DatabaseExplainPayload struct {
+	RequestID string `json:"request_id"`
+	CheckID   string `json:"check_id"`
+	DBServer  string `json:"db_server"`
+	DBName    string `json:"db_name"`
+	PlanJSON  string `json:"plan_json,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// PostDatabaseExplain publica um único plano de execução no canal dedicado.
+func (e *IngestExporter) PostDatabaseExplain(ctx context.Context, payload DatabaseExplainPayload) error {
+	if payload.RequestID == "" || payload.CheckID == "" || payload.DBServer == "" || payload.DBName == "" {
+		return fmt.Errorf("database explain: identidade é obrigatória")
+	}
+	if payload.PlanJSON == "" && payload.Error == "" {
+		return fmt.Errorf("database explain: plan_json ou error é obrigatório")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return e.PostRaw(ctx, "db/explain", "application/json", body)
 }
 
 // ---- Logs (OTLP JSON) -------------------------------------------------

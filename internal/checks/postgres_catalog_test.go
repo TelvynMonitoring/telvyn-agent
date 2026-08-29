@@ -23,7 +23,7 @@ func TestPostgresCatalog_ReadsMetadataOnlyAndSetsIdentity(t *testing.T) {
         "last_vacuum":"2026-08-28 10:00:00+00","last_autovacuum":"",
         "last_analyze":"2026-08-28 10:00:00+00","last_autoanalyze":"",
 	        "columns":[{"name":"id","ordinal":1,"data_type":"bigint","nullable":false,"has_default":true}],
-        "indexes":[{"name":"invoices_pkey","definition":"CREATE UNIQUE INDEX invoices_pkey ON public.invoices USING btree (id)","unique":true,"primary":true}],
+        "indexes":[{"name":"invoices_pkey","definition":"CREATE UNIQUE INDEX invoices_pkey ON public.invoices USING btree (id)","unique":true,"primary":true,"scans":17,"tuples_read":42,"tuples_fetched":42,"size_bytes":8192}],
         "constraints":[{"name":"invoices_pkey","type":"primary_key","definition":"PRIMARY KEY (id)"}]
       }]
     }`}}}
@@ -52,6 +52,10 @@ func TestPostgresCatalog_ReadsMetadataOnlyAndSetsIdentity(t *testing.T) {
 	}
 	if len(catalog.Tables[0].Columns) != 1 || !catalog.Tables[0].Columns[0].HasDefault || !catalog.Tables[0].Indexes[0].Primary {
 		t.Fatalf("nested metadata was not decoded: %+v", catalog.Tables[0])
+	}
+	index := catalog.Tables[0].Indexes[0]
+	if index.Scans != 17 || index.TuplesRead != 42 || index.TuplesFetched != 42 || index.SizeBytes != 8192 {
+		t.Fatalf("index usage metadata was not decoded: %+v", index)
 	}
 	if len(catalog.Fingerprint) != 64 {
 		t.Fatalf("expected SHA-256 fingerprint; got %q", catalog.Fingerprint)

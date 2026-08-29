@@ -85,6 +85,9 @@ type Runtime struct {
 	// catalogPusher recebe snapshots estruturais de bancos. A falha no envio
 	// não transforma uma coleta local bem-sucedida em falha do check.
 	catalogPusher CatalogPusher
+	// explainPusher recebe o resultado de uma solicitação pontual de EXPLAIN.
+	// A falha no envio mantém a solicitação elegível para retry no próximo ciclo.
+	explainPusher ExplainPusher
 }
 
 // StatusReporter recebe o estado de um check quando ele MUDA (passou a falhar,
@@ -99,6 +102,9 @@ type QueryStatsPusher func(context.Context, DatabaseQueryStats) error
 
 // CatalogPusher encaminha um snapshot de metadados estruturais do banco.
 type CatalogPusher func(context.Context, DatabaseCatalog) error
+
+// ExplainPusher encaminha um plano de execução produzido pelo Agent.
+type ExplainPusher func(context.Context, DatabaseExplainPlan) error
 
 // runningCheck guarda o estado de uma check rodando: cancel pra parar e wg
 // pra esperar conclusão graciosa.
@@ -446,8 +452,11 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		var metrics []*collectorv1.Metric
 		var queryStats *DatabaseQueryStats
 		var catalog *DatabaseCatalog
+		var explain *DatabaseExplainPlan
 		var err error
-		if queryCheck, ok := any(c).(QueryStatsCheck); ok {
+		if explainCheck, ok := any(c).(ExplainCheck); ok {
+			explain, err = explainCheck.RunExplain(runCtx)
+		} else if queryCheck, ok := any(c).(QueryStatsCheck); ok {
 			queryStats, err = queryCheck.RunQueryStats(runCtx)
 		} else if catalogCheck, ok := any(c).(CatalogCheck); ok {
 			catalog, err = catalogCheck.RunCatalog(runCtx)
@@ -461,6 +470,9 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			return
 		}
 		if err != nil {
+			if failure, ok := any(c).(ExplainFailureProvider); ok {
+				r.pushExplain(c, failure.ExplainFailure(err))
+			}
 			n := consecutiveErrors.Add(1)
 			clog.Warn("check run error", "err", err, "consecutive", n, "run_timeout", runTimeout.String())
 			r.emitCheckError(c)
@@ -481,6 +493,9 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		}
 		if catalog != nil {
 			r.pushCatalog(c.ID(), *catalog)
+		}
+		if explain != nil {
+			r.pushExplain(c, *explain)
 		}
 		if len(metrics) > 0 {
 			r.emit(metrics)
@@ -532,6 +547,27 @@ func (r *Runtime) pushCatalog(checkID string, catalog DatabaseCatalog) {
 	}()
 }
 
+func (r *Runtime) pushExplain(check Check, plan DatabaseExplainPlan) {
+	r.mu.Lock()
+	pusher := r.explainPusher
+	parent := r.parent
+	r.mu.Unlock()
+	if pusher == nil || parent == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+		defer cancel()
+		if err := pusher(ctx, plan); err != nil {
+			r.log.Warn("postgres explain: envio falhou", "check_id", check.ID(), "err", err)
+			return
+		}
+		if completed, ok := check.(ExplainPublishAware); ok {
+			completed.MarkExplainPublished()
+		}
+	}()
+}
+
 func startsWith(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
@@ -577,6 +613,13 @@ func (r *Runtime) SetQueryStatsPusher(f QueryStatsPusher) {
 func (r *Runtime) SetCatalogPusher(f CatalogPusher) {
 	r.mu.Lock()
 	r.catalogPusher = f
+	r.mu.Unlock()
+}
+
+// SetExplainPusher instala o envio de planos pontuais.
+func (r *Runtime) SetExplainPusher(f ExplainPusher) {
+	r.mu.Lock()
+	r.explainPusher = f
 	r.mu.Unlock()
 }
 
