@@ -14,6 +14,7 @@
 package configpull
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -130,8 +131,9 @@ type pullResponse struct {
 	// F2b — atualização remota. O backend seta true UMA vez (serve-once) quando o
 	// operador clica "Atualizar agora". O agente (sem privilégio) só escreve um
 	// marcador; um helper systemd ROOT lê e roda o upgrade. Ausente = false.
-	ShouldUpdate   bool     `json:"should_update"`
-	EnabledModules []string `json:"enabled_modules"`
+	ShouldUpdate   bool             `json:"should_update"`
+	EnabledModules []string         `json:"enabled_modules"`
+	SnmpTests      []pulledSnmpTest `json:"snmp_tests"`
 }
 
 // pulledProfile é um perfil SNMP custom entregue pelo config-pull.
@@ -152,6 +154,17 @@ type pulledCheck struct {
 	IntervalSeconds int32  `json:"interval_seconds"`
 	ConfigVersion   int64  `json:"config_version"`
 	DisabledMetrics string `json:"disabled_metrics"` // JSON array of metric names, e.g. ["snmp_if_in_octets"]
+}
+
+// pulledSnmpTest é uma execução única solicitada pelo portal. O backend só
+// entrega este payload no pull autenticado do collector; o resultado nunca
+// contém community ou senhas.
+type pulledSnmpTest struct {
+	ID       string         `json:"id"`
+	HostUUID string         `json:"host_uuid"`
+	Target   string         `json:"target"`
+	Version  string         `json:"version"`
+	Params   map[string]any `json:"params"`
 }
 
 // writeUpdateMarker escreve o marcador de atualização (F2b). Grava atômico
@@ -204,6 +217,11 @@ func pullOnce(
 	var r pullResponse
 	if err := json.Unmarshal(body, &r); err != nil {
 		return fmt.Errorf("parse response: %w", err)
+	}
+	for _, test := range r.SnmpTests {
+		if err := executeSnmpTest(ctx, client, cfg, test, log); err != nil {
+			log.Warn("config pull: SNMP test result not delivered", "job_id", test.ID, "err", err)
+		}
 	}
 	if cfg.PolicyChanged != nil && r.EnabledModules != nil {
 		cfg.PolicyChanged(r.EnabledModules)
@@ -323,6 +341,80 @@ func jsonObjectToStringMap(s string) map[string]string {
 
 func startsWith(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+func executeSnmpTest(parent context.Context, client *http.Client, cfg Config, test pulledSnmpTest, log *slog.Logger) error {
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(parent, 12*time.Second)
+	defer cancel()
+	params := test.Params
+	get := func(key string) string {
+		if params == nil {
+			return ""
+		}
+		if value, ok := params[key].(string); ok {
+			return value
+		}
+		return ""
+	}
+	c, err := snmp.NewClient(snmp.Params{
+		Target:        test.Target,
+		Version:       test.Version,
+		Community:     get("community"),
+		V3User:        get("v3_user"),
+		V3AuthProto:   get("v3_auth_proto"),
+		V3AuthPass:    get("v3_auth_pass"),
+		V3PrivProto:   get("v3_priv_proto"),
+		V3PrivPass:    get("v3_priv_pass"),
+		V3ContextName: get("v3_context"),
+	})
+	ok := false
+	errText := ""
+	sysObjectID := ""
+	if err != nil {
+		errText = err.Error()
+	} else {
+		defer c.Close()
+		pdus, getErr := c.Get(ctx, []string{"1.3.6.1.2.1.1.2.0"})
+		if getErr != nil {
+			errText = getErr.Error()
+		} else if len(pdus) == 0 {
+			errText = "snmp: sysObjectID nao retornado"
+		} else {
+			ok = true
+			sysObjectID = fmt.Sprintf("%v", pdus[0].Value)
+		}
+	}
+
+	result := struct {
+		JobID       string `json:"job_id"`
+		OK          bool   `json:"ok"`
+		Error       string `json:"error,omitempty"`
+		SysObjectID string `json:"sys_object_id,omitempty"`
+		DurationMs  int64  `json:"duration_ms"`
+	}{JobID: test.ID, OK: ok, Error: errText, SysObjectID: sysObjectID, DurationMs: time.Since(started).Milliseconds()}
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	u := fmt.Sprintf("%s/api/collector/v1/config/test-results?tenant_id=%s&collector_id=%s",
+		cfg.Endpoint, url.QueryEscape(cfg.TenantID), url.QueryEscape(cfg.CollectorID))
+	req, err := http.NewRequestWithContext(parent, http.MethodPost, u, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("test result returned %d", resp.StatusCode)
+	}
+	log.Info("config pull: SNMP test completed", "job_id", test.ID, "host_uuid", test.HostUUID, "ok", ok, "duration_ms", result.DurationMs)
+	return nil
 }
 
 func min(a, b int) int {
