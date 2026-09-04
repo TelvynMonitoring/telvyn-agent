@@ -91,3 +91,21 @@ func TestFlushStopsOnNetworkError(t *testing.T) {
 		t.Fatalf("esperava 2 retidos, veio %d", len(sent))
 	}
 }
+
+func TestSnapshotReportsQueueRetriesAndDrops(t *testing.T) {
+	q := New("test", 10, nil)
+	q.Offer([]byte("11111"), errors.New("net"))
+	q.Offer([]byte("22222"), errors.New("net"))
+	q.Offer([]byte("33333"), errors.New("net"))
+
+	before := q.Snapshot()
+	if before.Pending != 2 || before.Bytes != 10 || before.RetainedTotal != 3 || before.DroppedTotal != 1 {
+		t.Fatalf("snapshot antes do flush inesperado: %+v", before)
+	}
+
+	q.Flush(context.Background(), func(_ context.Context, _ []byte) error { return nil })
+	after := q.Snapshot()
+	if after.Pending != 0 || after.RetryAttempts != 2 || after.RetrySuccesses != 2 {
+		t.Fatalf("snapshot depois do flush inesperado: %+v", after)
+	}
+}

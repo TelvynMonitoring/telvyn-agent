@@ -57,6 +57,38 @@ type IngestExporter struct {
 	// (rollout/rede). Só métricas: spans/logs de app que passam pelo PostRaw
 	// já têm backpressure próprio (o receiver devolve 502 e o SDK reenvia).
 	metricsPending *sendbuf.Queue
+	// Provider agregado do scheduler. Setado no startup e lido somente no
+	// heartbeat; não coloca I/O nem serialização no caminho de cada check.
+	runtimeStatsProvider atomic.Value // func() CollectorRuntimeStats
+}
+
+// CollectorRuntimeStats é o contrato sem segredos enviado no heartbeat.
+type CollectorRuntimeStats struct {
+	ActiveChecks          int64  `json:"active_checks"`
+	PollRuns              int64  `json:"poll_runs"`
+	PollSuccesses         int64  `json:"poll_successes"`
+	PollFailures          int64  `json:"poll_failures"`
+	PollTimeouts          int64  `json:"poll_timeouts"`
+	LastPollDurationMS    int64  `json:"last_poll_duration_ms"`
+	AveragePollDurationMS int64  `json:"avg_poll_duration_ms"`
+	MaxPollDurationMS     int64  `json:"max_poll_duration_ms"`
+	PendingPayloads       int64  `json:"pending_payloads"`
+	PendingBytes          int64  `json:"pending_bytes"`
+	RetryAttempts         int64  `json:"retry_attempts"`
+	RetrySuccesses        int64  `json:"retry_successes"`
+	DroppedPayloads       int64  `json:"dropped_payloads"`
+	IngestBlocked         bool   `json:"ingest_blocked"`
+	LastPollAt            string `json:"last_poll_at,omitempty"`
+	LastPollSuccessAt     string `json:"last_poll_success_at,omitempty"`
+	LastPollFailureAt     string `json:"last_poll_failure_at,omitempty"`
+}
+
+// SetCollectorRuntimeStatsProvider liga o scheduler ao heartbeat sem criar
+// dependência do pacote OTLP sobre checks.Runtime.
+func (e *IngestExporter) SetCollectorRuntimeStatsProvider(provider func() CollectorRuntimeStats) {
+	if provider != nil {
+		e.runtimeStatsProvider.Store(provider)
+	}
 }
 
 // SetEnabledModules aplica imediatamente a política do tenant sem reiniciar o agent.
@@ -742,6 +774,17 @@ func (e *IngestExporter) RegisterCollector(ctx context.Context, name string, cap
 		"agent_version": e.version,
 		"capabilities":  capabilities,
 		"install_mode":  installMode,
+	}
+	if provider, ok := e.runtimeStatsProvider.Load().(func() CollectorRuntimeStats); ok {
+		runtime := provider()
+		queue := e.metricsPending.Snapshot()
+		runtime.PendingPayloads = int64(queue.Pending)
+		runtime.PendingBytes = int64(queue.Bytes)
+		runtime.RetryAttempts = queue.RetryAttempts
+		runtime.RetrySuccesses = queue.RetrySuccesses
+		runtime.DroppedPayloads = queue.DroppedTotal
+		runtime.IngestBlocked = queue.Blocked
+		payload["runtime"] = runtime
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.base+"/collector/register", bytes.NewReader(body))

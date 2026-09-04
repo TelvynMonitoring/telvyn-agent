@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -36,5 +37,33 @@ func TestPostResultUsesCollectorIdentityAndAcknowledges(t *testing.T) {
 	}
 	if query != "tenant_id=42&collector_id=collector-1" {
 		t.Fatalf("unexpected query %q", query)
+	}
+}
+
+func TestPullOnceUsesLongPollAndAcceptsNoContent(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	cfg := Config{
+		Endpoint: server.URL, TenantID: "42", CollectorID: "collector-1",
+		LongPollSeconds: 25, HTTPClient: server.Client(),
+	}
+	job, longPollResponse, err := pullOnce(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job != nil || !longPollResponse {
+		t.Fatalf("expected empty long-poll response, got job=%#v long_poll=%v", job, longPollResponse)
+	}
+	values, err := url.ParseQuery(gotQuery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values.Get("wait_seconds") != "25" {
+		t.Fatalf("wait_seconds = %q, want 25", values.Get("wait_seconds"))
 	}
 }
