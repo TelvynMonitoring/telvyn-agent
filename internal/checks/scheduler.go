@@ -101,11 +101,13 @@ type Runtime struct {
 // nenhuma — "desde quando" o backend calcula sozinho.
 type StatusReporter func(checkID string, ok bool, message string)
 
-// ExecutionReport não carrega métricas nem segredos; somente saúde e duração.
+// ExecutionReport não carrega métricas nem segredos; somente saúde, motivo e
+// duração da execução.
 type ExecutionReport struct {
 	CheckID  string
 	OK       bool
 	TimedOut bool
+	Message  string
 	Duration time.Duration
 	At       time.Time
 }
@@ -499,7 +501,8 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			clog.Warn("check run error", "err", err, "consecutive", n, "run_timeout", runTimeout.String())
 			r.emitCheckError(c)
 			reportar(false, err.Error())
-			r.reportExecution(ExecutionReport{CheckID: c.ID(), OK: false, TimedOut: timedOut, Duration: duration, At: time.Now()})
+			r.reportExecution(ExecutionReport{CheckID: c.ID(), OK: false, TimedOut: timedOut,
+				Message: err.Error(), Duration: duration, At: time.Now()})
 			return
 		}
 		if timedOut {
@@ -507,7 +510,8 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			clog.Warn("check run exceeded timeout", "consecutive", n, "run_timeout", runTimeout.String())
 			r.emitCheckError(c)
 			reportar(false, "sem resposta em "+runTimeout.String())
-			r.reportExecution(ExecutionReport{CheckID: c.ID(), OK: false, TimedOut: true, Duration: duration, At: time.Now()})
+			r.reportExecution(ExecutionReport{CheckID: c.ID(), OK: false, TimedOut: true,
+				Message: "sem resposta em " + runTimeout.String(), Duration: duration, At: time.Now()})
 			return
 		}
 		consecutiveErrors.Store(0)
@@ -627,8 +631,9 @@ func (r *Runtime) SetStatusReporter(f StatusReporter) {
 	r.mu.Unlock()
 }
 
-// SetExecutionReporter instala o consumidor dos eventos de execução usados
-// somente para observabilidade agregada do collector.
+// SetExecutionReporter instala o consumidor dos eventos de cada execução.
+// Além da observabilidade agregada, o collector pode usá-los para manter o
+// último check do host atualizado mesmo quando o estado não muda.
 func (r *Runtime) SetExecutionReporter(f ExecutionReporter) {
 	r.mu.Lock()
 	r.executionReporter = f
