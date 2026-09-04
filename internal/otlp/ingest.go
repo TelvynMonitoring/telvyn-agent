@@ -575,14 +575,15 @@ func (e *IngestExporter) PostLogs(ctx context.Context, records []LogRecord) erro
 	return e.PostRaw(ctx, "logs", "application/json", body)
 }
 
-// PostCheckStatus envia POR QUE um check falhou (ou que voltou a funcionar).
+// PostCheckStatus envia o resultado de uma execução de check.
 //
 // Antes disto o motivo só existia no log desta máquina: o agente publicava um
 // contador ispwatch.check.errors{check_id} e a tela do equipamento mostrava
 // "warning" sem dizer nada. Agora o backend grava a mensagem em
 // noc_hostcheck.last_error e a página do equipamento explica sozinha.
 //
-// Chamado só na MUDANÇA de estado (ver checks.StatusReporter), não a cada tick.
+// Chamado a cada execução para que o backend consiga distinguir um check
+// realmente recente de uma simples ausência de mudança de estado.
 func (e *IngestExporter) PostCheckStatus(ctx context.Context, checkID string, ok bool, message string) error {
 	if strings.TrimSpace(checkID) == "" {
 		return nil
