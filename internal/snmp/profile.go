@@ -203,10 +203,11 @@ type ProfileMetricTag struct {
 }
 
 var (
-	loadOnce   sync.Once
-	loadedAll  []*Profile
-	loadedByID map[string]*Profile
-	loadErr    error
+	loadOnce         sync.Once
+	loadedAll        []*Profile
+	loadedByID       map[string]*Profile
+	loadErr          error
+	profileIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$`)
 )
 
 // Overlay dinâmico: perfis SNMP CUSTOM do tenant, entregues pelo backend via
@@ -257,7 +258,7 @@ func loadAll() {
 		if e.IsDir() {
 			continue
 		}
-		if !strings.HasSuffix(e.Name(), ".yaml") {
+		if _, ok := profileIDFromFilename(e.Name()); !ok {
 			continue
 		}
 		names = append(names, e.Name())
@@ -275,10 +276,56 @@ func loadAll() {
 			loadErr = fmt.Errorf("snmp: parse profile %s: %w", fname, err)
 			return
 		}
-		p.Name = strings.TrimSuffix(fname, ".yaml")
+		profileID, ok := profileIDFromFilename(fname)
+		if !ok {
+			continue
+		}
+		if err := validateEmbeddedProfile(p); err != nil {
+			loadErr = fmt.Errorf("snmp: invalid profile %s: %w", fname, err)
+			return
+		}
+		if _, exists := loadedByID[profileID]; exists {
+			loadErr = fmt.Errorf("snmp: duplicate profile id %q", profileID)
+			return
+		}
+		p.Name = profileID
 		loadedByID[p.Name] = p
 		loadedAll = append(loadedAll, p)
 	}
+}
+
+// profileIDFromFilename define a fronteira do catálogo embedded. Arquivos
+// AppleDouble, ocultos, com extensão diferente ou com ID fora da convenção
+// nunca entram no catálogo. O ID é derivado do basename, sem path.
+func profileIDFromFilename(filename string) (string, bool) {
+	if strings.ContainsAny(filename, `/\\`) || !strings.HasSuffix(filename, ".yaml") {
+		return "", false
+	}
+	base := strings.TrimSuffix(filename, ".yaml")
+	if strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_") {
+		return "", false
+	}
+	if !profileIDPattern.MatchString(base) {
+		return "", false
+	}
+	return base, true
+}
+
+// validateEmbeddedProfile aceita perfis de descoberta/identificação sem
+// métricas, mas rejeita entradas vazias ou métricas sem definição executável.
+func validateEmbeddedProfile(p *Profile) error {
+	if p == nil {
+		return errors.New("perfil nulo")
+	}
+	if len(p.SysObjectID) == 0 && len(p.Metrics) == 0 && len(p.DiscoveryRules) == 0 && p.Metadata == nil {
+		return errors.New("sem sysobjectid, metrics, discovery_rules ou metadata")
+	}
+	for i, metric := range p.Metrics {
+		if metric.Symbol == nil && metric.Table == nil {
+			return fmt.Errorf("metric[%d] sem symbol nem table", i)
+		}
+	}
+	return nil
 }
 
 // LoadProfile resolve um perfil pelo nome (sem extensao). Retorna erro
@@ -491,7 +538,9 @@ func (p *Profile) CollectDeviceMetadata(ctx context.Context, c *Client) map[stri
 		// controller), então ele não deve vencer estes OIDs específicos.
 		readMetadataOID(ctx, c, "model", "1.3.6.1.4.1.14988.1.1.7.9.0", out)
 		readMetadataOID(ctx, c, "serial_number", "1.3.6.1.4.1.14988.1.1.7.3.0", out)
-		readMetadataOID(ctx, c, "version", "1.3.6.1.4.1.14988.1.1.7.4.0", out)
+		// A versão do RouterOS fica em mtxrLicVersion (1.1.4.4.0), não
+		// no grupo RouterBOARD 1.1.7.4.0; este último não existe em CHR.
+		readMetadataOID(ctx, c, "version", "1.3.6.1.4.1.14988.1.1.4.4.0", out)
 	}
 	if p.Metadata == nil {
 		return out

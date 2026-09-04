@@ -65,6 +65,24 @@ func TestAllProfiles_ReturnsBundledCatalog(t *testing.T) {
 	}
 }
 
+func TestAllProfiles_UsesUniqueSafeIDs(t *testing.T) {
+	all, err := AllProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := make(map[string]struct{}, len(all))
+	for _, p := range all {
+		if _, ok := profileIDFromFilename(p.Name + ".yaml"); !ok {
+			t.Fatalf("profile id inseguro no catálogo: %q", p.Name)
+		}
+		if _, duplicate := seen[p.Name]; duplicate {
+			t.Fatalf("profile id duplicado no catálogo: %q", p.Name)
+		}
+		seen[p.Name] = struct{}{}
+	}
+}
+
 func TestLoadProfile_Unknown(t *testing.T) {
 	_, err := LoadProfile("nope-vendor")
 	if err == nil {
@@ -77,6 +95,44 @@ func TestLoadProfile_Unknown(t *testing.T) {
 	// Mensagem deve listar pelo menos linux-net-snmp como hint.
 	if !strings.Contains(msg, "linux-net-snmp") {
 		t.Fatalf("erro=%q nao lista perfis validos", msg)
+	}
+}
+
+func TestProfileIDFromFilename_RejectsInvalidEntries(t *testing.T) {
+	cases := []struct {
+		filename string
+		valid    bool
+		wantID   string
+	}{
+		{"cisco-ios.yaml", true, "cisco-ios"},
+		{"apc_ups.yaml", true, "apc_ups"},
+		{"._cisco-ios.yaml", false, ""},
+		{".hidden.yaml", false, ""},
+		{"_temporary.yaml", false, ""},
+		{"cisco-ios.yml", false, ""},
+		{"../cisco-ios.yaml", false, ""},
+		{"Cisco IOS.yaml", false, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.filename, func(t *testing.T) {
+			gotID, gotValid := profileIDFromFilename(tc.filename)
+			if gotValid != tc.valid || gotID != tc.wantID {
+				t.Fatalf("profileIDFromFilename(%q)=(%q,%v), want (%q,%v)", tc.filename, gotID, gotValid, tc.wantID, tc.valid)
+			}
+		})
+	}
+}
+
+func TestValidateEmbeddedProfile_AllowsDiscoveryOnly(t *testing.T) {
+	if err := validateEmbeddedProfile(&Profile{SysObjectID: []string{"1.3.6.1.4.1.9"}}); err != nil {
+		t.Fatalf("perfil somente de identificação foi rejeitado: %v", err)
+	}
+	if err := validateEmbeddedProfile(&Profile{DiscoveryRules: []ProfileDiscoveryRule{{Name: "interfaces"}}}); err != nil {
+		t.Fatalf("perfil somente de discovery foi rejeitado: %v", err)
+	}
+	if err := validateEmbeddedProfile(&Profile{}); err == nil {
+		t.Fatal("perfil vazio deveria ser rejeitado")
 	}
 }
 

@@ -48,6 +48,22 @@ type Queue struct {
 	blockedTil  time.Time
 	lastAuthLog time.Time
 	log         *slog.Logger
+	retained    int64
+	retryCalls  int64
+	retryOK     int64
+	dropped     int64
+}
+
+// Stats é um snapshot lock-safe usado no heartbeat operacional do collector.
+// Não contém corpo de payload nem informação sensível.
+type Stats struct {
+	Pending        int
+	Bytes          int
+	RetainedTotal  int64
+	RetryAttempts  int64
+	RetrySuccesses int64
+	DroppedTotal   int64
+	Blocked        bool
 }
 
 // New cria a fila. maxBytes limita a soma dos payloads retidos (drop-oldest).
@@ -80,15 +96,19 @@ func (q *Queue) Flush(ctx context.Context, post func(context.Context, []byte) er
 			return
 		}
 		body := q.items[0]
+		q.retryCalls++
 		q.mu.Unlock()
 
 		if err := post(ctx, body); err != nil {
 			if q.noteTerminal(err) {
-				q.popFront() // auth/franquia: reenviar não conserta
+				q.popFront(true) // auth/franquia: reenviar não conserta
 			}
 			return
 		}
-		q.popFront()
+		q.mu.Lock()
+		q.retryOK++
+		q.mu.Unlock()
+		q.popFront(false)
 		q.mu.Lock()
 		left := len(q.items)
 		q.mu.Unlock()
@@ -100,12 +120,16 @@ func (q *Queue) Flush(ctx context.Context, post func(context.Context, []byte) er
 // auth/franquia → descarta (com aviso claro); resto (rede/5xx) → retém.
 func (q *Queue) Offer(body []byte, err error) {
 	if q.noteTerminal(err) {
+		q.mu.Lock()
+		q.dropped++
+		q.mu.Unlock()
 		return
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.items = append(q.items, body)
 	q.bytes += len(body)
+	q.retained++
 	dropped := 0
 	for q.bytes > q.maxBytes && len(q.items) > 1 {
 		q.bytes -= len(q.items[0])
@@ -113,11 +137,27 @@ func (q *Queue) Offer(body []byte, err error) {
 		dropped++
 	}
 	if dropped > 0 {
+		q.dropped += int64(dropped)
 		q.log.Warn("fila de reenvio cheia — payloads mais antigos descartados",
 			"descartados", dropped, "retidos", len(q.items), "bytes", q.bytes)
 	} else {
 		q.log.Info("payload retido pra reenvio (backend indisponível)",
 			"retidos", len(q.items), "bytes", q.bytes, "err", err)
+	}
+}
+
+// Snapshot devolve os contadores cumulativos e o tamanho atual da fila.
+func (q *Queue) Snapshot() Stats {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return Stats{
+		Pending:        len(q.items),
+		Bytes:          q.bytes,
+		RetainedTotal:  q.retained,
+		RetryAttempts:  q.retryCalls,
+		RetrySuccesses: q.retryOK,
+		DroppedTotal:   q.dropped,
+		Blocked:        time.Now().Before(q.blockedTil),
 	}
 }
 
@@ -158,7 +198,7 @@ func (q *Queue) noteTerminal(err error) bool {
 		}
 		q.mu.Unlock()
 		if shouldLog {
-			q.log.Warn("franquia de telemetria do plano EXCEDIDA (HTTP 429) — dados descartados "+
+			q.log.Warn("franquia de telemetria do plano EXCEDIDA (HTTP 429) — dados descartados " +
 				"até a janela de 7 dias rolar ou o plano subir de tier")
 		}
 		return true
@@ -166,11 +206,14 @@ func (q *Queue) noteTerminal(err error) bool {
 	return false
 }
 
-func (q *Queue) popFront() {
+func (q *Queue) popFront(dropped bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.items) == 0 {
 		return
+	}
+	if dropped {
+		q.dropped++
 	}
 	q.bytes -= len(q.items[0])
 	q.items = q.items[1:]

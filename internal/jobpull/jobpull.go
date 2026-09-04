@@ -10,18 +10,20 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/ispwatch/collector/internal/tools"
 )
 
 type Config struct {
-	Endpoint     string
-	TenantID     string
-	CollectorID  string
-	PollInterval time.Duration
-	HTTPClient   *http.Client
-	Logger       *slog.Logger
+	Endpoint        string
+	TenantID        string
+	CollectorID     string
+	PollInterval    time.Duration
+	LongPollSeconds int
+	HTTPClient      *http.Client
+	Logger          *slog.Logger
 }
 
 type pullResponse struct {
@@ -43,13 +45,17 @@ type job struct {
 	TestOnly       bool   `json:"test_only"`
 }
 
-// Run polls one job at a time. A result remains in memory and is retried until acknowledged.
+// Run waits for one job at a time. The server holds the request during the
+// long-poll window; a result remains in memory and is retried until acknowledged.
 func Run(ctx context.Context, cfg Config) error {
 	if cfg.Endpoint == "" || cfg.TenantID == "" || cfg.CollectorID == "" || cfg.HTTPClient == nil {
 		return fmt.Errorf("jobpull: incomplete config")
 	}
 	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = 5 * time.Second
+		cfg.PollInterval = 60 * time.Second
+	}
+	if cfg.LongPollSeconds <= 0 {
+		cfg.LongPollSeconds = 25
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -58,59 +64,87 @@ func Run(ctx context.Context, cfg Config) error {
 	log = log.With("component", "jobpull")
 
 	var pending *completed
-	ticker := time.NewTicker(cfg.PollInterval)
-	defer ticker.Stop()
+	retryDelay := 2 * time.Second
 	for {
 		if pending != nil {
 			if err := postResult(ctx, cfg, *pending); err != nil {
 				log.Warn("result not acknowledged; will retry", "job_id", pending.id, "err", err)
+				if err := waitContext(ctx, retryDelay); err != nil {
+					return nil
+				}
 			} else {
 				pending = nil
+				retryDelay = 2 * time.Second
 			}
 		} else {
-			j, err := pullOnce(ctx, cfg)
+			j, longPollResponse, err := pullOnce(ctx, cfg)
 			if err != nil {
 				log.Warn("job pull failed", "err", err)
+				if err := waitContext(ctx, retryDelay); err != nil {
+					return nil
+				}
+				if retryDelay < 30*time.Second {
+					retryDelay *= 2
+					if retryDelay > 30*time.Second {
+						retryDelay = 30 * time.Second
+					}
+				}
 			} else if j != nil {
+				retryDelay = 2 * time.Second
 				result := execute(ctx, *j)
 				pending = &completed{id: j.ID, result: result}
-				if err := postResult(ctx, cfg, *pending); err == nil {
-					pending = nil
+			} else if !longPollResponse {
+				// Compatibilidade com backend antigo, que responde 200 vazio
+				// imediatamente e não entende wait_seconds.
+				if err := waitContext(ctx, cfg.PollInterval); err != nil {
+					return nil
 				}
 			}
-		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
 		}
 	}
 }
 
-func pullOnce(ctx context.Context, cfg Config) (*job, error) {
-	u := fmt.Sprintf("%s/api/collector/v1/jobs?tenant_id=%s&collector_id=%s",
-		cfg.Endpoint, url.QueryEscape(cfg.TenantID), url.QueryEscape(cfg.CollectorID))
+func pullOnce(ctx context.Context, cfg Config) (*job, bool, error) {
+	query := url.Values{}
+	query.Set("tenant_id", cfg.TenantID)
+	query.Set("collector_id", cfg.CollectorID)
+	query.Set("wait_seconds", strconv.Itoa(cfg.LongPollSeconds))
+	u := fmt.Sprintf("%s/api/collector/v1/jobs?%s", cfg.Endpoint, query.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	resp, err := cfg.HTTPClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, true, nil
+	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, body)
+		return nil, false, fmt.Errorf("server returned %d: %s", resp.StatusCode, body)
 	}
 	var out pullResponse
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if len(out.Jobs) == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
-	return &out.Jobs[0], nil
+	return &out.Jobs[0], false, nil
+}
+
+func waitContext(ctx context.Context, delay time.Duration) error {
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func execute(ctx context.Context, j job) map[string]any {

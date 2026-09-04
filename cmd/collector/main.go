@@ -21,6 +21,7 @@ import (
 	"github.com/ispwatch/collector/internal/apm/statsfwd"
 	"github.com/ispwatch/collector/internal/checks"
 	"github.com/ispwatch/collector/internal/clusteragent"
+	"github.com/ispwatch/collector/internal/collectorobs"
 	"github.com/ispwatch/collector/internal/configpull"
 	"github.com/ispwatch/collector/internal/ebpf"
 	"github.com/ispwatch/collector/internal/ebpf/common"
@@ -551,6 +552,23 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 	base = strings.TrimRight(strings.TrimSuffix(base, "/api/ingest/v1"), "/")
 
 	runtime := checks.New(ctx, log, checks.Default, out)
+	operational := collectorobs.New()
+	runtime.SetExecutionReporter(func(report checks.ExecutionReport) {
+		operational.Observe(report.OK, report.TimedOut, report.Duration, report.At)
+	})
+	exporter.SetCollectorRuntimeStatsProvider(func() otlp.CollectorRuntimeStats {
+		snapshot := operational.Snapshot()
+		return otlp.CollectorRuntimeStats{
+			ActiveChecks: int64(runtime.ActiveCheckCount()),
+			PollRuns:     snapshot.PollRuns, PollSuccesses: snapshot.PollSuccesses,
+			PollFailures: snapshot.PollFailures, PollTimeouts: snapshot.PollTimeouts,
+			LastPollDurationMS:    snapshot.LastPollDurationMS,
+			AveragePollDurationMS: snapshot.AveragePollDurationMS,
+			MaxPollDurationMS:     snapshot.MaxPollDurationMS,
+			LastPollAt:            snapshot.LastPollAt, LastPollSuccessAt: snapshot.LastPollSuccessAt,
+			LastPollFailureAt: snapshot.LastPollFailureAt,
+		}
+	})
 	checks.SetDeviceMetadataPusher(exporter)
 	checks.SetDeviceConfigPusher(exporter) // NCM: check device.config_backup manda a running-config coletada
 	runtime.SetWorkerPools(5, 10)
@@ -660,7 +678,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 				go func() {
 					if err := jobpull.Run(ctx, jobpull.Config{
 						Endpoint: base, CollectorID: collectorID, TenantID: tenantID,
-						PollInterval: 5 * time.Second, HTTPClient: bearerClient, Logger: log,
+						PollInterval: 60 * time.Second, LongPollSeconds: 25,
+						HTTPClient: bearerClient, Logger: log,
 					}); err != nil {
 						log.Warn("device job pull encerrou", "err", err)
 					}

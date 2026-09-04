@@ -12,6 +12,7 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math/rand"
 	"sync"
@@ -79,6 +80,10 @@ type Runtime struct {
 	// quisesse saber por quê precisava de SSH na máquina do cliente. nil =
 	// ninguém reporta (testes, modo mTLS legado).
 	statusReporter StatusReporter
+	// executionReporter recebe um evento agregado a cada execução real. É
+	// independente do StatusReporter (que só publica transições) e alimenta o
+	// snapshot COR-004 enviado no heartbeat.
+	executionReporter ExecutionReporter
 	// queryStatsPusher recebe agregados de pg_stat_statements. A falha no envio
 	// não transforma uma coleta local bem-sucedida em falha do check.
 	queryStatsPusher QueryStatsPusher
@@ -95,6 +100,17 @@ type Runtime struct {
 // um agente com 50 checks quebrados viraria 50 POSTs por minuto sem novidade
 // nenhuma — "desde quando" o backend calcula sozinho.
 type StatusReporter func(checkID string, ok bool, message string)
+
+// ExecutionReport não carrega métricas nem segredos; somente saúde e duração.
+type ExecutionReport struct {
+	CheckID  string
+	OK       bool
+	TimedOut bool
+	Duration time.Duration
+	At       time.Time
+}
+
+type ExecutionReporter func(ExecutionReport)
 
 // QueryStatsPusher encaminha estatísticas já agregadas por janela para o
 // endpoint de banco do Telvyn. Fica opcional para preservar checks legados.
@@ -244,6 +260,9 @@ func (r *Runtime) countRunning() int {
 	defer r.checksMu.Unlock()
 	return len(r.checks)
 }
+
+// ActiveCheckCount devolve quantos checks server-driven estão ativos agora.
+func (r *Runtime) ActiveCheckCount() int { return r.countRunning() }
 
 // ReloadServerDriven is the entrypoint for server-delivered check sets
 // (config.reload push). It implements KEEP-CURRENT-ON-EMPTY: a NEW, non-empty
@@ -449,6 +468,7 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			}
 		}
 		runCtx, cancel := context.WithTimeout(ctx, runTimeout)
+		startedAt := time.Now()
 		var metrics []*collectorv1.Metric
 		var queryStats *DatabaseQueryStats
 		var catalog *DatabaseCatalog
@@ -465,10 +485,12 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		}
 		runErr := runCtx.Err()
 		cancel()
+		duration := time.Since(startedAt)
 
 		if ctx.Err() != nil {
 			return
 		}
+		timedOut := runErr == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded)
 		if err != nil {
 			if failure, ok := any(c).(ExplainFailureProvider); ok {
 				r.pushExplain(c, failure.ExplainFailure(err))
@@ -477,17 +499,20 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			clog.Warn("check run error", "err", err, "consecutive", n, "run_timeout", runTimeout.String())
 			r.emitCheckError(c)
 			reportar(false, err.Error())
+			r.reportExecution(ExecutionReport{CheckID: c.ID(), OK: false, TimedOut: timedOut, Duration: duration, At: time.Now()})
 			return
 		}
-		if runErr == context.DeadlineExceeded {
+		if timedOut {
 			n := consecutiveErrors.Add(1)
 			clog.Warn("check run exceeded timeout", "consecutive", n, "run_timeout", runTimeout.String())
 			r.emitCheckError(c)
 			reportar(false, "sem resposta em "+runTimeout.String())
+			r.reportExecution(ExecutionReport{CheckID: c.ID(), OK: false, TimedOut: true, Duration: duration, At: time.Now()})
 			return
 		}
 		consecutiveErrors.Store(0)
 		reportar(true, "")
+		r.reportExecution(ExecutionReport{CheckID: c.ID(), OK: true, Duration: duration, At: time.Now()})
 		if queryStats != nil {
 			r.pushQueryStats(c.ID(), *queryStats)
 		}
@@ -602,6 +627,14 @@ func (r *Runtime) SetStatusReporter(f StatusReporter) {
 	r.mu.Unlock()
 }
 
+// SetExecutionReporter instala o consumidor dos eventos de execução usados
+// somente para observabilidade agregada do collector.
+func (r *Runtime) SetExecutionReporter(f ExecutionReporter) {
+	r.mu.Lock()
+	r.executionReporter = f
+	r.mu.Unlock()
+}
+
 // SetQueryStatsPusher instala o envio opcional de estatísticas por consulta.
 func (r *Runtime) SetQueryStatsPusher(f QueryStatsPusher) {
 	r.mu.Lock()
@@ -631,6 +664,15 @@ func (r *Runtime) reportStatus(checkID string, ok bool, message string) {
 		return
 	}
 	f(checkID, ok, message)
+}
+
+func (r *Runtime) reportExecution(report ExecutionReport) {
+	r.mu.Lock()
+	f := r.executionReporter
+	r.mu.Unlock()
+	if f != nil {
+		f(report)
+	}
 }
 
 func (r *Runtime) emitCheckError(c Check) {

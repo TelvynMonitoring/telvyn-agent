@@ -53,18 +53,18 @@ func oidPDU(name, value string) gosnmp.SnmpPDU {
 func TestCollectDeviceMetadata_MikroTikUsesIdentityOIDs(t *testing.T) {
 	d := &metadataDriver{
 		gets: map[string]gosnmp.SnmpPDU{
-			oidSysDescr:                   textPDU(oidSysDescr, "RouterOS 7.15"),
+			oidSysDescr:                   textPDU(oidSysDescr, "RouterOS CHR"),
 			oidSysObjectID:                oidPDU(oidSysObjectID, "1.3.6.1.4.1.14988.1"),
 			oidSysName:                    textPDU(oidSysName, "router-01"),
-			"1.3.6.1.4.1.14988.1.1.7.9.0": textPDU(".1.3.6.1.4.1.14988.1.1.7.9.0", "CCR2004-1G-12S+"),
-			"1.3.6.1.4.1.14988.1.1.7.3.0": textPDU(".1.3.6.1.4.1.14988.1.1.7.3.0", "ABC123"),
-			"1.3.6.1.4.1.14988.1.1.7.4.0": textPDU(".1.3.6.1.4.1.14988.1.1.7.4.0", "7.15"),
+		"1.3.6.1.4.1.14988.1.1.7.9.0": textPDU(".1.3.6.1.4.1.14988.1.1.7.9.0", "CCR2004-1G-12S+"),
+		"1.3.6.1.4.1.14988.1.1.7.3.0": textPDU(".1.3.6.1.4.1.14988.1.1.7.3.0", "ABC123"),
+		"1.3.6.1.4.1.14988.1.1.4.4.0": textPDU(".1.3.6.1.4.1.14988.1.1.4.4.0", "7.2.1"),
 		},
 		walks: map[string][]gosnmp.SnmpPDU{},
 	}
 	meta := LoadProfileForTest(t, "mikrotik-router").CollectDeviceMetadata(context.Background(), newClientWithDriver(d, "router:161"))
 
-	if !strings.EqualFold(meta["vendor"], "MikroTik") || meta["model"] != "CCR2004-1G-12S+" || meta["serial_number"] != "ABC123" || meta["version"] != "7.15" {
+	if !strings.EqualFold(meta["vendor"], "MikroTik") || meta["model"] != "CCR2004-1G-12S+" || meta["serial_number"] != "ABC123" || meta["version"] != "7.2.1" {
 		t.Fatalf("metadata MikroTik incompleta: %#v", meta)
 	}
 }
