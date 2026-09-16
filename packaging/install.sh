@@ -179,8 +179,8 @@ cp "$TMP_SHA" "${WORK_DIR}/${TARBALL}.sha256"
 
 # === User + dirs =======================================================
 # user de sistema sem shell e sem home — superfície de ataque mínima.
-if ! id -u ispwatch >/dev/null 2>&1; then
-    useradd --system --no-create-home --shell /usr/sbin/nologin ispwatch
+if ! id -u telvyn >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin telvyn
 fi
 mkdir -p "$ETC_DIR" "$LIB_DIR" "$LOG_DIR"
 
@@ -196,7 +196,7 @@ install -m 0755 -o root -g root "$EXTRACTED_DIR/ispwatch-agent" "$INSTALL_DIR/is
 install -m 0644 "$EXTRACTED_DIR/ispwatch-agent.service" "$UNIT_PATH"
 
 # === F2b: helper de atualização remota (privilegiado) ==================
-# O agente roda SEM privilégio (User=ispwatch) e não pode trocar o próprio
+# O agente roda SEM privilégio (User=telvyn) e não pode trocar o próprio
 # binário nem se reiniciar. A atualização é delegada ao gerenciador de pacotes;
 # quem APLICA o upgrade é um componente ROOT à parte — este helper. Fluxo:
 #   config-pull manda should_update → agente escreve /var/lib/ispwatch/update-requested
@@ -258,6 +258,11 @@ systemctl enable --now ispwatch-agent-update.path
 # Preserva o agent.env (token/config/toggles) — não passa pela reescrita abaixo.
 # Trocar o binário nunca altera a configuração do operador.
 if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
+    # A unit pode ter mudado de usuário entre versões. Ajusta ownership antes
+    # do restart para que o novo usuário consiga ler a configuração e usar o
+    # WAL/arquivos de estado sem tornar o processo privilegiado.
+    chown -R telvyn:telvyn "$LIB_DIR" "$LOG_DIR"
+    chown root:telvyn "$ETC_DIR" "$ENV_FILE" 2>/dev/null || true
     rm -rf "$WORK_DIR"
     systemctl daemon-reload
     systemctl restart ispwatch-agent.service
@@ -268,10 +273,10 @@ if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
 fi
 
 # Permissões finais dos diretórios.
-chown -R ispwatch:ispwatch "$LIB_DIR" "$LOG_DIR"
+chown -R telvyn:telvyn "$LIB_DIR" "$LOG_DIR"
 chmod 0700 "$LIB_DIR"
 chmod 0750 "$LOG_DIR"
-chown root:ispwatch "$ETC_DIR"
+chown root:telvyn "$ETC_DIR"
 chmod 0750 "$ETC_DIR"
 
 # Cleanup do work dir (o trap on_exit cobre os /tmp/ispwatch-install-*.*).
@@ -292,8 +297,10 @@ umask 077
     echo "ISPWATCH_AGENT_KIND=${ISPWATCH_AGENT_KIND}"
     echo "ISPWATCH_INSTALL_MODE=linux"
     echo "ISPWATCH_NODE_NAME=${HOSTNAME_VALUE}"
-    # Cursor dos logs (se ligados) fica sob o dir gravável do serviço; o default
-    # do binário (/var/lib/ispwatch-collector) cai fora do ReadWritePaths da unit.
+    # Fila durável de métricas/APM: payloads não confirmados sobrevivem ao
+    # restart do serviço e ficam no mesmo diretório persistente do agent.
+    echo "ISPWATCH_STATE_DIR=${LIB_DIR}"
+    # Cursor dos logs (se ligados) fica sob o dir gravável do serviço.
     echo "ISPWATCH_LOGS_CURSOR_PATH=${LIB_DIR}/log_cursors.json"
 } > "$ENV_FILE"
 
@@ -302,7 +309,7 @@ umask 077
 # instalador (já consumidas acima). Mantém o contrato "1 agente, toggles" sem
 # este script precisar conhecer cada capability — evita a defasagem que
 # quebrava a instalação quando o front ganhava um toggle novo.
-INSTALLER_VARS=" ISPWATCH_AGENT_VERSION ISPWATCH_GITHUB_REPO ISPWATCH_DOWNLOAD_BASE ISPWATCH_INSTALL_ONLY ISPWATCH_HOSTNAME ISPWATCH_ENROLL_TOKEN ISPWATCH_SITE ISPWATCH_DOCKER_INTEGRATION ISPWATCH_INGEST_URL ISPWATCH_INGEST_TOKEN ISPWATCH_AGENT_KIND ISPWATCH_NODE_NAME ISPWATCH_LOGS_CURSOR_PATH "
+INSTALLER_VARS=" ISPWATCH_AGENT_VERSION ISPWATCH_GITHUB_REPO ISPWATCH_DOWNLOAD_BASE ISPWATCH_INSTALL_ONLY ISPWATCH_HOSTNAME ISPWATCH_ENROLL_TOKEN ISPWATCH_SITE ISPWATCH_DOCKER_INTEGRATION ISPWATCH_INGEST_URL ISPWATCH_INGEST_TOKEN ISPWATCH_AGENT_KIND ISPWATCH_NODE_NAME ISPWATCH_STATE_DIR ISPWATCH_LOGS_CURSOR_PATH "
 for name in $(compgen -v); do
     case "$name" in
         ISPWATCH_*|COLLECTOR_LOG_LEVEL) ;;
@@ -313,11 +320,11 @@ for name in $(compgen -v); do
 done
 umask 022
 
-chown root:ispwatch "$ENV_FILE"
+chown root:telvyn "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
 
 # === Docker integration (opt-in) =======================================
-# ISPWATCH_DOCKER_INTEGRATION=true dá ao usuário `ispwatch` acesso ao socket
+# ISPWATCH_DOCKER_INTEGRATION=true dá ao usuário `telvyn` acesso ao socket
 # do Docker (/var/run/docker.sock) via grupo `docker`. Esse grupo é
 # root-equivalente no host (membros podem montar / como root via container);
 # por isso é opt-in explícito. Default OFF.
@@ -326,8 +333,8 @@ if [[ "${ISPWATCH_DOCKER_INTEGRATION:-false}" == "true" ]]; then
     # o operador instalar Docker depois, o grupo é o mesmo (gid pode mudar, mas
     # a pertinência permanece pelo nome).
     groupadd -f docker >/dev/null 2>&1 || true
-    usermod -aG docker ispwatch
-    echo "Integração Docker habilitada: usuário 'ispwatch' adicionado ao grupo 'docker'."
+    usermod -aG docker telvyn
+    echo "Integração Docker habilitada: usuário 'telvyn' adicionado ao grupo 'docker'."
     echo "AVISO de segurança: membros do grupo 'docker' têm acesso root-equivalente"
     echo "                    ao daemon Docker. Audite quem mais está no grupo."
 fi

@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ispwatch/collector/internal/clock"
 	"github.com/ispwatch/collector/internal/sendbuf"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -81,6 +82,12 @@ type CollectorRuntimeStats struct {
 	LastPollAt            string `json:"last_poll_at,omitempty"`
 	LastPollSuccessAt     string `json:"last_poll_success_at,omitempty"`
 	LastPollFailureAt     string `json:"last_poll_failure_at,omitempty"`
+	// AgentTime lets the backend measure clock offset without trusting a
+	// client-provided status flag. It is refreshed on every registration.
+	AgentTime string `json:"agent_time,omitempty"`
+	// NtpOffsetSeconds is optional because the host may not be able to reach
+	// any configured NTP server. The check never changes the system clock.
+	NtpOffsetSeconds *float64 `json:"ntp_offset_seconds,omitempty"`
 }
 
 // SetCollectorRuntimeStatsProvider liga o scheduler ao heartbeat sem criar
@@ -147,7 +154,7 @@ func NewIngestExporter(base, token, hostID, clusterName, version string, log *sl
 		version:        version,
 		client:         &http.Client{Timeout: 20 * time.Second},
 		log:            log.With("component", "ingest-exporter"),
-		metricsPending: sendbuf.New("host-metrics", 8<<20, log),
+		metricsPending: sendbuf.NewPersistent("host-metrics", 8<<20, sendbuf.DefaultDir(), log),
 	}
 }
 
@@ -252,20 +259,17 @@ func (e *IngestExporter) PostMetrics(ctx context.Context, metrics []*collectorv1
 	if err != nil {
 		return err
 	}
-	// Falha de rede/5xx retém o corpo pra reenvio no próximo lote (os pontos
-	// têm timestamp — chegar atrasado no VM não corrompe nada). 401/429
-	// descartam com aviso claro via sendbuf.
-	if e.metricsPending.Blocked() {
-		return nil
+	// O outbox é preenchido ANTES do POST. Assim, se o processo cair durante
+	// esta requisição ou enquanto estiver aguardando o próximo tick, o payload
+	// continua no bbolt e é reenviado no próximo boot. Os pontos têm timestamp,
+	// portanto chegar atrasado no VM não altera a série. 401/429 continuam sendo
+	// descartados com aviso claro via sendbuf.
+	if err := e.metricsPending.Offer(body, nil); err != nil {
+		return fmt.Errorf("queue metrics: %w", err)
 	}
-	e.metricsPending.Flush(ctx, func(fctx context.Context, b []byte) error {
+	return e.metricsPending.Flush(ctx, func(fctx context.Context, b []byte) error {
 		return e.PostRaw(fctx, "metrics", "application/json", b)
 	})
-	if err := e.PostRaw(ctx, "metrics", "application/json", body); err != nil {
-		e.metricsPending.Offer(body, err)
-		return err
-	}
-	return nil
 }
 
 // PostSnmpTrap encaminha um SNMP trap já parseado pro backend (noc_device_event).
@@ -776,8 +780,9 @@ func (e *IngestExporter) RegisterCollector(ctx context.Context, name string, cap
 		"capabilities":  capabilities,
 		"install_mode":  installMode,
 	}
+	runtime := CollectorRuntimeStats{}
 	if provider, ok := e.runtimeStatsProvider.Load().(func() CollectorRuntimeStats); ok {
-		runtime := provider()
+		runtime = provider()
 		queue := e.metricsPending.Snapshot()
 		runtime.PendingPayloads = int64(queue.Pending)
 		runtime.PendingBytes = int64(queue.Bytes)
@@ -785,8 +790,12 @@ func (e *IngestExporter) RegisterCollector(ctx context.Context, name string, cap
 		runtime.RetrySuccesses = queue.RetrySuccesses
 		runtime.DroppedPayloads = queue.DroppedTotal
 		runtime.IngestBlocked = queue.Blocked
-		payload["runtime"] = runtime
 	}
+	runtime.AgentTime = time.Now().UTC().Format(time.RFC3339Nano)
+	if offset, ok := clock.OffsetSeconds(ctx); ok {
+		runtime.NtpOffsetSeconds = &offset
+	}
+	payload["runtime"] = runtime
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.base+"/collector/register", bytes.NewReader(body))
 	if err != nil {

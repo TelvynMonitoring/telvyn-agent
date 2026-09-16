@@ -1,11 +1,58 @@
 package sendbuf
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 )
+
+func TestFreshOfferIsNotLoggedAsRetained(t *testing.T) {
+	var logs bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	q := New("test", 1<<20, log)
+
+	if err := q.Offer([]byte("new-payload"), nil); err != nil {
+		t.Fatalf("enfileirar payload novo: %v", err)
+	}
+	if err := q.Flush(context.Background(), func(_ context.Context, _ []byte) error { return nil }); err != nil {
+		t.Fatalf("enviar payload novo: %v", err)
+	}
+	if strings.Contains(logs.String(), "payload retido reenviado com sucesso") {
+		t.Fatalf("payload novo não deveria ser registrado como retido: %s", logs.String())
+	}
+}
+
+// Payloads retidos precisam sobreviver ao processo que os enfileirou. Isso
+// cobre a queda de backend seguida de restart do agent.
+func TestPersistentQueueSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	q := NewPersistent("test", 1<<20, dir, nil)
+	q.Offer([]byte("metric-a"), errors.New("connection refused"))
+	if got := q.Snapshot().Pending; got != 1 {
+		t.Fatalf("esperava 1 payload pendente antes do restart, veio %d", got)
+	}
+	if err := q.Close(); err != nil {
+		t.Fatalf("fechar fila: %v", err)
+	}
+
+	q = NewPersistent("test", 1<<20, dir, nil)
+	defer q.Close()
+	var sent []string
+	q.Flush(context.Background(), func(_ context.Context, body []byte) error {
+		sent = append(sent, string(body))
+		return nil
+	})
+	if len(sent) != 1 || sent[0] != "metric-a" {
+		t.Fatalf("esperava reenvio do payload persistido, veio %v", sent)
+	}
+	if got := q.Snapshot().Pending; got != 0 {
+		t.Fatalf("esperava fila vazia após reenvio, veio %d", got)
+	}
+}
 
 // Falha de rede retém; flush posterior reenvia na ordem.
 func TestRetainAndFlush(t *testing.T) {

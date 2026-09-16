@@ -51,7 +51,7 @@ func New(client *http.Client, baseURL, token, agentVersion string, log *slog.Log
 		token:        token,
 		agentVersion: agentVersion,
 		log:          log.With("component", "apm-stats-forwarder"),
-		pending:      sendbuf.New("apm-stats", maxPendingBytes, log),
+		pending:      sendbuf.NewPersistent("apm-stats", maxPendingBytes, sendbuf.DefaultDir(), log),
 	}
 	f.enabled.Store(true)
 	return f
@@ -60,9 +60,9 @@ func New(client *http.Client, baseURL, token, agentVersion string, log *slog.Log
 func (f *Forwarder) SetEnabled(enabled bool) { f.enabled.Store(enabled) }
 
 // Send converte os grupos em ApmStatsPayload e faz POST. No-op se vazio.
-// Falha de rede/5xx NÃO perde o bucket: o corpo fica retido (sendbuf) e é
-// reenviado no próximo tick. 401/429 descartam com aviso claro (retry não
-// conserta token revogado nem franquia estourada).
+// O bucket entra no outbox antes do POST, portanto falhas de rede/5xx e restart
+// não o perdem. 401/429 descartam com aviso claro (retry não conserta token
+// revogado nem franquia estourada).
 func (f *Forwarder) Send(ctx context.Context, groups []concentrator.GroupedStats) error {
 	if !f.enabled.Load() {
 		return nil
@@ -74,12 +74,12 @@ func (f *Forwarder) Send(ctx context.Context, groups []concentrator.GroupedStats
 	if err != nil {
 		return fmt.Errorf("marshal apm stats: %w", err)
 	}
-	if f.pending.Blocked() {
-		return nil // cool-down de token/franquia — o aviso claro já saiu no log
+	// Enfileira antes do POST para que um restart durante a requisição não
+	// perca o bucket. O item só sai depois de uma resposta 2xx.
+	if err := f.pending.Offer(body, nil); err != nil {
+		return fmt.Errorf("queue apm stats: %w", err)
 	}
-	f.pending.Flush(ctx, f.post)
-	if err := f.post(ctx, body); err != nil {
-		f.pending.Offer(body, err)
+	if err := f.pending.Flush(ctx, f.post); err != nil {
 		return fmt.Errorf("post apm stats: %w", err)
 	}
 	f.log.Debug("apm stats enviados", "groups", len(groups), "bytes", len(body))

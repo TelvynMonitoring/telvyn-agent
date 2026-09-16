@@ -6,8 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=ispwatch
-Group=ispwatch
+User=telvyn
+Group=telvyn
 # Config vem do EnvironmentFile (modelo certless/Bearer: ISPWATCH_INGEST_URL +
 # ISPWATCH_INGEST_TOKEN + ISPWATCH_AGENT_KIND + toggles). O '-' torna a ausência
 # não-fatal. O binário não tem flag --config; toda config é por env var.

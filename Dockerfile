@@ -85,6 +85,9 @@ RUN apk add --no-cache --virtual .trivy-build wget tar \
 
 COPY --from=build /out/collector /usr/local/bin/collector
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+# O repositório pode ser checkoutado com CRLF no Windows; o shebang precisa
+# terminar em LF para o tini executar o script dentro do Alpine.
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh
 
 # O check icmp.ping abre socket ICMP cru (pinger.SetPrivileged(true)) e exige
 # CAP_NET_RAW EFETIVO. Como a imagem roda com usuário não-root, a capability
@@ -97,9 +100,12 @@ RUN apk add --no-cache --virtual .cap-build libcap \
  && setcap cap_net_raw+eip /usr/local/bin/collector \
  && apk del .cap-build
 
-USER ispwatch:ispwatch
+# install-collector.sh mounts certs read-only at this path. The state volume is
+# explicit so the certless outbox survives replacement of a Docker container.
+RUN mkdir -p /var/lib/ispwatch \
+ && chown -R ispwatch:ispwatch /var/lib/ispwatch
+VOLUME ["/etc/ispwatch/certs", "/var/lib/ispwatch"]
 
-# install-collector.sh mounts certs read-only at this path.
-VOLUME ["/etc/ispwatch/certs"]
+USER ispwatch:ispwatch
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]
