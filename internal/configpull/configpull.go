@@ -265,7 +265,7 @@ func pullOnce(
 		// Injeta target pros checks remotos (snmp.*, icmp.*) — preferindo
 		// external_id (IP real) sobre hostname. Esse fallback também existia
 		// no path legado (CollectorServiceImpl.loadChecksFromDb).
-		if (startsWith(p.CheckType, "snmp.") || startsWith(p.CheckType, "icmp.")) && cb.Params != nil {
+		if (startsWith(p.CheckType, "snmp.") || startsWith(p.CheckType, "icmp.") || startsWith(p.CheckType, "lldp.")) && cb.Params != nil {
 			if _, has := cb.Params["target"]; !has {
 				target := p.ExternalId
 				if target == "" {

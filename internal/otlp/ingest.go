@@ -112,6 +112,8 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return modules["LOGS"]
 	case "snmptrap", "device-metadata", "ncm/config":
 		return modules["REDE_SNMP"]
+	case "topology":
+		return modules["REDE_SNMP"]
 	case "sbom":
 		return modules["VULNERABILIDADES"]
 	case "k8s/events", "k8s/pod-languages":
@@ -597,6 +599,23 @@ func (e *IngestExporter) PostCheckStatus(ctx context.Context, checkID string, ok
 		return err
 	}
 	return e.PostRaw(ctx, "check-status", "application/json", body)
+}
+
+// PostTopology envia um lote LLDP/CDP em JSON protobuf para o gateway HTTP.
+// A topologia não passa pelo canal gRPC: o agente de produção usa somente o
+// transporte certless/Bearer de ingestão.
+func (e *IngestExporter) PostTopology(ctx context.Context, report *collectorv1.TopologyReport) error {
+	if report == nil || len(report.GetEdges()) == 0 {
+		return nil
+	}
+	if collectorID, _ := e.collectorID.Load().(string); collectorID != "" && report.GetCollectorId() == "" {
+		report.CollectorId = collectorID
+	}
+	body, err := protojson.Marshal(report)
+	if err != nil {
+		return err
+	}
+	return e.PostRaw(ctx, "topology", "application/json", body)
 }
 
 // PostDeviceMetadata envia a identidade do device (metadata.device) pro gateway,
