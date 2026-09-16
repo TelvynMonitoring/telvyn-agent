@@ -44,6 +44,12 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # O estado durável é hostPath; fsGroup deixa o diretório criado pelo
+      # kubelet gravável pelo usuário 10001 do agent sem rodar o collector como
+      # root no modo padrão.
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: agent
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
@@ -69,6 +75,10 @@ spec:
               value: {{ required "values.ingest.url é obrigatório (modo certless)" .Values.ingest.url | quote }}
             - name: ISPWATCH_INGEST_TOKEN
               value: {{ required "values.ingest.token é obrigatório (modo certless)" .Values.ingest.token | quote }}
+            # Fila durável de métricas/APM; o volume usa o estado do nó, não
+            # emptyDir, para sobreviver à recriação do pod.
+            - name: ISPWATCH_STATE_DIR
+              value: "/var/lib/ispwatch-collector"
             # Coleta de k8s no modo ingest: registra o nó + roda o kubelet
             # check local (pods/containers). O SA token é montado em
             # /var/run/secrets/.../token; kubelet self-signed → insecure.
@@ -205,7 +215,9 @@ spec:
           hostPath:
             path: /sys
         - name: wal
-          emptyDir: {}
+          hostPath:
+            path: /var/lib/ispwatch-collector
+            type: DirectoryOrCreate
         - name: tmp
           emptyDir: {}
         - name: machineid

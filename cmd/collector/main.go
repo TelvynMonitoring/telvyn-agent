@@ -157,11 +157,27 @@ func runIngestMode(ingestURL string) {
 	// Métricas do próprio host (CPU/mem/disco/rede) → OTLP /metrics.
 	out := make(chan []*collectorv1.Metric, 256)
 	selfmetrics.Start(ctx, log, out, hostID, selfmetrics.DefaultInterval)
+	metricsSenderDone := make(chan struct{})
 	go func() {
+		defer close(metricsSenderDone)
 		for {
 			select {
 			case <-ctx.Done():
-				return
+				// Os produtores param quando ctx é cancelado, mas alguns lotes
+				// podem já estar no canal. Drena-os com um contexto independente
+				// para que cada lote entre no outbox durável antes do processo sair.
+				flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				for {
+					select {
+					case ms := <-out:
+						if err := exporter.PostMetrics(flushCtx, ms); err != nil {
+							log.Warn("ingest metrics failed during shutdown", "err", err, "count", len(ms))
+						}
+					default:
+						cancel()
+						return
+					}
+				}
 			case ms := <-out:
 				if err := exporter.PostMetrics(ctx, ms); err != nil {
 					log.Warn("ingest metrics failed", "err", err, "count", len(ms))
@@ -452,6 +468,7 @@ func runIngestMode(ingestURL string) {
 		}()
 	}
 	<-ctx.Done()
+	<-metricsSenderDone
 }
 
 // startIngestPodLogs monta o pipeline de logs de pod no modo ingest: um

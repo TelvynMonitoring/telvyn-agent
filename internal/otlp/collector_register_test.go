@@ -66,4 +66,7 @@ func TestRegisterCollectorReportsSanitizedRuntimeSnapshot(t *testing.T) {
 	if runtime["pending_payloads"] != float64(0) || runtime["ingest_blocked"] != false {
 		t.Fatalf("fila inesperada: %v", runtime)
 	}
+	if raw, ok := runtime["agent_time"].(string); !ok || raw == "" {
+		t.Fatalf("agent_time ausente: %v", runtime)
+	}
 }

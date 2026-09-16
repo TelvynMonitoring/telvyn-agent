@@ -110,7 +110,7 @@ func newDockerHostCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 	if _, err := cli.Ping(pingCtx); err != nil {
 		_ = cli.Close()
 		// Mensagem inclui hint pro operador habilitar via install.sh.
-		return nil, fmt.Errorf("docker.host: ping failed (%w); run install.sh with ISPWATCH_DOCKER_INTEGRATION=true to add ispwatch user to docker group", err)
+		return nil, fmt.Errorf("docker.host: ping failed (%w); run install.sh with ISPWATCH_DOCKER_INTEGRATION=true to add telvyn user to docker group", err)
 	}
 
 	interval := cfg.GetInterval().AsDuration()
@@ -183,9 +183,9 @@ func (d *dockerHost) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
 	sem := semaphore.NewWeighted(cap)
 
 	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		perCtr   []*collectorv1.Metric
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		perCtr []*collectorv1.Metric
 	)
 	for _, c := range containers {
 		if c.State != container.StateRunning {
