@@ -21,6 +21,16 @@ type countingCheck struct {
 	runFunc  func(ctx context.Context) ([]*collectorv1.Metric, error)
 }
 
+type closableCountingCheck struct {
+	*countingCheck
+	closed atomic.Bool
+}
+
+func (c *closableCountingCheck) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
 func (c *countingCheck) ID() string              { return c.id }
 func (c *countingCheck) Interval() time.Duration { return c.interval }
 func (c *countingCheck) Tags() map[string]string { return nil }
@@ -64,6 +74,26 @@ func TestRuntime_Reload_StartsCheck(t *testing.T) {
 
 	if got := target.runs.Load(); got < 2 {
 		t.Errorf("expected >= 2 runs, got %d", got)
+	}
+}
+
+func TestRuntime_Reload_ClosesResourceCheck(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reg := NewRegistry()
+	target := &closableCountingCheck{countingCheck: &countingCheck{
+		id: "closer", interval: 20 * time.Millisecond,
+	}}
+	reg.Register("closer", func(_ *collectorv1.CheckConfig) (Check, error) { return target, nil })
+
+	rt, _ := makeRuntime(ctx, reg)
+	rt.Reload([]*collectorv1.CheckConfig{cfgFor("closer", "closer", 20*time.Millisecond)})
+	time.Sleep(40 * time.Millisecond)
+	rt.Reload(nil)
+
+	if !target.closed.Load() {
+		t.Fatal("resource-owning check must be closed when its generation stops")
 	}
 }
 

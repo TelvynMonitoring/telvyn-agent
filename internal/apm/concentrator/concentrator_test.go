@@ -90,6 +90,34 @@ func TestConcentrator_AgrupaPorHTTPStatusEResource(t *testing.T) {
 	}
 }
 
+func TestConcentrator_SeparatesDatabaseMonitorIdentity(t *testing.T) {
+	c := New(nil)
+	base := int64(1_700_000_000_000_000_000)
+	c.Add(span("postgres", base, base+ms, 1, map[string]string{
+		"db.system":             "postgresql",
+		DatabaseMonitorIDAttr: "monitor-a",
+	}))
+	c.Add(span("postgres", base, base+ms, 1, map[string]string{
+		"db.system":             "postgresql",
+		DatabaseMonitorIDAttr: "monitor-b",
+	}))
+
+	out := c.Flush()
+	if len(out) != 2 {
+		t.Fatalf("expected separate groups for monitors, got %d", len(out))
+	}
+	seen := map[string]bool{}
+	for _, group := range out {
+		seen[group.DatabaseMonitorID] = true
+		if group.Hits != 1 || group.DbSystem != "postgresql" {
+			t.Fatalf("unexpected group: %+v", group)
+		}
+	}
+	if !seen["monitor-a"] || !seen["monitor-b"] {
+		t.Fatalf("monitor identities missing from groups: %#v", seen)
+	}
+}
+
 func quantile(t *testing.T, encoded []byte, q float64) float64 {
 	t.Helper()
 	if len(encoded) == 0 {

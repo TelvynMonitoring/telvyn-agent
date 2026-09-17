@@ -32,6 +32,11 @@ const (
 // encaminhado em span cru — só alimenta o concentrator.
 const SourceAttr = "telvyn.source"
 
+// DatabaseMonitorIDAttr links an inbound PostgreSQL eBPF span to the immutable
+// database monitor configured in the portal. It is intentionally absent for
+// generic database spans and collection probes.
+const DatabaseMonitorIDAttr = "telvyn.database_monitor_id"
+
 // GroupedStats é o snapshot de um grupo num bucket, pronto pro forwarder
 // converter em ApmGroupedStats (proto). Os sketches já vêm serializados.
 type GroupedStats struct {
@@ -48,6 +53,7 @@ type GroupedStats struct {
 	TopLevel            bool
 	Source              string // "otlp" (instrumentado) | "ebpf" (zero-código)
 	DbSystem            string // protocolo de datastore detectado (eBPF): postgresql/redis/… ou ""
+	DatabaseMonitorID   string // monitor de banco que recebeu o workload eBPF; "" quando não atribuído
 	Namespace           string // namespace do pod (serviços eBPF); "" se desconhecido
 	OkSummary           []byte // DDSketch (nanos) das latências OK; nil se vazio
 	ErrorSummary        []byte // DDSketch (nanos) das latências de erro; nil se vazio
@@ -62,6 +68,7 @@ type bucketKey struct {
 	httpStatus int32
 	source     string
 	dbSystem   string
+	databaseMonitorID string
 }
 
 type groupStats struct {
@@ -112,6 +119,7 @@ func (c *Concentrator) Add(s *collectorv1.Span) {
 		httpStatus: httpStatusOf(s.Attributes),
 		source:     spanSource(s),
 		dbSystem:   s.Attributes["db.system"],
+		databaseMonitorID: s.Attributes[DatabaseMonitorIDAttr],
 	}
 	isErr := s.StatusCode == 2 // OTLP ERROR
 
@@ -171,6 +179,7 @@ func (c *Concentrator) Flush() []GroupedStats {
 				TopLevel:            g.topLevel,
 				Source:              k.source,
 				DbSystem:            k.dbSystem,
+				DatabaseMonitorID:   k.databaseMonitorID,
 				Namespace:           g.namespace,
 				OkSummary:           encodeSketch(g.okSketch),
 				ErrorSummary:        encodeSketch(g.errSketch),

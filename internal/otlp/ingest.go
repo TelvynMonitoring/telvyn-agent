@@ -133,6 +133,8 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return modules["BANCOS_DADOS"]
 	case "db/catalog":
 		return modules["BANCOS_DADOS"]
+	case "db/diagnostics":
+		return modules["BANCOS_DADOS"]
 	case "db/explain":
 		return modules["BANCOS_DADOS"]
 	default:
@@ -431,6 +433,67 @@ func (e *IngestExporter) PostDatabaseCatalog(ctx context.Context, payload Databa
 		return err
 	}
 	return e.PostRaw(ctx, "db/catalog", "application/json", body)
+}
+
+// DatabaseDiagnosticsPayload é um retrato limitado da atividade do banco.
+// Ao contrário de métricas, seus itens permanecem em PostgreSQL no backend e
+// não criam uma série por sessão, lock ou consulta no VictoriaMetrics.
+type DatabaseDiagnosticsPayload struct {
+	DBServer     string                        `json:"db_server"`
+	DBName       string                        `json:"db_name"`
+	BloatEnabled bool                          `json:"bloat_enabled"`
+	Capabilities map[string]string             `json:"capabilities"`
+	Sessions     []DatabaseDiagnosticsSession  `json:"sessions"`
+	Blocking     []DatabaseDiagnosticsBlocking `json:"blocking"`
+	Waits        []DatabaseDiagnosticsWait     `json:"waits"`
+	Bloat        []DatabaseDiagnosticsBloat    `json:"bloat"`
+	Errors       []string                      `json:"errors,omitempty"`
+}
+
+type DatabaseDiagnosticsSession struct {
+	PID             int64   `json:"pid"`
+	User            string  `json:"user"`
+	Application     string  `json:"application"`
+	Client          string  `json:"client"`
+	State           string  `json:"state"`
+	WaitType        string  `json:"wait_type"`
+	WaitEvent       string  `json:"wait_event"`
+	QueryStart      string  `json:"query_start"`
+	DurationSeconds float64 `json:"duration_seconds"`
+}
+
+type DatabaseDiagnosticsBlocking struct {
+	BlockedPID   int64  `json:"blocked_pid"`
+	BlockingPID  int64  `json:"blocking_pid"`
+	BlockedUser  string `json:"blocked_user"`
+	BlockingUser string `json:"blocking_user"`
+}
+
+type DatabaseDiagnosticsWait struct {
+	WaitType  string `json:"wait_type"`
+	WaitEvent string `json:"wait_event"`
+	Count     int64  `json:"count"`
+}
+
+type DatabaseDiagnosticsBloat struct {
+	SchemaName     string  `json:"schema_name"`
+	TableName      string  `json:"table_name"`
+	TotalSizeBytes int64   `json:"total_size_bytes"`
+	DeadBytes      int64   `json:"dead_bytes"`
+	DeadPercent    float64 `json:"dead_percent"`
+	FreeBytes      int64   `json:"free_bytes"`
+	FreePercent    float64 `json:"free_percent"`
+}
+
+func (e *IngestExporter) PostDatabaseDiagnostics(ctx context.Context, payload DatabaseDiagnosticsPayload) error {
+	if payload.DBServer == "" || payload.DBName == "" {
+		return fmt.Errorf("database diagnostics: db_server e db_name são obrigatórios")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return e.PostRaw(ctx, "db/diagnostics", "application/json", body)
 }
 
 // DatabaseExplainPayload é o resultado de uma solicitação pontual de plano.

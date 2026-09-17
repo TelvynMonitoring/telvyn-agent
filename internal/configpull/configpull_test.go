@@ -8,8 +8,27 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
+
+type recordingApplier struct{}
+
+func (recordingApplier) ApplyDelta(added []*collectorv1.CheckConfig, deletedIDs []string) (int, int) {
+	return len(added), len(deletedIDs)
+}
+
+type recordingPostgresTargets struct {
+	added   []*collectorv1.CheckConfig
+	deleted []string
+}
+
+func (r *recordingPostgresTargets) ApplyPostgresServerDelta(added []*collectorv1.CheckConfig, deletedIDs []string) {
+	r.added = append([]*collectorv1.CheckConfig(nil), added...)
+	r.deleted = append([]string(nil), deletedIDs...)
+}
 
 func TestExecuteSnmpTest_DeliversSanitizedResult(t *testing.T) {
 	resultReceived := make(chan map[string]any, 1)
@@ -58,5 +77,45 @@ func TestExecuteSnmpTest_DeliversSanitizedResult(t *testing.T) {
 		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("resultado contém segredo/credencial %q: %s", secret, encoded)
 		}
+	}
+}
+
+func TestPullOnce_MirrorsPostgresServerDeltaToTargetRegistry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"version": 1,
+			"added_or_updated": []map[string]any{{
+				"id":               "check-a",
+				"check_type":       "postgres.server",
+				"host_id":          7,
+				"params":           "{}",
+				"static_tags":      `{"db_monitor_id":"monitor-a","db_server":"192.0.2.15","db_port":5432}`,
+				"interval_seconds": 60,
+			}},
+			"deleted_ids": []string{"check-deleted"},
+		})
+	}))
+	defer server.Close()
+
+	var since atomic.Int64
+	targets := &recordingPostgresTargets{}
+	err := pullOnce(context.Background(), server.Client(), Config{
+		Endpoint:        server.URL,
+		CollectorID:     "collector-a",
+		TenantID:        "tenant-a",
+		PostgresTargets: targets,
+	}, &since, recordingApplier{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("pullOnce: %v", err)
+	}
+	if len(targets.added) != 1 {
+		t.Fatalf("target registry added count = %d, want 1", len(targets.added))
+	}
+	got := targets.added[0]
+	if got.GetCheckType() != "postgres.server" || got.GetStaticTags()["db_monitor_id"] != "monitor-a" {
+		t.Fatalf("target registry received wrong config: %+v", got)
+	}
+	if len(targets.deleted) != 1 || targets.deleted[0] != "check-deleted" {
+		t.Fatalf("target registry deleted = %#v", targets.deleted)
 	}
 }

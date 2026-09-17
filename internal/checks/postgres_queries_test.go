@@ -62,3 +62,10 @@ func TestPostgresQueries_IsRegistered(t *testing.T) {
 		t.Fatal("postgres.queries must be registered in Default registry")
 	}
 }
+
+func TestSanitizeQueryText_RedactsDollarQuotedLiterals(t *testing.T) {
+	got := sanitizeQueryText("SELECT $$customer@example.test$$, $token$secret-42$token$")
+	if got != "SELECT ?, ?" {
+		t.Fatalf("dollar-quoted values must be redacted, got %q", got)
+	}
+}

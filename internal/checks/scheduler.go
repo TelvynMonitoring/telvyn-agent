@@ -90,6 +90,9 @@ type Runtime struct {
 	// catalogPusher recebe snapshots estruturais de bancos. A falha no envio
 	// não transforma uma coleta local bem-sucedida em falha do check.
 	catalogPusher CatalogPusher
+	// diagnosticsPusher recebe sessões, bloqueios e waits fora do caminho de
+	// métricas, evitando alta cardinalidade no VictoriaMetrics.
+	diagnosticsPusher DiagnosticsPusher
 	// explainPusher recebe o resultado de uma solicitação pontual de EXPLAIN.
 	// A falha no envio mantém a solicitação elegível para retry no próximo ciclo.
 	explainPusher ExplainPusher
@@ -120,6 +123,9 @@ type QueryStatsPusher func(context.Context, DatabaseQueryStats) error
 
 // CatalogPusher encaminha um snapshot de metadados estruturais do banco.
 type CatalogPusher func(context.Context, DatabaseCatalog) error
+
+// DiagnosticsPusher encaminha um retrato operacional limitado de um banco.
+type DiagnosticsPusher func(context.Context, DatabaseDiagnostics) error
 
 // ExplainPusher encaminha um plano de execução produzido pelo Agent.
 type ExplainPusher func(context.Context, DatabaseExplainPlan) error
@@ -397,6 +403,16 @@ func (r *Runtime) runOneCheck(ctx context.Context, c Check) {
 //   - timeout per-run, circuit-break por N erros consecutivos
 func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 	clog := r.log.With("check_id", c.ID())
+	// Checks que mantêm conexões ou sockets precisam liberá-los quando uma
+	// configuração é substituída ou removida. O contrato Check permanece
+	// mínimo; Close continua opcional para não afetar os checks puros.
+	defer func() {
+		if closer, ok := any(c).(interface{ Close() error }); ok {
+			if err := closer.Close(); err != nil {
+				clog.Warn("checks: close failed", "err", err)
+			}
+		}
+	}()
 
 	interval := c.Interval()
 	if interval <= 0 {
@@ -474,6 +490,7 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		var metrics []*collectorv1.Metric
 		var queryStats *DatabaseQueryStats
 		var catalog *DatabaseCatalog
+		var diagnostics *DatabaseDiagnostics
 		var explain *DatabaseExplainPlan
 		var err error
 		if explainCheck, ok := any(c).(ExplainCheck); ok {
@@ -482,6 +499,8 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			queryStats, err = queryCheck.RunQueryStats(runCtx)
 		} else if catalogCheck, ok := any(c).(CatalogCheck); ok {
 			catalog, err = catalogCheck.RunCatalog(runCtx)
+		} else if diagnosticsCheck, ok := any(c).(DiagnosticsCheck); ok {
+			diagnostics, err = diagnosticsCheck.RunDiagnostics(runCtx)
 		} else {
 			metrics, err = c.Run(runCtx)
 		}
@@ -522,6 +541,9 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		}
 		if catalog != nil {
 			r.pushCatalog(c.ID(), *catalog)
+		}
+		if diagnostics != nil {
+			r.pushDiagnostics(c.ID(), *diagnostics)
 		}
 		if explain != nil {
 			r.pushExplain(c, *explain)
@@ -572,6 +594,23 @@ func (r *Runtime) pushCatalog(checkID string, catalog DatabaseCatalog) {
 		defer cancel()
 		if err := pusher(ctx, catalog); err != nil {
 			r.log.Warn("postgres catalog: envio falhou", "check_id", checkID, "err", err)
+		}
+	}()
+}
+
+func (r *Runtime) pushDiagnostics(checkID string, diagnostics DatabaseDiagnostics) {
+	r.mu.Lock()
+	pusher := r.diagnosticsPusher
+	parent := r.parent
+	r.mu.Unlock()
+	if pusher == nil || parent == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+		defer cancel()
+		if err := pusher(ctx, diagnostics); err != nil {
+			r.log.Warn("postgres diagnostics: envio falhou", "check_id", checkID, "err", err)
 		}
 	}()
 }
@@ -651,6 +690,13 @@ func (r *Runtime) SetQueryStatsPusher(f QueryStatsPusher) {
 func (r *Runtime) SetCatalogPusher(f CatalogPusher) {
 	r.mu.Lock()
 	r.catalogPusher = f
+	r.mu.Unlock()
+}
+
+// SetDiagnosticsPusher instala o envio opcional do retrato operacional.
+func (r *Runtime) SetDiagnosticsPusher(f DiagnosticsPusher) {
+	r.mu.Lock()
+	r.diagnosticsPusher = f
 	r.mu.Unlock()
 }
 

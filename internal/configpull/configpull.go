@@ -40,6 +40,13 @@ type Applier interface {
 	ApplyDelta(added []*collectorv1.CheckConfig, deletedIDs []string) (int, int)
 }
 
+// PostgresTargetRegistry receives the same authoritative delta applied to the
+// scheduler. The eBPF bridge uses it to link only configured postgres.server
+// endpoints to a database monitor; configpull stays independent of eBPF.
+type PostgresTargetRegistry interface {
+	ApplyPostgresServerDelta(added []*collectorv1.CheckConfig, deletedIDs []string)
+}
+
 // Config controla o cliente.
 type Config struct {
 	Endpoint     string        // base URL do servidor (ex: https://quarkus:8444)
@@ -64,6 +71,9 @@ type Config struct {
 	// Recebe a política autoritativa de módulos em todo poll. O callback deve
 	// atualizar gates locais de coleta/ingest sem bloquear o loop.
 	PolicyChanged func([]string)
+	// PostgresTargets mirrors postgres.server configuration into the eBPF
+	// monitor registry. Nil preserves the ordinary checks-only path.
+	PostgresTargets PostgresTargetRegistry
 }
 
 // Run inicia o loop em foreground (bloqueante). Chamar em goroutine.
@@ -288,6 +298,9 @@ func pullOnce(
 	}
 
 	added, removed := applier.ApplyDelta(cfgs, r.DeletedIds)
+	if cfg.PostgresTargets != nil {
+		cfg.PostgresTargets.ApplyPostgresServerDelta(cfgs, r.DeletedIds)
+	}
 
 	// NDM Fase 2 — registra o conjunto COMPLETO de perfis SNMP custom (replace
 	// atômico do overlay dinâmico). r.SnmpProfiles == nil ⇒ backend antigo não
