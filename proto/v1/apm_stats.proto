@@ -41,4 +41,5 @@ message ApmGroupedStats {
   string source = 13;         // origem: "otlp" (instrumentado) | "ebpf" (zero-código). Default "otlp".
   string db_system = 14;      // protocolo de datastore detectado pelo eBPF (postgresql/redis/…); "" se não-DB.
   string namespace = 15;      // namespace do pod (serviços eBPF) → tela trata como pod K8s real. "" se desconhecido.
+  string database_monitor_id = 16; // id imutável do monitor PostgreSQL; vazio quando o span não é workload atribuído.
 }

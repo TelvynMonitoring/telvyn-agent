@@ -141,6 +141,11 @@ const (
 	sqlLocksWaiting = `SELECT count(*)::BIGINT FROM pg_locks WHERE NOT granted`
 
 	sqlDatabaseSize = `SELECT pg_database_size(current_database())::BIGINT`
+
+	// Tempo desde o último boot do processo PostgreSQL. É uma medida do
+	// servidor, não do banco lógico, mas a mesma instância pode atender vários
+	// bancos e a informação é útil para correlacionar resets de contadores.
+	sqlUptimeSeconds = `SELECT EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time()))::FLOAT8`
 )
 
 // newPostgresServerCheck é a Factory pública registrada em init() para
@@ -215,12 +220,12 @@ func (c *postgresServer) Close() error {
 }
 
 // Run executa as queries sequencialmente (pra preservar pool MaxConns=2 sem
-// contenção) e emite até 14 métricas. Best-effort: erro em uma query
+// contenção) e emite até 15 métricas. Best-effort: erro em uma query
 // individual loga e segue — outras métricas ainda são emitidas. Erro só é
 // retornado se ctx cancelar.
 func (c *postgresServer) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
 	now := timestamppb.Now()
-	out := make([]*collectorv1.Metric, 0, 14)
+	out := make([]*collectorv1.Metric, 0, 15)
 
 	queryInt64 := func(sql string) (int64, bool) {
 		qctx, cancel := context.WithTimeout(ctx, postgresQueryTimeout)
@@ -284,6 +289,9 @@ func (c *postgresServer) Run(ctx context.Context) ([]*collectorv1.Metric, error)
 	}
 	if v, ok := queryInt64(sqlDatabaseSize); ok {
 		out = append(out, c.metric(now, "postgres.database_size_bytes", float64(v)))
+	}
+	if v, ok := queryFloat64(sqlUptimeSeconds); ok {
+		out = append(out, c.metric(now, "postgres.uptime_seconds", v))
 	}
 
 	if err := ctx.Err(); err != nil {

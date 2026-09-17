@@ -34,6 +34,7 @@ func TestForwarder_SendMontaPayloadEHeaders(t *testing.T) {
 		Errors:              1,
 		DurationSumNano:     100,
 		HTTPStatusCode:      200,
+		DatabaseMonitorID:   "monitor-a",
 	}}
 	if err := f.Send(context.Background(), groups); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -59,6 +60,9 @@ func TestForwarder_SendMontaPayloadEHeaders(t *testing.T) {
 	if gs.Hits != 5 || gs.Errors != 1 || gs.Service != "svc" || gs.HttpStatusCode != 200 {
 		t.Errorf("grouped stats errado: %+v", gs)
 	}
+	if gs.DatabaseMonitorId != "monitor-a" {
+		t.Errorf("databaseMonitorId = %q", gs.DatabaseMonitorId)
+	}
 	if payload.Buckets[0].DurationNano != int64(concentrator.BucketDuration) {
 		t.Errorf("durationNano = %d", payload.Buckets[0].DurationNano)
 	}
@@ -68,6 +72,16 @@ func TestForwarder_SendVazioNoOp(t *testing.T) {
 	f := New(nil, "http://nao-usado", "t", "v", nil)
 	if err := f.Send(context.Background(), nil); err != nil {
 		t.Fatalf("Send vazio devia ser no-op: %v", err)
+	}
+}
+
+func TestApmGroupedStats_DatabaseMonitorIDContract(t *testing.T) {
+	field := (&collectorv1.ApmGroupedStats{}).ProtoReflect().Descriptor().Fields().ByName("database_monitor_id")
+	if field == nil {
+		t.Fatal("database_monitor_id field missing from protobuf descriptor")
+	}
+	if got := int(field.Number()); got != 16 {
+		t.Fatalf("database_monitor_id field number = %d, want 16", got)
 	}
 }
 

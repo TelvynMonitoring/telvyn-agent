@@ -25,6 +25,7 @@ import (
 
 	"inet.af/netaddr"
 
+	"github.com/ispwatch/collector/internal/apm/concentrator"
 	"github.com/ispwatch/collector/internal/ebpf/l7"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
@@ -85,6 +86,10 @@ func (p *parsersByConn) mysqlFor(k connKey) *l7.MysqlParser {
 type connInfo struct {
 	dst       netaddr.IPPort
 	actualDst netaddr.IPPort
+	// server is the local endpoint of an accepted inbound connection. The L7
+	// perf event only carries pid+fd, so it is resolved once from /proc and
+	// cached here for the rest of the connection.
+	server netaddr.IPPort
 }
 
 type connTracker struct {
@@ -115,6 +120,29 @@ func (c *connTracker) delete(k connKey) {
 	c.mu.Unlock()
 }
 
+func (c *connTracker) resolveInboundServer(k connKey, resolver InboundServerResolver) (netaddr.IPPort, bool) {
+	if resolver == nil {
+		return netaddr.IPPort{}, false
+	}
+	if c != nil {
+		if info, ok := c.get(k); ok && !info.server.IsZero() {
+			return info.server, true
+		}
+	}
+	endpoint, ok := resolver.ResolveInboundServer(k.Pid, k.Fd)
+	if !ok || endpoint.IsZero() {
+		return netaddr.IPPort{}, false
+	}
+	if c != nil {
+		c.mu.Lock()
+		info := c.m[k]
+		info.server = endpoint
+		c.m[k] = info
+		c.mu.Unlock()
+	}
+	return endpoint, true
+}
+
 // PodResolver resolve identidade de pods das duas pontas da conexão:
 //   - Resolve(pid)    → pod do CLIENTE (caller, lado outbound)
 //   - ResolveIP(ip)   → pod do SERVIDOR (callee, lado inbound)
@@ -125,6 +153,13 @@ func (c *connTracker) delete(k connKey) {
 type PodResolver interface {
 	Resolve(pid uint32) (namespace, pod string, ok bool)
 	ResolveIP(ip string) (namespace, pod string, ok bool)
+}
+
+// InboundServerResolver maps the pid+fd from an inbound L7 event to the local
+// listening endpoint. This is needed because the eBPF L7 record intentionally
+// contains no network addresses.
+type InboundServerResolver interface {
+	ResolveInboundServer(pid uint32, fd uint64) (netaddr.IPPort, bool)
 }
 
 // BridgeConfig agrupa parâmetros do bridge.
@@ -142,6 +177,13 @@ type BridgeConfig struct {
 	// cada container em compose vire um service distinto (postgres / redis /
 	// api) em vez de tudo ser agregado sob o hostname. Nil = skip.
 	ContainerResolver ContainerResolver
+	// DatabaseMonitors resolves configured postgres.server targets to their
+	// immutable monitor ids. It is optional because eBPF remains useful for
+	// generic APM when database monitoring is not configured.
+	DatabaseMonitors DatabaseMonitorMatcher
+	// InboundServerResolver resolves the local endpoint for an accepted server
+	// connection. Nil means database workload identity is unavailable.
+	InboundServerResolver InboundServerResolver
 	Log               *slog.Logger
 }
 
@@ -153,6 +195,9 @@ func RunBridge(ctx context.Context, events <-chan Event, sink SpanSink, cfg Brid
 	}
 	parsers := newParsersByConn()
 	conns := newConnTracker()
+	if cfg.DatabaseMonitors != nil && cfg.InboundServerResolver == nil {
+		cfg.InboundServerResolver = procInboundServerResolver{}
+	}
 	log := cfg.Log.With("component", "ebpf-bridge")
 
 	var totalIn, totalOut, dropped int64
@@ -263,7 +308,9 @@ func buildSpan(ev Event, parsers *parsersByConn, conns *connTracker, cfg BridgeC
 		Attributes:    map[string]string{},
 	}
 
-	// IP do servidor (depois do DNAT do kube-proxy quando aplicável).
+	// IP do peer servidor para conexões outbound (depois do DNAT do kube-proxy
+	// quando aplicável). Para PostgreSQL inbound, a identidade do monitor é
+	// resolvida só depois do decoder, evitando lookup /proc para outros L7.
 	// ActualDstAddr vem da conntrack resolution upstream; quando vazio
 	// caímos no DstAddr original (geralmente já é pod IP no eBPF level).
 	//
@@ -273,7 +320,7 @@ func buildSpan(ev Event, parsers *parsersByConn, conns *connTracker, cfg BridgeC
 	// então a entrada já está no tracker quando o span é construído.
 	actualDst := ev.ActualDstAddr
 	dst := ev.DstAddr
-	if conns != nil && actualDst.IsZero() && dst.IsZero() && ev.Pid != 0 && ev.Fd != 0 {
+	if !r.IsInbound && conns != nil && actualDst.IsZero() && dst.IsZero() && ev.Pid != 0 && ev.Fd != 0 {
 		if info, ok := conns.get(connKey{Pid: ev.Pid, Fd: ev.Fd}); ok {
 			actualDst = info.actualDst
 			dst = info.dst
@@ -410,6 +457,21 @@ func buildSpan(ev Event, parsers *parsersByConn, conns *connTracker, cfg BridgeC
 		span.Name = "postgres query"
 		span.Attributes["db.system"] = "postgresql"
 		span.Attributes["db.statement"] = query
+		// A p95 do banco precisa refletir trabalho que chegou ao servidor. An
+		// outbound postgres.server probe is a measurement request, not workload,
+		// so only SERVER/inbound spans may receive this monitor identity.
+		if r.IsInbound && cfg.DatabaseMonitors != nil {
+			monitorActualDst, monitorDst := actualDst, dst
+			if monitorActualDst.IsZero() && monitorDst.IsZero() && ev.Pid != 0 && ev.Fd != 0 {
+				if endpoint, ok := conns.resolveInboundServer(connKey{Pid: ev.Pid, Fd: ev.Fd}, cfg.InboundServerResolver); ok {
+					monitorActualDst = endpoint
+					monitorDst = endpoint
+				}
+			}
+			if monitorID := postgresMonitorID(cfg.DatabaseMonitors, monitorActualDst, monitorDst); monitorID != "" {
+				span.Attributes[concentrator.DatabaseMonitorIDAttr] = monitorID
+			}
+		}
 
 	case l7.ProtocolRedis:
 		cmd, args := l7.ParseRedis(r.Payload)
@@ -479,6 +541,31 @@ func buildSpan(ev Event, parsers *parsersByConn, conns *connTracker, cfg BridgeC
 	}
 
 	return span
+}
+
+// postgresMonitorID accepts the observed server endpoint only when all known
+// representations agree. actualDst is the post-DNAT address while dst is the
+// original connection target; accepting a conflict would attach a query to the
+// wrong database monitor.
+func postgresMonitorID(matcher DatabaseMonitorMatcher, actualDst, dst netaddr.IPPort) string {
+	if matcher == nil {
+		return ""
+	}
+	monitorID := ""
+	for _, endpoint := range []netaddr.IPPort{actualDst, dst} {
+		if endpoint.IsZero() {
+			continue
+		}
+		match := matcher.MatchPostgresEndpoint(endpoint.IP().String(), endpoint.Port())
+		if match == "" {
+			continue
+		}
+		if monitorID != "" && monitorID != match {
+			return ""
+		}
+		monitorID = match
+	}
+	return monitorID
 }
 
 // spanKindFor traduz IsInbound do OTel/eBPF: inbound (server side) = 2,

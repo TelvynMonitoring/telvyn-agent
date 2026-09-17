@@ -153,6 +153,10 @@ func runIngestMode(ingestURL string) {
 	}()
 
 	exporter := otlp.NewIngestExporter(ingestURL, token, hostID, cluster, Version, log)
+	// Config-pull keeps this registry in sync with postgres.server checks. The
+	// eBPF bridge reads it without blocking the tracer hot path to attach an
+	// exact monitor identity only to inbound database workload.
+	databaseMonitors := ebpf.NewDatabaseMonitorRegistry()
 
 	// Métricas do próprio host (CPU/mem/disco/rede) → OTLP /metrics.
 	out := make(chan []*collectorv1.Metric, 256)
@@ -424,7 +428,7 @@ func runIngestMode(ingestURL string) {
 	// mesmo padrão do caminho legado, onde os receivers sobem em goroutine ANTES
 	// do tracer. Best-effort: se o eBPF falhar, o agent segue normal.
 	if getenvOr("ISPWATCH_EBPF_TRACING", "0") == "1" {
-		go startEbpfTracer(ctx, log, ebpfStatsSink{conc: apmConc}, out, hostID)
+		go startEbpfTracer(ctx, log, ebpfStatsSink{conc: apmConc}, out, hostID, databaseMonitors)
 	}
 
 	// Coleta opcional de logs: taila /var/log/pods (CRI) e
@@ -447,7 +451,7 @@ func runIngestMode(ingestURL string) {
 	// que o usuário criou no painel, executando cada um no intervalo. O resultado
 	// vai pelo mesmo canal `out` (PostMetrics entrega). Reusa a máquina mTLS.
 	if getenvOr("ISPWATCH_CHECKS_ENABLED", "1") == "1" {
-		startIngestChecks(ctx, log, exporter, apmStats, token, ingestURL, hostID, out)
+		startIngestChecks(ctx, log, exporter, apmStats, token, ingestURL, hostID, out, databaseMonitors)
 	} else {
 		log.Debug("checagens agendadas desativadas (set ISPWATCH_CHECKS_ENABLED=1 pra habilitar)")
 	}
@@ -558,7 +562,7 @@ func startSbomScan(ctx context.Context, log *slog.Logger, exporter *otlp.IngestE
 // (Bearer) pra obter collector_id+tenant, monta um checks.Runtime emitindo no
 // mesmo canal `out`, e roda o loop de config-pull com um client que injeta o
 // Bearer token. Reusa toda a máquina de checks/scheduler do modo mTLS.
-func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.IngestExporter, apmStats *statsfwd.Forwarder, token, ingestURL, hostID string, out chan<- []*collectorv1.Metric) {
+func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.IngestExporter, apmStats *statsfwd.Forwarder, token, ingestURL, hostID string, out chan<- []*collectorv1.Metric, databaseMonitors *ebpf.DatabaseMonitorRegistry) {
 	name := strings.TrimSpace(hostID)
 	if name == "" {
 		name, _ = os.Hostname()
@@ -654,6 +658,43 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			Fingerprint: catalog.Fingerprint, Truncated: catalog.Truncated, Tables: tables,
 		})
 	})
+	runtime.SetDiagnosticsPusher(func(postCtx context.Context, diagnostics checks.DatabaseDiagnostics) error {
+		sessions := make([]otlp.DatabaseDiagnosticsSession, 0, len(diagnostics.Sessions))
+		for _, session := range diagnostics.Sessions {
+			sessions = append(sessions, otlp.DatabaseDiagnosticsSession{
+				PID: session.PID, User: session.User, Application: session.Application,
+				Client: session.Client, State: session.State, WaitType: session.WaitType,
+				WaitEvent: session.WaitEvent, QueryStart: session.QueryStart, DurationSeconds: session.DurationSeconds,
+			})
+		}
+		blocking := make([]otlp.DatabaseDiagnosticsBlocking, 0, len(diagnostics.Blocking))
+		for _, item := range diagnostics.Blocking {
+			blocking = append(blocking, otlp.DatabaseDiagnosticsBlocking{
+				BlockedPID: item.BlockedPID, BlockingPID: item.BlockingPID,
+				BlockedUser: item.BlockedUser, BlockingUser: item.BlockingUser,
+			})
+		}
+		waits := make([]otlp.DatabaseDiagnosticsWait, 0, len(diagnostics.Waits))
+		for _, item := range diagnostics.Waits {
+			waits = append(waits, otlp.DatabaseDiagnosticsWait{
+				WaitType: item.WaitType, WaitEvent: item.WaitEvent, Count: item.Count,
+			})
+		}
+		bloat := make([]otlp.DatabaseDiagnosticsBloat, 0, len(diagnostics.Bloat))
+		for _, item := range diagnostics.Bloat {
+			bloat = append(bloat, otlp.DatabaseDiagnosticsBloat{
+				SchemaName: item.SchemaName, TableName: item.TableName,
+				TotalSizeBytes: item.TotalSizeBytes, DeadBytes: item.DeadBytes,
+				DeadPercent: item.DeadPercent, FreeBytes: item.FreeBytes,
+				FreePercent: item.FreePercent,
+			})
+		}
+		return exporter.PostDatabaseDiagnostics(postCtx, otlp.DatabaseDiagnosticsPayload{
+			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName,
+			BloatEnabled: diagnostics.BloatEnabled, Capabilities: diagnostics.Capabilities,
+			Sessions: sessions, Blocking: blocking, Waits: waits, Bloat: bloat, Errors: diagnostics.Errors,
+		})
+	})
 	runtime.SetExplainPusher(func(postCtx context.Context, plan checks.DatabaseExplainPlan) error {
 		return exporter.PostDatabaseExplain(postCtx, otlp.DatabaseExplainPayload{
 			RequestID: plan.RequestID, CheckID: plan.CheckID,
@@ -718,6 +759,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 						}
 						apmStats.SetEnabled(apmEnabled)
 					},
+					PostgresTargets: databaseMonitors,
 				}, runtime); err != nil {
 					log.Warn("config pull (ingest) encerrou", "err", err)
 				}
@@ -1041,7 +1083,7 @@ func mustEnv(key string) string {
 // Requisitos no node: kernel >= 5.10 com BTF (vmlinux.h vem embeddado no
 // .o), hostNetwork=true e hostPID=true no DaemonSet, securityContext.
 // privileged=true ou capabilities {SYS_ADMIN,NET_ADMIN,BPF}.
-func startEbpfTracer(ctx context.Context, log *slog.Logger, sink ebpf.SpanSink, metricsOut chan<- []*collectorv1.Metric, collectorID string) {
+func startEbpfTracer(ctx context.Context, log *slog.Logger, sink ebpf.SpanSink, metricsOut chan<- []*collectorv1.Metric, collectorID string, databaseMonitors ebpf.DatabaseMonitorMatcher) {
 	// Kernel version pra ebpf — tracer.Run() valida >= 4.16. Lê via uname
 	// e propaga pro pkg common (ebpf consome via common.GetKernelVersion).
 	var utsname syscall.Utsname
@@ -1077,6 +1119,7 @@ func startEbpfTracer(ctx context.Context, log *slog.Logger, sink ebpf.SpanSink, 
 	cfg := ebpf.BridgeConfig{
 		ServiceName:      getenvOr("ISPWATCH_EBPF_SERVICE_NAME", "ebpf-tracer"),
 		FallbackHostname: fallback,
+		DatabaseMonitors: databaseMonitors,
 		Log:              log,
 	}
 

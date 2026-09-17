@@ -7,6 +7,7 @@
 //   - mem.used / mem.available / mem.used_pct          (bytes / %)
 //   - mem.swap_used                                     (bytes)
 //   - disk.used_pct{mount, device}                     (%, physical fstypes only)
+//   - disk.io_latency_ms{device}                       (ms/op, delta-based)
 //   - net.bytes_in / net.bytes_out{interface_name}     (cumulative bytes, lo skipped)
 //   - load.1 / load.5 / load.15                        (Linux/macOS only)
 //
@@ -20,6 +21,7 @@ package checks
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -61,6 +63,12 @@ type linuxSystemCheck struct {
 	// baseline and emits no cpu.* metrics. Second and later calls compute and
 	// emit the delta.
 	lastCpu []cpu.TimesStat
+
+	// lastDiskIO holds cumulative per-device I/O counters. Like CPU, disk
+	// latency is meaningful only as a delta between consecutive samples.
+	// The first sample (and a device first seen later) is therefore a baseline,
+	// not a zero-latency observation.
+	lastDiskIO map[string]disk.IOCountersStat
 }
 
 // newLinuxSystemCheck is the Factory function registered at init() for
@@ -135,10 +143,24 @@ func (c *linuxSystemCheck) Run(ctx context.Context) ([]*collectorv1.Metric, erro
 
 	// --- Disk per mount (physical fstypes only) ---
 	parts, _ := disk.PartitionsWithContext(ctx, false)
+	ioCounters, ioErr := disk.IOCountersWithContext(ctx)
+	physicalDiskIO := make(map[string]disk.IOCountersStat)
 	for _, p := range parts {
 		if !physicalFs[p.Fstype] {
 			continue
 		}
+		// /proc/diskstats counters are keyed by a device name (for example,
+		// "sda1"), while partitions normally expose "/dev/sda1". Associate
+		// only counters that belong to a physical mounted filesystem, so loop
+		// devices and other virtual block devices do not create host metrics.
+		// Keep this independent from disk.Usage: an unavailable filesystem-size
+		// stat must not suppress otherwise valid I/O counters.
+		if ioErr == nil && p.Device != "" {
+			if counters, ok := diskIOCounterForDevice(ioCounters, p.Device); ok {
+				physicalDiskIO[p.Device] = counters
+			}
+		}
+
 		u, err := disk.UsageWithContext(ctx, p.Mountpoint)
 		if err != nil {
 			continue
@@ -148,6 +170,9 @@ func (c *linuxSystemCheck) Run(ctx context.Context) ([]*collectorv1.Metric, erro
 			"device": p.Device,
 		}
 		out = append(out, c.metric(now, "disk.used_pct", u.UsedPercent, tags))
+	}
+	if ioErr == nil {
+		out = append(out, c.diskIOLatencyMetrics(now, physicalDiskIO)...)
 	}
 
 	// --- Net per interface (skip loopback) ---
@@ -172,6 +197,66 @@ func (c *linuxSystemCheck) Run(ctx context.Context) ([]*collectorv1.Metric, erro
 	}
 
 	return out, nil
+}
+
+// diskIOCounterForDevice finds the gopsutil counter that corresponds to a
+// mounted device. On Linux partitions commonly use /dev/<name>, while
+// IOCounters uses <name> as its map key.
+func diskIOCounterForDevice(counters map[string]disk.IOCountersStat, device string) (disk.IOCountersStat, bool) {
+	if counters == nil {
+		return disk.IOCountersStat{}, false
+	}
+	if counter, ok := counters[device]; ok {
+		return counter, true
+	}
+
+	name := strings.TrimPrefix(strings.TrimSpace(device), "/dev/")
+	if counter, ok := counters[name]; ok {
+		return counter, true
+	}
+	for _, counter := range counters {
+		if counter.Name == device || counter.Name == name {
+			return counter, true
+		}
+	}
+	return disk.IOCountersStat{}, false
+}
+
+// diskIOLatencyMetrics emits the mean completed I/O latency for each physical
+// device: (delta read time + delta write time) / (delta reads + delta writes).
+// gopsutil reports ReadTime and WriteTime in milliseconds. No point is emitted
+// until a device has two monotonic samples; this prevents a first sample or a
+// counter reset from being presented as a real 0 ms observation.
+func (c *linuxSystemCheck) diskIOLatencyMetrics(now *timestamppb.Timestamp, current map[string]disk.IOCountersStat) []*collectorv1.Metric {
+	previous := c.lastDiskIO
+	c.lastDiskIO = current
+	if len(previous) == 0 {
+		return nil
+	}
+
+	var out []*collectorv1.Metric
+	for device, counters := range current {
+		last, ok := previous[device]
+		if !ok {
+			continue
+		}
+		// A restarted device or reset kernel counters would otherwise underflow
+		// and produce a bogus value. Treat the new value as the next baseline.
+		if counters.ReadCount < last.ReadCount || counters.WriteCount < last.WriteCount ||
+			counters.ReadTime < last.ReadTime || counters.WriteTime < last.WriteTime {
+			continue
+		}
+
+		operations := float64(counters.ReadCount-last.ReadCount) + float64(counters.WriteCount-last.WriteCount)
+		if operations == 0 {
+			continue
+		}
+		elapsedMilliseconds := float64(counters.ReadTime-last.ReadTime) + float64(counters.WriteTime-last.WriteTime)
+		out = append(out, c.metric(now, "disk.io_latency_ms", elapsedMilliseconds/operations, map[string]string{
+			"device": device,
+		}))
+	}
+	return out
 }
 
 // metric constructs a collectorv1.Metric with the check's static tags merged

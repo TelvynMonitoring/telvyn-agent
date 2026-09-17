@@ -217,6 +217,7 @@ var (
 // sanitizeQueryText conserva o formato útil para agrupar/ler a consulta sem
 // enviar valores literais e comentários que podem conter dados do cliente.
 func sanitizeQueryText(query string) string {
+	query = maskDollarQuotedStrings(query)
 	query = queryComments.ReplaceAllString(query, " ")
 	query = queryStrings.ReplaceAllString(query, "?")
 	query = queryNumbers.ReplaceAllString(query, "?")
@@ -225,6 +226,55 @@ func sanitizeQueryText(query string) string {
 		query = query[:postgresQueryTextLimit]
 	}
 	return query
+}
+
+// maskDollarQuotedStrings cobre literais PostgreSQL como $$segredo$$ e
+// $tag$segredo$tag$. RE2 não oferece backreferences para casar o delimitador de
+// abertura/fechamento, então fazemos a leitura curta aqui antes das regexes.
+// Delimitador sem fechamento é mascarado até o fim por segurança.
+func maskDollarQuotedStrings(query string) string {
+	var out strings.Builder
+	out.Grow(len(query))
+	for index := 0; index < len(query); {
+		if query[index] != '$' {
+			out.WriteByte(query[index])
+			index++
+			continue
+		}
+		end := index + 1
+		if end < len(query) && query[end] != '$' {
+			if !isDollarTagStart(query[end]) {
+				out.WriteByte(query[index])
+				index++
+				continue
+			}
+			end++
+			for end < len(query) && query[end] != '$' && isDollarTagPart(query[end]) {
+				end++
+			}
+		}
+		if end >= len(query) || query[end] != '$' {
+			out.WriteByte(query[index])
+			index++
+			continue
+		}
+		delimiter := query[index : end+1]
+		closing := strings.Index(query[end+1:], delimiter)
+		out.WriteByte('?')
+		if closing < 0 {
+			return out.String()
+		}
+		index = end + 1 + closing + len(delimiter)
+	}
+	return out.String()
+}
+
+func isDollarTagStart(value byte) bool {
+	return value == '_' || value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
+}
+
+func isDollarTagPart(value byte) bool {
+	return isDollarTagStart(value) || value >= '0' && value <= '9'
 }
 
 func max(a, b int) int {
