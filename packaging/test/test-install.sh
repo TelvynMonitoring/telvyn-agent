@@ -7,6 +7,20 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# O Agent de Banco é único por host e usa comandos systemctl estáveis. A
+# identidade da instalação permanece no EnvironmentFile, fora das instruções
+# operacionais do usuário.
+test -f ../telvyn-agent.service
+test -f ../telvyn-agent-update.service
+grep -Fq 'User=telvyn' ../telvyn-agent.service
+grep -Fq 'Group=telvyn' ../telvyn-agent.service
+grep -Fq 'EnvironmentFile=-/etc/telvyn/agent.env' ../telvyn-agent.service
+grep -Fq 'ReadWritePaths=/var/lib/telvyn-agent /var/log/telvyn-agent' ../telvyn-agent.service
+grep -Fq 'DATABASE_UNIT_NAME="telvyn-agent.service"' ../install.sh
+grep -Fq 'DATABASE_UPDATE_UNIT_NAME="telvyn-agent-update.service"' ../install.sh
+grep -Fq 'sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}' ../install.sh
+grep -Fq 'foram encontrados vários Agents de Banco legados neste host' ../install.sh
+
 # Copia o install.sh pro contexto de build pra cada Dockerfile poder
 # fazer COPY (build context é este diretório).
 cp ../install.sh ./install.sh

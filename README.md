@@ -60,6 +60,29 @@ curl -fsSL https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent/main/
   | ISPWATCH_INGEST_URL='https://<SEU_PORTAL>' ISPWATCH_INGEST_TOKEN='<SEU_INGEST_TOKEN>' sudo -E bash
 ```
 
+## Banco de dados por instância (Linux)
+
+O portal cria a instalação e entrega um token e `installation_id` próprios. Use
+um agente para cada instância de banco; ele descobre todos os bancos lógicos
+aos quais as credenciais somente-leitura conseguem conectar. `database` é um
+perfil, não um `ISPWATCH_AGENT_KIND`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent/main/packaging/install.sh \
+  | ISPWATCH_INGEST_URL='https://<SEU_PORTAL>' \
+    ISPWATCH_INGEST_TOKEN='<TOKEN_DA_INSTALACAO>' \
+    ISPWATCH_AGENT_KIND=linux \
+    ISPWATCH_AGENT_PROFILE=database \
+    ISPWATCH_DATABASE_INSTALLATION_ID='<INSTALLATION_ID>' \
+    sudo -E bash
+```
+
+No mesmo host, cada instalação recebe uma unit
+`ispwatch-agent-database@…`, usuário de sistema, EnvironmentFile, binário,
+fila e marcador de revogação próprios. Ela não substitui nem reinicia o
+`ispwatch-agent.service` genérico. Uma resposta terminal `410 Gone` interrompe
+essa instância até uma nova instalação explícita do portal.
+
 ## Imagens / artefatos
 
 | Artefato | Local |

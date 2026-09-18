@@ -1,0 +1,59 @@
+[Unit]
+Description=IspWatch Agent de Banco (%i)
+Documentation=https://docs.ispwatch.com/agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# O instalador cria este usuário/grupo exclusivo por instalação. Assim, um
+# Agent de Banco não consegue ler o token ou o estado de outro banco no mesmo
+# host, mesmo quando ambos usam a mesma conta de sistema operacional.
+User=tvdb-%i
+Group=tvdb-%i
+# Cada instância de banco recebe um EnvironmentFile, binário e diretórios de
+# estado próprios. O identificador %i é um slug derivado pelo instalador do
+# installation_id opaco, nunca o nome do banco fornecido pelo usuário.
+EnvironmentFile=-/etc/ispwatch-database-%i/agent.env
+ExecStart=/usr/local/lib/ispwatch/database-%i/ispwatch-agent
+Restart=on-failure
+RestartSec=10s
+StartLimitInterval=60s
+StartLimitBurst=5
+
+# O perfil database não abre receptor OTLP, eBPF, logs ou SNMP. Mantemos as
+# capacidades do agente Linux porque as métricas locais de CPU/memória/disco
+# continuam sendo enviadas para a instância de banco associada.
+AmbientCapabilities=CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Os caminhos são exclusivos da instância: dois bancos no mesmo host nunca
+# compartilham WAL, cursor, marcador de revogação ou logs do agente.
+ReadWritePaths=/var/lib/ispwatch/database-%i /var/log/ispwatch/database-%i
+
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=default
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @debug @mount @raw-io @reboot @swap @clock @module
+SystemCallArchitectures=native
+KeyringMode=private
+UMask=0027
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ispwatch-agent-database-%i
+
+[Install]
+WantedBy=multi-user.target

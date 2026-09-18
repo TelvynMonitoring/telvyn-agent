@@ -62,6 +62,10 @@ func newPostgresCustomCheckWithFactory(cfg *collectorv1.CheckConfig, factory pgx
 	for k, v := range cfg.GetStaticTags() {
 		tags[k] = v
 	}
+	// Consultas personalizadas continuam sendo métricas OTLP genéricas. Mantém
+	// os IDs canônicos para que o backend valide a instância e o banco lógico
+	// antes de aceitar a série.
+	normalizeDatabaseMetricTags(cfg.GetParams(), tags)
 	id := cfg.GetCheckId()
 	if id == "" {
 		id = "postgres.custom-" + cfg.GetHostId()

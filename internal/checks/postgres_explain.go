@@ -21,12 +21,14 @@ const (
 // DatabaseExplainPlan é o resultado de uma solicitação do portal. O JSON é o
 // plano do PostgreSQL; não contém linhas de negócio e não usa ANALYZE.
 type DatabaseExplainPlan struct {
-	RequestID string
-	CheckID   string
-	DBServer  string
-	DBName    string
-	PlanJSON  string
-	Error     string
+	InstallationID string
+	DatabaseID     string
+	RequestID      string
+	CheckID        string
+	DBServer       string
+	DBName         string
+	PlanJSON       string
+	Error          string
 }
 
 // ExplainCheck é executado pelo scheduler como uma operação pontual. Depois
@@ -49,15 +51,17 @@ type ExplainFailureProvider interface {
 }
 
 type postgresExplain struct {
-	id         string
-	interval   time.Duration
-	hostID     string
-	requestID  string
-	dbServer   string
-	dbName     string
-	query      string
-	staticTags map[string]string
-	pool       pgxPool
+	id             string
+	interval       time.Duration
+	hostID         string
+	requestID      string
+	dbServer       string
+	dbName         string
+	installationID string
+	databaseID     string
+	query          string
+	staticTags     map[string]string
+	pool           pgxPool
 
 	mu        sync.Mutex
 	completed bool
@@ -89,6 +93,8 @@ func newPostgresExplainCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 	for k, v := range cfg.GetStaticTags() {
 		tags[k] = v
 	}
+	normalizeDatabaseMetricTags(cfg.GetParams(), tags)
+	installationID, databaseID := databaseIdentity(cfg.GetParams(), tags)
 	interval := cfg.GetInterval().AsDuration()
 	if interval <= 0 {
 		interval = 60 * time.Second
@@ -100,6 +106,7 @@ func newPostgresExplainCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 	return &postgresExplain{
 		id: id, interval: interval, hostID: cfg.GetHostId(), requestID: requestID,
 		dbServer: strings.TrimSpace(tags["db_server"]), dbName: strings.TrimSpace(tags["db_name"]),
+		installationID: installationID, databaseID: databaseID,
 		query: query, staticTags: tags, pool: pool,
 	}, nil
 }
@@ -145,6 +152,7 @@ func (c *postgresExplain) RunExplain(ctx context.Context) (*DatabaseExplainPlan,
 	}
 
 	return &DatabaseExplainPlan{
+		InstallationID: c.installationID, DatabaseID: c.databaseID,
 		RequestID: c.requestID, CheckID: c.id, DBServer: c.dbServer,
 		DBName: c.dbName, PlanJSON: body,
 	}, nil
@@ -165,6 +173,7 @@ func (c *postgresExplain) ExplainFailure(err error) DatabaseExplainPlan {
 		message = message[:1024]
 	}
 	return DatabaseExplainPlan{
+		InstallationID: c.installationID, DatabaseID: c.databaseID,
 		RequestID: c.requestID, CheckID: c.id, DBServer: c.dbServer,
 		DBName: c.dbName, Error: message,
 	}

@@ -96,6 +96,9 @@ type Runtime struct {
 	// explainPusher recebe o resultado de uma solicitação pontual de EXPLAIN.
 	// A falha no envio mantém a solicitação elegível para retry no próximo ciclo.
 	explainPusher ExplainPusher
+	// instanceDiscoveryPusher informa os bancos lógicos acessíveis de uma
+	// instância. O backend usa o snapshot para materializar os checks filhos.
+	instanceDiscoveryPusher InstanceDiscoveryPusher
 }
 
 // StatusReporter recebe o estado de um check quando ele MUDA (passou a falhar,
@@ -129,6 +132,10 @@ type DiagnosticsPusher func(context.Context, DatabaseDiagnostics) error
 
 // ExplainPusher encaminha um plano de execução produzido pelo Agent.
 type ExplainPusher func(context.Context, DatabaseExplainPlan) error
+
+// InstanceDiscoveryPusher encaminha a descoberta de bancos acessíveis da
+// instância para o endpoint dedicado, sem expor a DSN ou credenciais.
+type InstanceDiscoveryPusher func(context.Context, DatabaseInstanceDiscovery) error
 
 // runningCheck guarda o estado de uma check rodando: cancel pra parar e wg
 // pra esperar conclusão graciosa.
@@ -492,9 +499,12 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		var catalog *DatabaseCatalog
 		var diagnostics *DatabaseDiagnostics
 		var explain *DatabaseExplainPlan
+		var instanceDiscovery *DatabaseInstanceDiscovery
 		var err error
 		if explainCheck, ok := any(c).(ExplainCheck); ok {
 			explain, err = explainCheck.RunExplain(runCtx)
+		} else if discoveryCheck, ok := any(c).(InstanceDiscoveryCheck); ok {
+			instanceDiscovery, err = discoveryCheck.RunInstanceDiscovery(runCtx)
 		} else if queryCheck, ok := any(c).(QueryStatsCheck); ok {
 			queryStats, err = queryCheck.RunQueryStats(runCtx)
 		} else if catalogCheck, ok := any(c).(CatalogCheck); ok {
@@ -547,6 +557,9 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		}
 		if explain != nil {
 			r.pushExplain(c, *explain)
+		}
+		if instanceDiscovery != nil {
+			r.pushInstanceDiscovery(c.ID(), *instanceDiscovery)
 		}
 		if len(metrics) > 0 {
 			r.emit(metrics)
@@ -636,6 +649,23 @@ func (r *Runtime) pushExplain(check Check, plan DatabaseExplainPlan) {
 	}()
 }
 
+func (r *Runtime) pushInstanceDiscovery(checkID string, discovery DatabaseInstanceDiscovery) {
+	r.mu.Lock()
+	pusher := r.instanceDiscoveryPusher
+	parent := r.parent
+	r.mu.Unlock()
+	if pusher == nil || parent == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+		defer cancel()
+		if err := pusher(ctx, discovery); err != nil {
+			r.log.Warn("postgres instance discovery: envio falhou", "check_id", checkID, "err", err)
+		}
+	}()
+}
+
 func startsWith(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
@@ -707,6 +737,14 @@ func (r *Runtime) SetExplainPusher(f ExplainPusher) {
 	r.mu.Unlock()
 }
 
+// SetInstanceDiscoveryPusher instala o envio de snapshots de uma instância de
+// banco. Mantém nil para os caminhos legados que não usam Agent de Banco.
+func (r *Runtime) SetInstanceDiscoveryPusher(f InstanceDiscoveryPusher) {
+	r.mu.Lock()
+	r.instanceDiscoveryPusher = f
+	r.mu.Unlock()
+}
+
 func (r *Runtime) reportStatus(checkID string, ok bool, message string) {
 	r.mu.Lock()
 	f := r.statusReporter
@@ -727,11 +765,20 @@ func (r *Runtime) reportExecution(report ExecutionReport) {
 }
 
 func (r *Runtime) emitCheckError(c Check) {
+	tags := map[string]string{"check_id": c.ID()}
+	for _, key := range []string{"installation_id", "database_id", "db_monitor_id"} {
+		if value := c.Tags()[key]; value != "" {
+			tags[key] = value
+		}
+	}
+	if tags["database_id"] == "" && tags["db_monitor_id"] != "" {
+		tags["database_id"] = tags["db_monitor_id"]
+	}
 	r.emit([]*collectorv1.Metric{{
 		Time:       timestamppb.Now(),
 		MetricName: "ispwatch.check.errors",
 		Value:      1.0,
-		Tags:       map[string]string{"check_id": c.ID()},
+		Tags:       tags,
 		Source:     "checks",
 	}})
 }

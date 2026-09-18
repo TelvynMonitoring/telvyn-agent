@@ -35,8 +35,10 @@ type DatabaseQueryStat struct {
 }
 
 type DatabaseQueryStats struct {
-	DBServer      string
-	DBName        string
+	InstallationID string
+	DatabaseID     string
+	DBServer       string
+	DBName         string
 	WindowSeconds int
 	Queries       []DatabaseQueryStat
 }
@@ -63,13 +65,15 @@ type postgresQueryCounter struct {
 }
 
 type postgresQueries struct {
-	id         string
-	interval   time.Duration
-	hostID     string
-	dbServer   string
-	dbName     string
-	staticTags map[string]string
-	pool       pgxPool
+	id             string
+	interval       time.Duration
+	hostID         string
+	dbServer       string
+	dbName         string
+	installationID string
+	databaseID     string
+	staticTags     map[string]string
+	pool           pgxPool
 
 	mu       sync.Mutex
 	previous map[string]postgresQueryCounter
@@ -107,18 +111,21 @@ func newPostgresQueriesCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 	for k, v := range cfg.GetStaticTags() {
 		tags[k] = v
 	}
+	normalizeDatabaseMetricTags(cfg.GetParams(), tags)
 	server := strings.TrimSpace(tags["db_server"])
 	if server == "" {
 		pool.Close()
 		return nil, fmt.Errorf("postgres.queries: static_tags.db_server obrigatório")
 	}
 	database := strings.TrimSpace(tags["db_name"])
+	installationID, databaseID := databaseIdentity(cfg.GetParams(), tags)
 	id := cfg.GetCheckId()
 	if id == "" {
 		id = "postgres.queries-" + cfg.GetHostId()
 	}
 	return &postgresQueries{
 		id: id, interval: interval, hostID: cfg.GetHostId(), dbServer: server, dbName: database,
+		installationID: installationID, databaseID: databaseID,
 		staticTags: tags, pool: pool, previous: make(map[string]postgresQueryCounter),
 	}, nil
 }
@@ -160,6 +167,7 @@ func (c *postgresQueries) RunQueryStats(ctx context.Context) (*DatabaseQueryStat
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := &DatabaseQueryStats{
+		InstallationID: c.installationID, DatabaseID: c.databaseID,
 		DBServer: c.dbServer, DBName: c.dbName, WindowSeconds: max(1, int(c.interval/time.Second)),
 		Queries: make([]DatabaseQueryStat, 0, len(rows)),
 	}
