@@ -39,8 +39,8 @@ type DatabaseQueryStats struct {
 	DatabaseID     string
 	DBServer       string
 	DBName         string
-	WindowSeconds int
-	Queries       []DatabaseQueryStat
+	WindowSeconds  int
+	Queries        []DatabaseQueryStat
 }
 
 // QueryStatsCheck é implementado por checks que têm um canal agregado além de
@@ -74,25 +74,63 @@ type postgresQueries struct {
 	databaseID     string
 	staticTags     map[string]string
 	pool           pgxPool
+	querySQL       string
 
 	mu       sync.Mutex
 	previous map[string]postgresQueryCounter
 }
 
-const sqlPostgresQueryStats = `SELECT COALESCE(json_agg(q ORDER BY q.total_ms DESC), '[]'::json)::text
+func buildPostgresQueryStatsSQL(capabilities postgresRelationCapabilities) (string, error) {
+	if !capabilities.available() {
+		return "", fmt.Errorf("extensão pg_stat_statements não instalada ou indisponível")
+	}
+	for _, required := range []string{"dbid", "query", "calls"} {
+		if !capabilities.hasColumn(required) {
+			return "", fmt.Errorf("pg_stat_statements sem capacidade obrigatória %q", required)
+		}
+	}
+
+	timeColumn := ""
+	for _, candidate := range []string{"total_exec_time", "total_time"} {
+		if capabilities.hasColumn(candidate) {
+			timeColumn = candidate
+			break
+		}
+	}
+	if timeColumn == "" {
+		return "", fmt.Errorf("pg_stat_statements não fornece contador de tempo total")
+	}
+
+	queryIDExpression := "md5(s.query::text)"
+	if capabilities.hasColumn("queryid") {
+		queryIDExpression = "s.queryid::text"
+	}
+	rowsExpression := "0::bigint"
+	if capabilities.hasColumn("rows") {
+		rowsExpression = "s.rows::bigint"
+	}
+
+	return fmt.Sprintf(`SELECT COALESCE(json_agg(q ORDER BY q.total_ms DESC), '[]'::json)::text
   FROM (
-    SELECT s.queryid::text AS query_id,
+    SELECT %s AS query_id,
            s.query AS text,
            s.calls::bigint AS calls,
-           s.total_exec_time::float8 AS total_ms,
-           s.rows::bigint AS rows
-      FROM pg_stat_statements s
+           s.%s::float8 AS total_ms,
+           %s AS rows
+      FROM %s s
       JOIN pg_database d ON d.oid = s.dbid
      WHERE d.datname = current_database()
        AND s.calls > 0
-     ORDER BY s.total_exec_time DESC
-     LIMIT 200
-  ) q`
+     ORDER BY total_ms DESC
+     LIMIT %d
+  ) q`,
+		queryIDExpression,
+		timeColumn,
+		rowsExpression,
+		capabilities.qualifiedName,
+		postgresQueryStatsLimit,
+	), nil
+}
 
 func newPostgresQueriesCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 	return newPostgresQueriesCheckWithFactory(cfg, defaultPgxPoolFactory)
@@ -119,6 +157,21 @@ func newPostgresQueriesCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 	}
 	database := strings.TrimSpace(tags["db_name"])
 	installationID, databaseID := databaseIdentity(cfg.GetParams(), tags)
+	capabilities, err := discoverPostgresExtensionRelationCapabilities(
+		context.Background(),
+		pool,
+		"pg_stat_statements",
+		"pg_stat_statements",
+	)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("postgres.queries: %w", err)
+	}
+	querySQL, err := buildPostgresQueryStatsSQL(capabilities)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("postgres.queries: %w", err)
+	}
 	id := cfg.GetCheckId()
 	if id == "" {
 		id = "postgres.queries-" + cfg.GetHostId()
@@ -126,7 +179,8 @@ func newPostgresQueriesCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 	return &postgresQueries{
 		id: id, interval: interval, hostID: cfg.GetHostId(), dbServer: server, dbName: database,
 		installationID: installationID, databaseID: databaseID,
-		staticTags: tags, pool: pool, previous: make(map[string]postgresQueryCounter),
+		staticTags: tags, pool: pool, querySQL: querySQL,
+		previous: make(map[string]postgresQueryCounter),
 	}, nil
 }
 
@@ -152,7 +206,7 @@ func (c *postgresQueries) RunQueryStats(ctx context.Context) (*DatabaseQueryStat
 	qctx, cancel := context.WithTimeout(ctx, postgresQueryTimeout)
 	defer cancel()
 	var body string
-	if err := c.pool.QueryRow(qctx, sqlPostgresQueryStats).Scan(&body); err != nil {
+	if err := c.pool.QueryRow(qctx, c.querySQL).Scan(&body); err != nil {
 		log.Printf("postgres.queries[%s]: query failed: %v", c.id, err)
 		return nil, err
 	}
