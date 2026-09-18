@@ -24,8 +24,9 @@ set -euo pipefail
 #   ISPWATCH_AGENT_KIND    linux (default) — registra a máquina como host de app.
 #   ISPWATCH_AGENT_PROFILE database — Agent dedicado a uma instância PostgreSQL.
 #   ISPWATCH_DATABASE_ENGINE postgres — motor do Agent de Banco.
-#   ISPWATCH_DATABASE_INSTALLATION_ID — UUID que vincula automaticamente o
-#                                     primeiro Agent à instância no Telvyn.
+#   ISPWATCH_DATABASE_INSTALLATION_ID — legado; aceito só para instalações
+#                                     antigas. Instalações novas se vinculam
+#                                     automaticamente pelo UUID da máquina.
 #   ISPWATCH_HOSTNAME      nome reportado (default: FQDN da máquina).
 #   qualquer ISPWATCH_*/COLLECTOR_LOG_LEVEL extra é repassado ao agente (toggles).
 ISPWATCH_AGENT_VERSION="${ISPWATCH_AGENT_VERSION:-latest}"
@@ -99,12 +100,6 @@ if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && "$ISPWATCH_DATABASE_ENGINE" != 
     exit 1
 fi
 
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && "$ISPWATCH_UPGRADE" != "true" \
-    && -z "$ISPWATCH_DATABASE_INSTALLATION_ID" ]]; then
-    echo "ERROR: ISPWATCH_DATABASE_INSTALLATION_ID é obrigatório na primeira instalação do Agent de Banco." >&2
-    exit 1
-fi
-
 if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
     AGENT_KIND_NORMALIZED=$(printf '%s' "$ISPWATCH_AGENT_KIND" | tr '[:upper:]' '[:lower:]')
     if [[ "$AGENT_KIND_NORMALIZED" != "linux" && "$AGENT_KIND_NORMALIZED" != "docker" ]]; then
@@ -118,9 +113,9 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Um host PostgreSQL tem um único Agent de Banco. A identidade da instalação
-# fica protegida no EnvironmentFile; o operador sempre gerencia um serviço
-# estável com systemctl, sem UUIDs ou nomes derivados para decorar.
+# Um host PostgreSQL tem um único Agent de Banco. O agente gera sua própria
+# identidade local e envia também a identidade estável da máquina; o backend
+# preserva a instância existente sem pedir UUIDs ao operador.
 if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
     UNIT_NAME="$DATABASE_UNIT_NAME"
     UNIT_PATH="$DATABASE_UNIT_PATH"
@@ -260,7 +255,11 @@ if [[ "$ISPWATCH_AGENT_VERSION" == "latest" ]]; then
 else
     VERSION="$ISPWATCH_AGENT_VERSION"
 fi
-echo "Instalando o agent IspWatch ${VERSION} para linux-${GO_ARCH}"
+if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+    echo "Instalando o Agent de Banco Telvyn ${VERSION} para linux-${GO_ARCH}"
+else
+    echo "Instalando o agent IspWatch ${VERSION} para linux-${GO_ARCH}"
+fi
 
 TARBALL="ispwatch-agent-${VERSION}-linux-${GO_ARCH}.tar.gz"
 URL="${ISPWATCH_DOWNLOAD_BASE}/${VERSION}/${TARBALL}"
@@ -471,6 +470,9 @@ umask 077
     if [[ -n "$DATABASE_REVOKED_MARKER_PATH" ]]; then
         echo "ISPWATCH_DATABASE_REVOKED_MARKER_PATH=${DATABASE_REVOKED_MARKER_PATH}"
     fi
+    if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+        echo "ISPWATCH_DATABASE_AGENT_ID_PATH=${LIB_DIR}/agent-id"
+    fi
     echo "ISPWATCH_INSTALL_MODE=linux"
     echo "ISPWATCH_NODE_NAME=${HOSTNAME_VALUE}"
     # Fila durável de métricas/APM: payloads não confirmados sobrevivem ao
@@ -502,6 +504,10 @@ umask 022
 # explícita do portal pode reativar a coleta.
 if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
     rm -f -- "$DATABASE_REVOKED_MARKER_PATH"
+    # A fresh database installation is a new Agent identity. The machine UUID
+    # comes from the OS and remains unchanged, so Telvyn can transfer the
+    # existing database instance automatically. Upgrades never execute this.
+    rm -f -- "${LIB_DIR}/agent-id"
 fi
 
 chown "root:$SERVICE_GROUP" "$ENV_FILE"

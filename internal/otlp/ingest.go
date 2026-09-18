@@ -16,6 +16,7 @@ package otlp
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -55,6 +56,11 @@ type IngestExporter struct {
 	// uma instância. O backend valida esse vínculo pelo token; o valor aqui só
 	// permite ao Agent apresentá-lo no registro e nos payloads de descoberta.
 	installationID atomic.Value
+	// Database Agents have a process identity which is replaced on a fresh
+	// installation, plus a stable machine identity used by Telvyn to preserve
+	// the monitored instance during that replacement.
+	databaseAgentID atomic.Value
+	databaseMachineID atomic.Value
 	// terminalFailureHandler só é disparado pelo status terminal 410 Gone,
 	// reservado para uma instalação de banco removida. 401/403 podem ser token
 	// inválido ou entitlement temporariamente indisponível e mantêm o cooldown.
@@ -113,6 +119,24 @@ func (e *IngestExporter) SetDatabaseInstallationID(id string) {
 	if id = strings.TrimSpace(id); id != "" {
 		e.installationID.Store(id)
 	}
+}
+
+// SetDatabaseAgentIdentity attaches the two identities that only the dedicated
+// database profile sends during collector registration. They are never sent by
+// the generic Linux or SNMP profiles.
+func (e *IngestExporter) SetDatabaseAgentIdentity(agentID, machineID string) {
+	if agentID = strings.TrimSpace(agentID); agentID != "" {
+		e.databaseAgentID.Store(agentID)
+	}
+	if machineID = strings.TrimSpace(machineID); machineID != "" {
+		e.databaseMachineID.Store(machineID)
+	}
+}
+
+func (e *IngestExporter) databaseAgentIdentity() (string, string) {
+	agentID, _ := e.databaseAgentID.Load().(string)
+	machineID, _ := e.databaseMachineID.Load().(string)
+	return agentID, machineID
 }
 
 // SetTerminalFailureHandler instala uma reação local para HTTP 410 Gone. É
@@ -929,6 +953,22 @@ func machineID(containerized bool) string {
 	return ""
 }
 
+// DatabaseMachineUUID turns the OS machine-id into a deterministic UUID. The
+// source remains the machine-id (and therefore survives replacing the Agent),
+// while the wire contract is an actual UUID rather than an arbitrary string.
+func DatabaseMachineUUID(containerized bool) string {
+	machine := machineID(containerized)
+	if machine == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte("telvyn/database-machine/" + machine))
+	b := digest[:16]
+	b[6] = (b[6] & 0x0f) | 0x50 // UUID v5-shaped deterministic identity.
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
 // registerHost é o corpo comum do POST /host/register (Bearer): cria/atualiza o
 // noc_app_host da máquina no modo dado e devolve o host_id (bigint como string).
 func (e *IngestExporter) registerHost(ctx context.Context, hostname, installMode, collectorID string) (string, error) {
@@ -980,6 +1020,11 @@ func (e *IngestExporter) RegisterCollector(ctx context.Context, name string, cap
 		"agent_version": e.version,
 		"capabilities":  capabilities,
 		"install_mode":  installMode,
+	}
+	if agentID, machineID := e.databaseAgentIdentity(); agentID != "" && machineID != "" {
+		payload["agent_id"] = agentID
+		payload["machine_id"] = machineID
+		payload["host_name"] = e.hostID
 	}
 	if installationID := e.databaseInstallationID(); installationID != "" {
 		// O valor é só uma referência opaca. A classificação `database` e a

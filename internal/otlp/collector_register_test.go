@@ -70,3 +70,28 @@ func TestRegisterCollectorReportsSanitizedRuntimeSnapshot(t *testing.T) {
 		t.Fatalf("agent_time ausente: %v", runtime)
 	}
 }
+
+func TestRegisterDatabaseCollectorReportsSeparateAgentAndMachineUUIDs(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"collector_id":"11111111-1111-4111-8111-111111111111","tenant":"2"}`)
+	}))
+	defer server.Close()
+
+	exporter := NewIngestExporter(server.URL, "iwI_test", "postgres-01", "", "vtest",
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	exporter.SetDatabaseAgentIdentity("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	if _, _, err := exporter.RegisterCollector(context.Background(), "postgres-01 · banco · 11111111", []string{"metrics"}, "linux"); err != nil {
+		t.Fatalf("RegisterCollector: %v", err)
+	}
+	if payload["agent_id"] != "11111111-1111-4111-8111-111111111111" || payload["machine_id"] != "22222222-2222-4222-8222-222222222222" {
+		t.Fatalf("identity payload=%v", payload)
+	}
+	if payload["host_name"] != "postgres-01" {
+		t.Fatalf("host_name=%v", payload["host_name"])
+	}
+}

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -69,6 +70,70 @@ func databaseCollectorName(hostname, installationID string) string {
 		return hostname + " · PostgreSQL"
 	}
 	return hostname + " · banco · " + shortID
+}
+
+func databaseAgentIDPath() string {
+	if path := strings.TrimSpace(getenvOr("ISPWATCH_DATABASE_AGENT_ID_PATH", "")); path != "" {
+		return path
+	}
+	stateDir := strings.TrimSpace(getenvOr("ISPWATCH_STATE_DIR", "/var/lib/telvyn-agent"))
+	return filepath.Join(stateDir, "agent-id")
+}
+
+func isUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for index, ch := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if ch != '-' {
+				return false
+			}
+			continue
+		}
+		if !(ch >= '0' && ch <= '9') && !(ch >= 'a' && ch <= 'f') && !(ch >= 'A' && ch <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+func newUUID() (string, error) {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", err
+	}
+	bytes[6] = (bytes[6] & 0x0f) | 0x40
+	bytes[8] = (bytes[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16]), nil
+}
+
+// databaseAgentID is deliberately stored apart from the machine identity.
+// Replacing the installed Agent creates a new Agent UUID, while the stable
+// machine UUID still lets the backend transfer the existing database binding.
+func databaseAgentID() (string, error) {
+	path := databaseAgentIDPath()
+	if content, err := os.ReadFile(path); err == nil {
+		if id := strings.TrimSpace(string(content)); isUUID(id) {
+			return id, nil
+		}
+	}
+	id, err := newUUID()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	temporary := path + ".tmp"
+	if err := os.WriteFile(temporary, []byte(id+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func databaseRevocationMarkerPath() string {
@@ -202,6 +267,8 @@ func runIngestMode(ingestURL string) {
 	}
 	databaseAgent := isDatabaseAgent()
 	installationID := databaseInstallationID()
+	databaseIdentity := ""
+	databaseMachineIdentity := ""
 	if databaseAgent {
 		if databaseEngine() != "postgres" {
 			log.Error("agent de banco não iniciado: ISPWATCH_DATABASE_ENGINE deve ser postgres", "engine", databaseEngine())
@@ -215,6 +282,17 @@ func runIngestMode(ingestURL string) {
 		marker := databaseRevocationMarkerPath()
 		if databaseAgentRevoked(marker) {
 			log.Error("agent de banco desativado permanentemente porque o monitoramento foi removido no Telvyn; gere uma nova instalação para voltar a coletar", "marker", marker)
+			return
+		}
+		var err error
+		databaseIdentity, err = databaseAgentID()
+		if err != nil {
+			log.Error("agent de banco não iniciado: não foi possível preparar sua identidade", "err", err)
+			return
+		}
+		databaseMachineIdentity = otlp.DatabaseMachineUUID(kind == "docker")
+		if databaseMachineIdentity == "" {
+			log.Error("agent de banco não iniciado: UUID estável da máquina indisponível")
 			return
 		}
 	}
@@ -248,6 +326,7 @@ func runIngestMode(ingestURL string) {
 	databaseTerminalRemoval := func(status int) {}
 	if databaseAgent {
 		exporter.SetDatabaseInstallationID(installationID)
+		exporter.SetDatabaseAgentIdentity(databaseIdentity, databaseMachineIdentity)
 		databaseTerminalRemoval = func(status int) {
 			databaseRevocationOnce.Do(func() {
 				databaseRevoked.Store(true)
@@ -362,7 +441,7 @@ func runIngestMode(ingestURL string) {
 		collectorID := ""
 		collectorName := hostID
 		if databaseAgent {
-			collectorName = databaseCollectorName(hostID, installationID)
+			collectorName = databaseCollectorName(hostID, databaseIdentity)
 		}
 		if cid, _, err := exporter.RegisterCollector(ctx, collectorName, collectorCapabilities(), "docker"); err != nil {
 			log.Warn("docker: registro de collector falhou — sigo sem vínculo máquina↔collector", "err", err)
@@ -396,7 +475,7 @@ func runIngestMode(ingestURL string) {
 		collectorID := ""
 		collectorName := hostID
 		if databaseAgent {
-			collectorName = databaseCollectorName(hostID, installationID)
+			collectorName = databaseCollectorName(hostID, databaseIdentity)
 		}
 		if cid, _, err := exporter.RegisterCollector(ctx, collectorName, collectorCapabilities(), "linux"); err != nil {
 			log.Warn("linux: registro de collector falhou — sigo sem vínculo máquina↔collector", "err", err)
@@ -602,7 +681,7 @@ func runIngestMode(ingestURL string) {
 	// que o usuário criou no painel, executando cada um no intervalo. O resultado
 	// vai pelo mesmo canal `out` (PostMetrics entrega). Reusa a máquina mTLS.
 	if getenvOr("ISPWATCH_CHECKS_ENABLED", "1") == "1" {
-		startIngestChecks(ctx, log, exporter, apmStats, token, ingestURL, hostID, out, databaseMonitors, databaseTerminalRemoval, startSelfMetrics)
+		startIngestChecks(ctx, log, exporter, apmStats, token, ingestURL, hostID, databaseIdentity, out, databaseMonitors, databaseTerminalRemoval, startSelfMetrics)
 	} else {
 		log.Debug("checagens agendadas desativadas (set ISPWATCH_CHECKS_ENABLED=1 pra habilitar)")
 	}
@@ -715,13 +794,13 @@ func startSbomScan(ctx context.Context, log *slog.Logger, exporter *otlp.IngestE
 // (Bearer) pra obter collector_id+tenant, monta um checks.Runtime emitindo no
 // mesmo canal `out`, e roda o loop de config-pull com um client que injeta o
 // Bearer token. Reusa toda a máquina de checks/scheduler do modo mTLS.
-func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.IngestExporter, apmStats *statsfwd.Forwarder, token, ingestURL, hostID string, out chan<- []*collectorv1.Metric, databaseMonitors *ebpf.DatabaseMonitorRegistry, terminalRemoval func(int), onRegistered func()) {
+func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.IngestExporter, apmStats *statsfwd.Forwarder, token, ingestURL, hostID, databaseIdentity string, out chan<- []*collectorv1.Metric, databaseMonitors *ebpf.DatabaseMonitorRegistry, terminalRemoval func(int), onRegistered func()) {
 	name := strings.TrimSpace(hostID)
 	if name == "" {
 		name, _ = os.Hostname()
 	}
 	if isDatabaseAgent() {
-		name = databaseCollectorName(name, databaseInstallationID())
+		name = databaseCollectorName(name, databaseIdentity)
 	}
 	// Base raiz do servidor (config-pull fica em /api/collector/v1/config, fora
 	// do /api/ingest/v1).
