@@ -73,7 +73,9 @@ clean:
 #   ispwatch-agent-<version>-<goos>-<goarch>/
 #     ispwatch-agent              (binário Go, static via CGO_ENABLED=0)
 #     ispwatch-agent.service      (systemd unit, copiado de packaging/)
-#     ispwatch-agent-database@.service (template isolado por instalação DB)
+#     telvyn-agent-database.service (serviço único do host de banco)
+#     telvyn-agent-database-update.service (atualização sem identificar a unit)
+#     install.sh                   (bootstrap local para atualizações do banco)
 #     LICENSE                     (Apache-2.0)
 #     THIRD_PARTY_NOTICES.md      (atribuições obrigatórias)
 #     SECURITY-NOTE.md            (nota de segurança do instalador)
@@ -91,7 +93,9 @@ release-ci:
 	  go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION)" \
 	  -o $(DIST_DIR)/ispwatch-agent ./cmd/collector
 	cp packaging/ispwatch-agent.service $(DIST_DIR)/
-	cp packaging/ispwatch-agent-database@.service $(DIST_DIR)/
+	cp packaging/telvyn-agent-database.service $(DIST_DIR)/
+	cp packaging/telvyn-agent-database-update.service $(DIST_DIR)/
+	cp packaging/install.sh $(DIST_DIR)/
 	cp LICENSE THIRD_PARTY_NOTICES.md $(DIST_DIR)/
 	cp packaging/SECURITY-NOTE.md $(DIST_DIR)/
 	cd dist && tar -czf $(DIST_NAME).tar.gz $(DIST_NAME)

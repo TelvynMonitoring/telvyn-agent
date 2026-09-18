@@ -24,9 +24,8 @@ set -euo pipefail
 #   ISPWATCH_AGENT_KIND    linux (default) — registra a máquina como host de app.
 #   ISPWATCH_AGENT_PROFILE database — Agent dedicado a uma instância PostgreSQL.
 #   ISPWATCH_DATABASE_ENGINE postgres — motor do Agent de Banco.
-#   ISPWATCH_DATABASE_ENROLLMENT_ID — identificador opaco do comando, usado
-#                                    só para isolar a unit local. A instância
-#                                    é criada pela primeira métrica do Agent.
+#   ISPWATCH_DATABASE_INSTALLATION_ID — UUID que vincula automaticamente o
+#                                     primeiro Agent à instância no Telvyn.
 #   ISPWATCH_HOSTNAME      nome reportado (default: FQDN da máquina).
 #   qualquer ISPWATCH_*/COLLECTOR_LOG_LEVEL extra é repassado ao agente (toggles).
 ISPWATCH_AGENT_VERSION="${ISPWATCH_AGENT_VERSION:-latest}"
@@ -36,8 +35,8 @@ ISPWATCH_DATABASE_INSTALLATION_ID="${ISPWATCH_DATABASE_INSTALLATION_ID:-}"
 ISPWATCH_DATABASE_ENROLLMENT_ID="${ISPWATCH_DATABASE_ENROLLMENT_ID:-}"
 ISPWATCH_DATABASE_ENGINE="${ISPWATCH_DATABASE_ENGINE:-postgres}"
 # ISPWATCH_UPGRADE=true → atualiza uma instalação existente sem reescrever seu
-# EnvironmentFile. Para um profile database, informe novamente PROFILE +
-# DATABASE_ENROLLMENT_ID (ou o INSTALLATION_ID legado) para selecionar a unit exata.
+# EnvironmentFile. Para o profile database o instalador encontra o serviço
+# local; o operador nunca precisa informar um identificador.
 ISPWATCH_UPGRADE="${ISPWATCH_UPGRADE:-false}"
 GITHUB_REPO="${ISPWATCH_GITHUB_REPO:-TelvynMonitoring/telvyn-agent}"
 # ISPWATCH_DOWNLOAD_BASE permite redirecionar para mirror/dev local sem
@@ -51,9 +50,21 @@ BASE_LOG_DIR="/var/log/ispwatch"
 GENERIC_BINARY_PATH="${INSTALL_DIR}/ispwatch-agent"
 GENERIC_UNIT_NAME="ispwatch-agent.service"
 GENERIC_UNIT_PATH="/etc/systemd/system/${GENERIC_UNIT_NAME}"
-# O release distribui um modelo. O instalador materializa uma unit exata por
-# enrollment/installation id; assim instalar/atualizar o banco B não altera a unit do A.
-DATABASE_UNIT_TEMPLATE_NAME="ispwatch-agent-database@.service"
+DATABASE_UNIT_NAME="telvyn-agent-database.service"
+DATABASE_UNIT_PATH="/etc/systemd/system/${DATABASE_UNIT_NAME}"
+DATABASE_UPDATE_UNIT_NAME="telvyn-agent-database-update.service"
+DATABASE_UPDATE_UNIT_PATH="/etc/systemd/system/${DATABASE_UPDATE_UNIT_NAME}"
+DATABASE_UPDATE_SCRIPT="/usr/local/lib/telvyn-agent/database-update"
+DATABASE_UPDATE_INSTALLER="/usr/local/lib/telvyn-agent/database-install"
+DATABASE_CONFIG_DIR="/etc/telvyn"
+DATABASE_ENV_FILE="${DATABASE_CONFIG_DIR}/database-agent.env"
+DATABASE_BINARY_PATH="/usr/local/bin/telvyn-agent-database"
+DATABASE_LIB_DIR="/var/lib/telvyn-agent/database"
+DATABASE_LOG_DIR="/var/log/telvyn-agent/database"
+DATABASE_SERVICE_USER="telvyn-database"
+DATABASE_SERVICE_GROUP="telvyn-database"
+LEGACY_DATABASE_ENV_FILE=""
+LEGACY_DATABASE_UNIT_NAME=""
 
 # === Validação =========================================================
 # No modelo certless, INGEST_URL + INGEST_TOKEN são obrigatórios (substituem
@@ -88,6 +99,12 @@ if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && "$ISPWATCH_DATABASE_ENGINE" != 
     exit 1
 fi
 
+if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && "$ISPWATCH_UPGRADE" != "true" \
+    && -z "$ISPWATCH_DATABASE_INSTALLATION_ID" ]]; then
+    echo "ERROR: ISPWATCH_DATABASE_INSTALLATION_ID é obrigatório na primeira instalação do Agent de Banco." >&2
+    exit 1
+fi
+
 if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
     AGENT_KIND_NORMALIZED=$(printf '%s' "$ISPWATCH_AGENT_KIND" | tr '[:upper:]' '[:lower:]')
     if [[ "$AGENT_KIND_NORMALIZED" != "linux" && "$AGENT_KIND_NORMALIZED" != "docker" ]]; then
@@ -101,30 +118,36 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Um Agent de Banco tem ciclo de vida próprio por instalação. O valor enviado
-# pelo portal continua opaco no EnvironmentFile; para nomes de arquivos/unit
-# usamos um slug seguro e determinístico, com hash para não colidir quando IDs
-# opacos diferentes normalizarem para o mesmo texto.
+# Um host PostgreSQL tem um único Agent de Banco. A identidade da instalação
+# fica protegida no EnvironmentFile; o operador sempre gerencia um serviço
+# estável com systemctl, sem UUIDs ou nomes derivados para decorar.
 if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-    DATABASE_SCOPE_ID="${ISPWATCH_DATABASE_INSTALLATION_ID:-$ISPWATCH_DATABASE_ENROLLMENT_ID}"
-    DATABASE_SERVICE_BASE=$(printf '%s' "$DATABASE_SCOPE_ID" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cs '[:alnum:]' '-' | sed 's/^-*//; s/-*$//')
-    if [[ -z "$DATABASE_SERVICE_BASE" ]]; then
-        DATABASE_SERVICE_BASE="installation"
+    UNIT_NAME="$DATABASE_UNIT_NAME"
+    UNIT_PATH="$DATABASE_UNIT_PATH"
+    CONFIG_DIR="$DATABASE_CONFIG_DIR"
+    ENV_FILE="$DATABASE_ENV_FILE"
+    LIB_DIR="$DATABASE_LIB_DIR"
+    LOG_DIR="$DATABASE_LOG_DIR"
+    BINARY_DIR="$(dirname "$DATABASE_BINARY_PATH")"
+    BINARY_PATH="$DATABASE_BINARY_PATH"
+    SERVICE_USER="$DATABASE_SERVICE_USER"
+    SERVICE_GROUP="$DATABASE_SERVICE_GROUP"
+
+    # Migração sem intervenção: releases anteriores usavam uma unit derivada
+    # do UUID. Há somente um Agent de Banco por host; se houver uma única
+    # instalação legada, preservamos o segredo e migramos para a unit estável.
+    if [[ "$ISPWATCH_UPGRADE" == "true" && ! -f "$ENV_FILE" ]]; then
+        mapfile -t legacy_env_files < <(find /etc -maxdepth 2 -type f -path '/etc/ispwatch-database-*/agent.env' 2>/dev/null | sort)
+        if [[ ${#legacy_env_files[@]} -eq 1 ]]; then
+            LEGACY_DATABASE_ENV_FILE="${legacy_env_files[0]}"
+            legacy_dir=$(basename "$(dirname "$LEGACY_DATABASE_ENV_FILE")")
+            LEGACY_DATABASE_UNIT_NAME="ispwatch-agent-database@${legacy_dir#ispwatch-database-}.service"
+        elif [[ ${#legacy_env_files[@]} -gt 1 ]]; then
+            echo "ERROR: foram encontrados vários Agents de Banco legados neste host." >&2
+            echo "       Mantenha apenas um Agent de Banco por servidor antes de atualizar." >&2
+            exit 1
+        fi
     fi
-    DATABASE_SERVICE_HASH=$(printf '%s' "$DATABASE_SCOPE_ID" | sha256sum | awk '{print substr($1, 1, 16)}')
-    # Mantém uma pista legível do installation_id e 64 bits de hash. Também
-    # cabe no limite de login Linux quando usado pelo usuário tvdb-%i.
-    DATABASE_SERVICE_ID="${DATABASE_SERVICE_BASE:0:8}-${DATABASE_SERVICE_HASH}"
-    UNIT_NAME="ispwatch-agent-database@${DATABASE_SERVICE_ID}.service"
-    UNIT_PATH="/etc/systemd/system/${UNIT_NAME}"
-    CONFIG_DIR="/etc/ispwatch-database-${DATABASE_SERVICE_ID}"
-    ENV_FILE="${CONFIG_DIR}/agent.env"
-    LIB_DIR="${BASE_LIB_DIR}/database-${DATABASE_SERVICE_ID}"
-    LOG_DIR="${BASE_LOG_DIR}/database-${DATABASE_SERVICE_ID}"
-    BINARY_DIR="/usr/local/lib/ispwatch/database-${DATABASE_SERVICE_ID}"
-    BINARY_PATH="${BINARY_DIR}/ispwatch-agent"
-    SERVICE_USER="tvdb-${DATABASE_SERVICE_ID}"
-    SERVICE_GROUP="$SERVICE_USER"
 else
     UNIT_NAME="$GENERIC_UNIT_NAME"
     UNIT_PATH="$GENERIC_UNIT_PATH"
@@ -189,12 +212,12 @@ else
 fi
 
 # === Idempotência / upgrade ============================================
-# A instalação Linux genérica segue singleton. Já cada profile database usa
-# apenas seu próprio EnvironmentFile/binário, então várias instâncias podem
-# coexistir no mesmo host sem se sobrescrever.
+# A instalação Linux genérica segue singleton. O profile database também é
+# singleton por host: ele descobre todos os bancos visíveis para o usuário de
+# leitura configurado no PostgreSQL.
 INSTALLED=false
 if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-    if [[ -f "$ENV_FILE" ]] || [[ -f "$BINARY_PATH" ]]; then
+    if [[ -f "$ENV_FILE" ]] || [[ -f "$BINARY_PATH" ]] || [[ -n "$LEGACY_DATABASE_ENV_FILE" ]]; then
         INSTALLED=true
     fi
 elif [[ -f "$GENERIC_BINARY_PATH" ]] || [[ -f "$GENERIC_UNIT_PATH" ]]; then
@@ -211,7 +234,7 @@ elif [[ "$INSTALLED" == "true" ]]; then
     echo "WARN: instalação existente do agent IspWatch detectada para ${UNIT_NAME}." >&2
     echo "      Para ATUALIZAR no lugar (preserva token/config), rode com ISPWATCH_UPGRADE=true:" >&2
     if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-        echo "        curl -fsSL <URL> | ISPWATCH_UPGRADE=true ISPWATCH_AGENT_PROFILE=database ISPWATCH_DATABASE_ENROLLMENT_ID='<id>' sudo -E bash" >&2
+        echo "        sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}" >&2
     else
         echo "        curl -fsSL <URL> | ISPWATCH_UPGRADE=true sudo -E bash" >&2
     fi
@@ -267,19 +290,16 @@ if [[ -z "$EXTRACTED_DIR" ]]; then
     exit 1
 fi
 
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && ! -f "$EXTRACTED_DIR/ispwatch-agent-database@.service" ]]; then
+if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && ! -f "$EXTRACTED_DIR/telvyn-agent-database.service" ]]; then
     echo "ERROR: o release ${VERSION} não contém a unit do Agent de Banco; escolha uma release compatível." >&2
     exit 1
 fi
 install -m 0755 -o root -g root "$EXTRACTED_DIR/ispwatch-agent" "$BINARY_PATH"
 if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-    # Não instala o template compartilhado em /etc/systemd/system. Em vez
-    # disso, expande %i numa unit concreta desta instalação, para uma segunda
-    # instância não poder mudar o serviço da primeira durante seu install ou
-    # upgrade. DATABASE_SERVICE_ID contém apenas [a-z0-9-].
-    RENDERED_DATABASE_UNIT="${WORK_DIR}/${UNIT_NAME}"
-    sed "s/%i/${DATABASE_SERVICE_ID}/g" "$EXTRACTED_DIR/${DATABASE_UNIT_TEMPLATE_NAME}" > "$RENDERED_DATABASE_UNIT"
-    install -m 0644 -o root -g root "$RENDERED_DATABASE_UNIT" "$UNIT_PATH"
+    install -m 0644 -o root -g root "$EXTRACTED_DIR/telvyn-agent-database.service" "$UNIT_PATH"
+    install -m 0644 -o root -g root "$EXTRACTED_DIR/telvyn-agent-database-update.service" "$DATABASE_UPDATE_UNIT_PATH"
+    install -d -m 0755 -o root -g root "$(dirname "$DATABASE_UPDATE_INSTALLER")"
+    install -m 0755 -o root -g root "$EXTRACTED_DIR/install.sh" "$DATABASE_UPDATE_INSTALLER"
 else
     install -m 0644 "$EXTRACTED_DIR/ispwatch-agent.service" "$UNIT_PATH"
 fi
@@ -294,9 +314,19 @@ fi
 # comprometido não faz o root rodar comando arbitrário — o helper roda SEMPRE o
 # mesmo install.sh pinado, com o binário SHA256-verificado. Instalado/atualizado
 # tanto no install novo quanto no upgrade (idempotente). O profile database
-# não usa este helper global: atualizar uma instância exige selecioná-la pelo
-# installation_id, portanto o portal oferece uma instalação/upgrade explícito.
-if [[ "$ISPWATCH_AGENT_PROFILE" != "database" ]]; then
+# tem seu próprio helper: o serviço e seu EnvironmentFile são únicos no host,
+# então não há UUID para o operador informar.
+if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+mkdir -p "$(dirname "$DATABASE_UPDATE_SCRIPT")"
+cat > "$DATABASE_UPDATE_SCRIPT" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec env ISPWATCH_UPGRADE=true ISPWATCH_AGENT_PROFILE=database \\
+  "${DATABASE_UPDATE_INSTALLER}"
+EOF
+chmod 0755 "$DATABASE_UPDATE_SCRIPT"
+chown root:root "$DATABASE_UPDATE_SCRIPT"
+elif [[ "$ISPWATCH_AGENT_PROFILE" != "database" ]]; then
 UPGRADE_SCRIPT_URL="${ISPWATCH_INSTALL_SCRIPT_URL:-https://raw.githubusercontent.com/${GITHUB_REPO}/main/packaging/install.sh}"
 cat > "$INSTALL_DIR/ispwatch-agent-upgrade" <<EOF
 #!/usr/bin/env bash
@@ -348,21 +378,44 @@ systemctl enable --now ispwatch-agent-update.path
 fi
 
 # === Upgrade: binário+unit trocados → reinicia e sai ===================
-# Preserva o EnvironmentFile da instância (token/config/toggles) — não passa
-# pela reescrita abaixo. Um upgrade de banco troca somente seu binário e
-# reinicia somente sua unit, sem tocar nos demais Agents do host.
+# Preserva o EnvironmentFile (token/config/toggles) — não passa pela reescrita
+# abaixo. Na migração da unit antiga, copia o segredo sem o exibir e troca
+# apenas o serviço do Agent de Banco.
 if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
+    if [[ -n "$LEGACY_DATABASE_ENV_FILE" ]]; then
+        grep -Ev '^(ISPWATCH_STATE_DIR|ISPWATCH_LOGS_CURSOR_PATH|ISPWATCH_DATABASE_REVOKED_MARKER_PATH)=' \
+            "$LEGACY_DATABASE_ENV_FILE" > "$ENV_FILE"
+        {
+            echo "ISPWATCH_STATE_DIR=${LIB_DIR}"
+            echo "ISPWATCH_LOGS_CURSOR_PATH=${LIB_DIR}/log_cursors.json"
+            echo "ISPWATCH_DATABASE_REVOKED_MARKER_PATH=${LIB_DIR}/database-agent-revoked"
+        } >> "$ENV_FILE"
+        chown "root:${SERVICE_GROUP}" "$ENV_FILE"
+        chmod 0640 "$ENV_FILE"
+    fi
     # A unit pode ter mudado de usuário entre versões. Ajusta ownership antes
     # do restart para que o novo usuário consiga ler a configuração e usar o
     # WAL/arquivos de estado sem tornar o processo privilegiado.
     chown -R "$SERVICE_USER:$SERVICE_GROUP" "$LIB_DIR" "$LOG_DIR"
     chown "root:$SERVICE_GROUP" "$CONFIG_DIR" "$ENV_FILE" 2>/dev/null || true
-    rm -rf "$WORK_DIR"
     systemctl daemon-reload
-    systemctl restart "$UNIT_NAME"
+    if [[ -n "$LEGACY_DATABASE_UNIT_NAME" ]]; then
+        systemctl disable --now "$LEGACY_DATABASE_UNIT_NAME" || true
+        systemctl enable --now "$UNIT_NAME"
+    else
+        systemctl restart "$UNIT_NAME"
+    fi
+    rm -rf "$WORK_DIR"
     echo ""
-    echo "OK — ${UNIT_NAME} atualizado para ${VERSION} e reiniciado (config preservada)."
-    echo "Status: systemctl status ${UNIT_NAME}"
+    if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+        echo "OK — Agent de Banco atualizado para ${VERSION} (config preservada)."
+        echo "Status:     sudo systemctl status ${UNIT_NAME}"
+        echo "Atualizar:  sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}"
+        echo "Logs:       sudo journalctl -u ${UNIT_NAME} -f"
+    else
+        echo "OK — ${UNIT_NAME} atualizado para ${VERSION} e reiniciado (config preservada)."
+        echo "Status: systemctl status ${UNIT_NAME}"
+    fi
     exit 0
 fi
 
@@ -470,9 +523,17 @@ systemctl daemon-reload
 if [[ "${ISPWATCH_INSTALL_ONLY:-}" != "true" ]]; then
     systemctl enable --now "$UNIT_NAME"
     echo ""
-    echo "OK — ${UNIT_NAME} instalado e iniciado (kind=${ISPWATCH_AGENT_KIND})."
-    echo "Status: systemctl status ${UNIT_NAME}"
-    echo "Logs:   journalctl -u ${UNIT_NAME} -f"
+    if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+        echo "OK — Agent de Banco instalado e iniciado."
+        echo "Status:     sudo systemctl status ${UNIT_NAME}"
+        echo "Reiniciar:  sudo systemctl restart ${UNIT_NAME}"
+        echo "Atualizar:  sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}"
+        echo "Logs:       sudo journalctl -u ${UNIT_NAME} -f"
+    else
+        echo "OK — ${UNIT_NAME} instalado e iniciado (kind=${ISPWATCH_AGENT_KIND})."
+        echo "Status: systemctl status ${UNIT_NAME}"
+        echo "Logs:   journalctl -u ${UNIT_NAME} -f"
+    fi
 else
     echo ""
     echo "OK — ${UNIT_NAME} instalado (ISPWATCH_INSTALL_ONLY=true; não iniciado)."
