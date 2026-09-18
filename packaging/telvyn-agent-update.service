@@ -1,10 +1,10 @@
 [Unit]
-Description=Telvyn Agent de Banco — atualização
+Description=Telvyn Agent — atualização
 Documentation=https://docs.telvyn.com.br/agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/lib/telvyn-agent/database-update
+ExecStart=/usr/local/lib/telvyn-agent/update
 TimeoutStartSec=300

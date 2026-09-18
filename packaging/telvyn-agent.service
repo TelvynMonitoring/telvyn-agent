@@ -1,29 +1,27 @@
 [Unit]
-Description=Telvyn Agent de Banco
+Description=Telvyn Agent
 Documentation=https://docs.telvyn.com.br/agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=telvyn-database
-Group=telvyn-database
-EnvironmentFile=-/etc/telvyn/database-agent.env
-ExecStart=/usr/local/bin/telvyn-agent-database
+User=telvyn
+Group=telvyn
+EnvironmentFile=-/etc/telvyn/agent.env
+ExecStart=/usr/local/bin/telvyn-agent
 Restart=on-failure
 RestartSec=10s
 StartLimitInterval=60s
 StartLimitBurst=5
 
-# O Agent de Banco não abre receptor OTLP, eBPF, logs ou SNMP. Mantém só as
-# capacidades necessárias para as métricas locais do host do PostgreSQL.
 AmbientCapabilities=CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/telvyn-agent/database /var/log/telvyn-agent/database
+ReadWritePaths=/var/lib/telvyn-agent /var/log/telvyn-agent
 
 ProtectKernelTunables=true
 ProtectKernelModules=true
@@ -44,7 +42,7 @@ UMask=0027
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=telvyn-agent-database
+SyslogIdentifier=telvyn-agent
 
 [Install]
 WantedBy=multi-user.target

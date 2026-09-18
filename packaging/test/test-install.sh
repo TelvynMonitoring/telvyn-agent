@@ -10,14 +10,14 @@ cd "$(dirname "$0")"
 # O Agent de Banco é único por host e usa comandos systemctl estáveis. A
 # identidade da instalação permanece no EnvironmentFile, fora das instruções
 # operacionais do usuário.
-test -f ../telvyn-agent-database.service
-test -f ../telvyn-agent-database-update.service
-grep -Fq 'User=telvyn-database' ../telvyn-agent-database.service
-grep -Fq 'Group=telvyn-database' ../telvyn-agent-database.service
-grep -Fq 'EnvironmentFile=-/etc/telvyn/database-agent.env' ../telvyn-agent-database.service
-grep -Fq 'ReadWritePaths=/var/lib/telvyn-agent/database /var/log/telvyn-agent/database' ../telvyn-agent-database.service
-grep -Fq 'DATABASE_UNIT_NAME="telvyn-agent-database.service"' ../install.sh
-grep -Fq 'DATABASE_UPDATE_UNIT_NAME="telvyn-agent-database-update.service"' ../install.sh
+test -f ../telvyn-agent.service
+test -f ../telvyn-agent-update.service
+grep -Fq 'User=telvyn' ../telvyn-agent.service
+grep -Fq 'Group=telvyn' ../telvyn-agent.service
+grep -Fq 'EnvironmentFile=-/etc/telvyn/agent.env' ../telvyn-agent.service
+grep -Fq 'ReadWritePaths=/var/lib/telvyn-agent /var/log/telvyn-agent' ../telvyn-agent.service
+grep -Fq 'DATABASE_UNIT_NAME="telvyn-agent.service"' ../install.sh
+grep -Fq 'DATABASE_UPDATE_UNIT_NAME="telvyn-agent-update.service"' ../install.sh
 grep -Fq 'sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}' ../install.sh
 grep -Fq 'foram encontrados vários Agents de Banco legados neste host' ../install.sh
 

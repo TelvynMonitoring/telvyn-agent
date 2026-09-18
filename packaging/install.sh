@@ -50,19 +50,19 @@ BASE_LOG_DIR="/var/log/ispwatch"
 GENERIC_BINARY_PATH="${INSTALL_DIR}/ispwatch-agent"
 GENERIC_UNIT_NAME="ispwatch-agent.service"
 GENERIC_UNIT_PATH="/etc/systemd/system/${GENERIC_UNIT_NAME}"
-DATABASE_UNIT_NAME="telvyn-agent-database.service"
+DATABASE_UNIT_NAME="telvyn-agent.service"
 DATABASE_UNIT_PATH="/etc/systemd/system/${DATABASE_UNIT_NAME}"
-DATABASE_UPDATE_UNIT_NAME="telvyn-agent-database-update.service"
+DATABASE_UPDATE_UNIT_NAME="telvyn-agent-update.service"
 DATABASE_UPDATE_UNIT_PATH="/etc/systemd/system/${DATABASE_UPDATE_UNIT_NAME}"
-DATABASE_UPDATE_SCRIPT="/usr/local/lib/telvyn-agent/database-update"
-DATABASE_UPDATE_INSTALLER="/usr/local/lib/telvyn-agent/database-install"
+DATABASE_UPDATE_SCRIPT="/usr/local/lib/telvyn-agent/update"
+DATABASE_UPDATE_INSTALLER="/usr/local/lib/telvyn-agent/install"
 DATABASE_CONFIG_DIR="/etc/telvyn"
-DATABASE_ENV_FILE="${DATABASE_CONFIG_DIR}/database-agent.env"
-DATABASE_BINARY_PATH="/usr/local/bin/telvyn-agent-database"
-DATABASE_LIB_DIR="/var/lib/telvyn-agent/database"
-DATABASE_LOG_DIR="/var/log/telvyn-agent/database"
-DATABASE_SERVICE_USER="telvyn-database"
-DATABASE_SERVICE_GROUP="telvyn-database"
+DATABASE_ENV_FILE="${DATABASE_CONFIG_DIR}/agent.env"
+DATABASE_BINARY_PATH="/usr/local/bin/telvyn-agent"
+DATABASE_LIB_DIR="/var/lib/telvyn-agent"
+DATABASE_LOG_DIR="/var/log/telvyn-agent"
+DATABASE_SERVICE_USER="telvyn"
+DATABASE_SERVICE_GROUP="telvyn"
 LEGACY_DATABASE_ENV_FILE=""
 LEGACY_DATABASE_UNIT_NAME=""
 
@@ -137,15 +137,22 @@ if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
     # do UUID. Há somente um Agent de Banco por host; se houver uma única
     # instalação legada, preservamos o segredo e migramos para a unit estável.
     if [[ "$ISPWATCH_UPGRADE" == "true" && ! -f "$ENV_FILE" ]]; then
-        mapfile -t legacy_env_files < <(find /etc -maxdepth 2 -type f -path '/etc/ispwatch-database-*/agent.env' 2>/dev/null | sort)
-        if [[ ${#legacy_env_files[@]} -eq 1 ]]; then
-            LEGACY_DATABASE_ENV_FILE="${legacy_env_files[0]}"
-            legacy_dir=$(basename "$(dirname "$LEGACY_DATABASE_ENV_FILE")")
-            LEGACY_DATABASE_UNIT_NAME="ispwatch-agent-database@${legacy_dir#ispwatch-database-}.service"
-        elif [[ ${#legacy_env_files[@]} -gt 1 ]]; then
-            echo "ERROR: foram encontrados vários Agents de Banco legados neste host." >&2
-            echo "       Mantenha apenas um Agent de Banco por servidor antes de atualizar." >&2
-            exit 1
+        if [[ -f "/etc/telvyn/database-agent.env" ]]; then
+            # v0.4.21 usava nomes de serviço derivados do perfil. Migra sem
+            # expor a identidade ou exigir qualquer parâmetro do operador.
+            LEGACY_DATABASE_ENV_FILE="/etc/telvyn/database-agent.env"
+            LEGACY_DATABASE_UNIT_NAME="telvyn-agent-database.service"
+        else
+            mapfile -t legacy_env_files < <(find /etc -maxdepth 2 -type f -path '/etc/ispwatch-database-*/agent.env' 2>/dev/null | sort)
+            if [[ ${#legacy_env_files[@]} -eq 1 ]]; then
+                LEGACY_DATABASE_ENV_FILE="${legacy_env_files[0]}"
+                legacy_dir=$(basename "$(dirname "$LEGACY_DATABASE_ENV_FILE")")
+                LEGACY_DATABASE_UNIT_NAME="ispwatch-agent-database@${legacy_dir#ispwatch-database-}.service"
+            elif [[ ${#legacy_env_files[@]} -gt 1 ]]; then
+                echo "ERROR: foram encontrados vários Agents de Banco legados neste host." >&2
+                echo "       Mantenha apenas um Agent de Banco por servidor antes de atualizar." >&2
+                exit 1
+            fi
         fi
     fi
 else
@@ -290,14 +297,14 @@ if [[ -z "$EXTRACTED_DIR" ]]; then
     exit 1
 fi
 
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && ! -f "$EXTRACTED_DIR/telvyn-agent-database.service" ]]; then
+if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && ! -f "$EXTRACTED_DIR/telvyn-agent.service" ]]; then
     echo "ERROR: o release ${VERSION} não contém a unit do Agent de Banco; escolha uma release compatível." >&2
     exit 1
 fi
 install -m 0755 -o root -g root "$EXTRACTED_DIR/ispwatch-agent" "$BINARY_PATH"
 if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-    install -m 0644 -o root -g root "$EXTRACTED_DIR/telvyn-agent-database.service" "$UNIT_PATH"
-    install -m 0644 -o root -g root "$EXTRACTED_DIR/telvyn-agent-database-update.service" "$DATABASE_UPDATE_UNIT_PATH"
+    install -m 0644 -o root -g root "$EXTRACTED_DIR/telvyn-agent.service" "$UNIT_PATH"
+    install -m 0644 -o root -g root "$EXTRACTED_DIR/telvyn-agent-update.service" "$DATABASE_UPDATE_UNIT_PATH"
     install -d -m 0755 -o root -g root "$(dirname "$DATABASE_UPDATE_INSTALLER")"
     install -m 0755 -o root -g root "$EXTRACTED_DIR/install.sh" "$DATABASE_UPDATE_INSTALLER"
 else
@@ -408,7 +415,7 @@ if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
     rm -rf "$WORK_DIR"
     echo ""
     if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-        echo "OK — Agent de Banco atualizado para ${VERSION} (config preservada)."
+        echo "OK — Agent atualizado para ${VERSION} (config preservada)."
         echo "Status:     sudo systemctl status ${UNIT_NAME}"
         echo "Atualizar:  sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}"
         echo "Logs:       sudo journalctl -u ${UNIT_NAME} -f"
@@ -524,7 +531,7 @@ if [[ "${ISPWATCH_INSTALL_ONLY:-}" != "true" ]]; then
     systemctl enable --now "$UNIT_NAME"
     echo ""
     if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-        echo "OK — Agent de Banco instalado e iniciado."
+        echo "OK — Agent instalado e iniciado."
         echo "Status:     sudo systemctl status ${UNIT_NAME}"
         echo "Reiniciar:  sudo systemctl restart ${UNIT_NAME}"
         echo "Atualizar:  sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}"
