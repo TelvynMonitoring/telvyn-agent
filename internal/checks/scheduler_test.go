@@ -57,6 +57,38 @@ func cfgFor(checkID, checkType string, interval time.Duration) *collectorv1.Chec
 	}
 }
 
+func TestRuntime_RetryFailedStartsAfterTransientFactoryError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reg := NewRegistry()
+	available := false
+	target := &countingCheck{id: "postgres-discovery", interval: time.Hour}
+	reg.Register("postgres.instance_discovery", func(_ *collectorv1.CheckConfig) (Check, error) {
+		if !available {
+			return nil, errors.New("connection refused")
+		}
+		return target, nil
+	})
+
+	rt, _ := makeRuntime(ctx, reg)
+	added, _ := rt.ApplyDelta([]*collectorv1.CheckConfig{
+		cfgFor("postgres-discovery", "postgres.instance_discovery", time.Hour),
+	}, nil)
+	if added != 0 || rt.ActiveCheckCount() != 0 {
+		t.Fatalf("failed factory must not start a check: added=%d running=%d", added, rt.ActiveCheckCount())
+	}
+
+	available = true
+	if recovered := rt.RetryFailedStarts(); recovered != 1 {
+		t.Fatalf("recovered=%d, want 1", recovered)
+	}
+	if got := rt.ActiveCheckCount(); got != 1 {
+		t.Fatalf("running=%d, want 1 after retry", got)
+	}
+	rt.ApplyDelta(nil, []string{"postgres-discovery"})
+}
+
 // TestRuntime_Reload_StartsCheck verifies that Reload starts a goroutine that
 // calls Run at least twice within the given time window.
 func TestRuntime_Reload_StartsCheck(t *testing.T) {

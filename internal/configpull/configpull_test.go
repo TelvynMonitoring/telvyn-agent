@@ -20,6 +20,16 @@ func (recordingApplier) ApplyDelta(added []*collectorv1.CheckConfig, deletedIDs 
 	return len(added), len(deletedIDs)
 }
 
+type retryingApplier struct {
+	recordingApplier
+	retries atomic.Int32
+}
+
+func (r *retryingApplier) RetryFailedStarts() int {
+	r.retries.Add(1)
+	return 0
+}
+
 type recordingPostgresTargets struct {
 	added   []*collectorv1.CheckConfig
 	deleted []string
@@ -50,7 +60,7 @@ func TestExecuteSnmpTest_DeliversSanitizedResult(t *testing.T) {
 	testCase := pulledSnmpTest{
 		ID: "job-1", HostUUID: "host-1", Target: "", Version: "v3",
 		Params: map[string]any{
-			"v3_user": "monitor",
+			"v3_user":      "monitor",
 			"v3_auth_pass": "auth-secret",
 			"v3_priv_pass": "priv-secret",
 		},
@@ -117,6 +127,30 @@ func TestPullOnce_MirrorsPostgresServerDeltaToTargetRegistry(t *testing.T) {
 	}
 	if len(targets.deleted) != 1 || targets.deleted[0] != "check-deleted" {
 		t.Fatalf("target registry deleted = %#v", targets.deleted)
+	}
+}
+
+func TestPullOnce_RetriesFailedStartsWhenConfigurationIsUnchanged(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"version":          8,
+			"added_or_updated": []any{},
+			"deleted_ids":      []any{},
+		})
+	}))
+	defer server.Close()
+
+	var since atomic.Int64
+	since.Store(7)
+	applier := &retryingApplier{}
+	err := pullOnce(context.Background(), server.Client(), Config{
+		Endpoint: server.URL, CollectorID: "collector-a", TenantID: "tenant-a",
+	}, &since, applier, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("pullOnce: %v", err)
+	}
+	if got := applier.retries.Load(); got != 1 {
+		t.Fatalf("retry calls=%d, want 1", got)
 	}
 }
 

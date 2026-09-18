@@ -61,6 +61,11 @@ type Runtime struct {
 	// novos, deixando o resto rodando.
 	checksMu sync.Mutex
 	checks   map[string]*runningCheck // checkID → handle
+	// pendingStarts retains a server-supplied check whose factory could not be
+	// initialized yet (for example, a database connection temporarily refused
+	// by pg_hba.conf). Config pull is delta based, so without this the agent
+	// would advance its version and never receive the same check again.
+	pendingStarts map[string]*collectorv1.CheckConfig
 
 	// Worker pool semaphores: limitam concorrência por kind (snmp, icmp).
 	// Setados via SetWorkerPools durante o startup. nil = sem limite.
@@ -181,6 +186,7 @@ func New(parent context.Context, log *slog.Logger, registry *Registry, out chan<
 		minRunTimeout: defaultMinCheckRunTimeout,
 		maxRunTimeout: defaultMaxCheckRunTimeout,
 		checks:        make(map[string]*runningCheck),
+		pendingStarts: make(map[string]*collectorv1.CheckConfig),
 	}
 }
 
@@ -197,12 +203,14 @@ func (r *Runtime) ApplyDelta(added []*collectorv1.CheckConfig, deletedIDs []stri
 
 	// 1) Remove deletados
 	for _, id := range deletedIDs {
+		delete(r.pendingStarts, id)
 		if r.stopCheck(id) {
 			removedCount++
 		}
 	}
 	// 2) Adiciona/atualiza
 	for _, cfg := range added {
+		delete(r.pendingStarts, cfg.GetCheckId())
 		if !cfg.GetEnabled() {
 			// disabled = remove se estava rodando
 			if r.stopCheck(cfg.GetCheckId()) {
@@ -218,6 +226,7 @@ func (r *Runtime) ApplyDelta(added []*collectorv1.CheckConfig, deletedIDs []stri
 		}
 		check, err := factory(cfg)
 		if err != nil {
+			r.pendingStarts[cfg.GetCheckId()] = cfg
 			r.log.Warn("checks delta: factory error",
 				"check_id", cfg.GetCheckId(), "err", err)
 			continue
@@ -231,6 +240,36 @@ func (r *Runtime) ApplyDelta(added []*collectorv1.CheckConfig, deletedIDs []stri
 		"added_or_updated", addedCount, "removed", removedCount,
 		"total_running", r.countRunning())
 	return addedCount, removedCount
+}
+
+// RetryFailedStarts retries checks that the server has already delivered but
+// whose factory was temporarily unavailable. It is intentionally separate
+// from the config version: a connectivity repair must not require an operator
+// to edit and re-save the database configuration just to generate a new delta.
+func (r *Runtime) RetryFailedStarts() int {
+	r.reloadMu.Lock()
+	defer r.reloadMu.Unlock()
+
+	started := 0
+	for id, cfg := range r.pendingStarts {
+		factory, ok := r.registry.Get(cfg.GetCheckType())
+		if !ok {
+			continue
+		}
+		check, err := factory(cfg)
+		if err != nil {
+			continue
+		}
+		r.stopCheck(id)
+		r.startCheck(check)
+		delete(r.pendingStarts, id)
+		started++
+	}
+	if started > 0 {
+		r.log.Info("checks retry: failed starts recovered", "recovered", started,
+			"total_running", r.countRunning())
+	}
+	return started
 }
 
 // startCheck arranca uma nova goroutine pra check; assume reloadMu held.

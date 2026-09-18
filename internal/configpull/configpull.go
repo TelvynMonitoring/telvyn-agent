@@ -40,6 +40,13 @@ type Applier interface {
 	ApplyDelta(added []*collectorv1.CheckConfig, deletedIDs []string) (int, int)
 }
 
+// FailedStartRetrier is implemented by checks.Runtime. It keeps a temporary
+// factory error (such as a database access rule that was just corrected) from
+// being permanent merely because config pull is delta based.
+type FailedStartRetrier interface {
+	RetryFailedStarts() int
+}
+
 // PostgresTargetRegistry receives the same authoritative delta applied to the
 // scheduler. The eBPF bridge uses it to link only configured postgres.server
 // endpoints to a database monitor; configpull stays independent of eBPF.
@@ -258,6 +265,9 @@ func pullOnce(
 
 	// Curto-circuito: nada mudou
 	if r.Version == since && len(r.AddedOrUpdated) == 0 && len(r.DeletedIds) == 0 {
+		if retrier, ok := applier.(FailedStartRetrier); ok {
+			retrier.RetryFailedStarts()
+		}
 		log.Debug("config pull: no change", "version", since, "took_ms", time.Since(t0).Milliseconds())
 		return nil
 	}
@@ -305,6 +315,11 @@ func pullOnce(
 	}
 
 	added, removed := applier.ApplyDelta(cfgs, r.DeletedIds)
+	if len(cfgs) == 0 {
+		if retrier, ok := applier.(FailedStartRetrier); ok {
+			retrier.RetryFailedStarts()
+		}
+	}
 	if cfg.PostgresTargets != nil {
 		cfg.PostgresTargets.ApplyPostgresServerDelta(cfgs, r.DeletedIds)
 	}
