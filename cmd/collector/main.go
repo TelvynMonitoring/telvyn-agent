@@ -10,8 +10,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -42,6 +45,70 @@ import (
 
 // Version is set at build time via -ldflags. Defaults to "dev" for local runs.
 var Version = "dev"
+
+const databaseAgentProfile = "database"
+
+func isDatabaseAgent() bool {
+	return strings.EqualFold(strings.TrimSpace(getenvOr("ISPWATCH_AGENT_PROFILE", "")), databaseAgentProfile)
+}
+
+func databaseInstallationID() string {
+	return strings.TrimSpace(getenvOr("ISPWATCH_DATABASE_INSTALLATION_ID", ""))
+}
+
+func databaseEngine() string {
+	return strings.ToLower(strings.TrimSpace(getenvOr("ISPWATCH_DATABASE_ENGINE", "postgres")))
+}
+
+func databaseCollectorName(hostname, installationID string) string {
+	shortID := strings.ReplaceAll(strings.TrimSpace(installationID), "-", "")
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	if shortID == "" {
+		return hostname + " · PostgreSQL"
+	}
+	return hostname + " · banco · " + shortID
+}
+
+func databaseRevocationMarkerPath() string {
+	if marker := strings.TrimSpace(getenvOr("ISPWATCH_DATABASE_REVOKED_MARKER_PATH", "")); marker != "" {
+		return marker
+	}
+	stateDir := strings.TrimSpace(getenvOr("ISPWATCH_STATE_DIR", ""))
+	if stateDir == "" {
+		if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
+			stateDir = filepath.Join(cacheDir, "ispwatch")
+		} else {
+			stateDir = "/var/lib/ispwatch"
+		}
+	}
+	return filepath.Join(stateDir, "database-agent-revoked")
+}
+
+func databaseAgentRevoked(marker string) bool {
+	_, err := os.Stat(marker)
+	return err == nil || !os.IsNotExist(err)
+}
+
+func persistDatabaseAgentRevocation(marker string, status int) error {
+	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+		return err
+	}
+	tmp := marker + ".tmp"
+	content := []byte(fmt.Sprintf("revoked_at=%s\nhttp_status=%d\n", time.Now().UTC().Format(time.RFC3339), status))
+	if err := os.WriteFile(tmp, content, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, marker)
+}
+
+func updateMarkerPath() string {
+	if isDatabaseAgent() || !strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "linux") {
+		return ""
+	}
+	return getenvOr("ISPWATCH_UPDATE_MARKER_PATH", "/var/lib/ispwatch/update-requested")
+}
 
 func main() {
 	// Intercept --version / -version / -v (and --webhook) early. Keeps
@@ -133,14 +200,37 @@ func runIngestMode(ingestURL string) {
 		log.Error("ingest mode: ISPWATCH_INGEST_TOKEN ausente")
 		os.Exit(1)
 	}
+	databaseAgent := isDatabaseAgent()
+	installationID := databaseInstallationID()
+	if databaseAgent {
+		if databaseEngine() != "postgres" {
+			log.Error("agent de banco não iniciado: ISPWATCH_DATABASE_ENGINE deve ser postgres", "engine", databaseEngine())
+			return
+		}
+		kind := strings.ToLower(strings.TrimSpace(getenvOr("ISPWATCH_AGENT_KIND", "linux")))
+		if kind != "linux" && kind != "docker" {
+			log.Error("agent de banco não iniciado: ISPWATCH_AGENT_KIND deve ser linux ou docker", "kind", kind)
+			return
+		}
+		marker := databaseRevocationMarkerPath()
+		if databaseAgentRevoked(marker) {
+			log.Error("agent de banco desativado permanentemente porque o monitoramento foi removido no Telvyn; gere uma nova instalação para voltar a coletar", "marker", marker)
+			return
+		}
+	}
 	hostID := strings.TrimSpace(getenvOr("ISPWATCH_NODE_NAME", getenvOr("NODE_NAME", "")))
 	if hostID == "" {
 		hostID, _ = os.Hostname()
 	}
 	cluster := strings.TrimSpace(os.Getenv("ISPWATCH_CLUSTER"))
+	profileName := "default"
+	if databaseAgent {
+		profileName = databaseAgentProfile
+	}
 
 	log.Info("ispwatch collector starting (ingest mode)",
-		"version", Version, "endpoint", ingestURL, "host", hostID, "cluster", cluster)
+		"version", Version, "endpoint", ingestURL, "host", hostID, "cluster", cluster,
+		"profile", profileName)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -153,6 +243,25 @@ func runIngestMode(ingestURL string) {
 	}()
 
 	exporter := otlp.NewIngestExporter(ingestURL, token, hostID, cluster, Version, log)
+	var databaseRevoked atomic.Bool
+	var databaseRevocationOnce sync.Once
+	databaseTerminalRemoval := func(status int) {}
+	if databaseAgent {
+		exporter.SetDatabaseInstallationID(installationID)
+		databaseTerminalRemoval = func(status int) {
+			databaseRevocationOnce.Do(func() {
+				databaseRevoked.Store(true)
+				marker := databaseRevocationMarkerPath()
+				if err := persistDatabaseAgentRevocation(marker, status); err != nil {
+					log.Error("Agent de Banco revogado: não foi possível persistir o bloqueio local; a coleta será encerrada nesta execução", "status", status, "marker", marker, "err", err)
+				} else {
+					log.Error("Agent de Banco revogado pelo Telvyn: coleta e envio encerrados permanentemente; reinstale a partir de uma nova instância", "status", status, "marker", marker)
+				}
+				cancel()
+			})
+		}
+		exporter.SetTerminalFailureHandler(databaseTerminalRemoval)
+	}
 	// Config-pull keeps this registry in sync with postgres.server checks. The
 	// eBPF bridge reads it without blocking the tracer hot path to attach an
 	// exact monitor identity only to inbound database workload.
@@ -160,13 +269,27 @@ func runIngestMode(ingestURL string) {
 
 	// Métricas do próprio host (CPU/mem/disco/rede) → OTLP /metrics.
 	out := make(chan []*collectorv1.Metric, 256)
-	selfmetrics.Start(ctx, log, out, hostID, selfmetrics.DefaultInterval)
+	var selfMetricsOnce sync.Once
+	startSelfMetrics := func() {
+		selfMetricsOnce.Do(func() {
+			selfmetrics.Start(ctx, log, out, hostID, selfmetrics.DefaultInterval)
+		})
+	}
+	// Para os perfis comuns não há vínculo pendente. O Agent de Banco só começa
+	// a produzir métricas depois que o collector foi associado à instalação.
+	if !databaseAgent {
+		startSelfMetrics()
+	}
 	metricsSenderDone := make(chan struct{})
 	go func() {
 		defer close(metricsSenderDone)
 		for {
 			select {
 			case <-ctx.Done():
+				if databaseRevoked.Load() {
+					log.Info("métricas pendentes descartadas: Agent de Banco revogado")
+					return
+				}
 				// Os produtores param quando ctx é cancelado, mas alguns lotes
 				// podem já estar no canal. Drena-os com um contexto independente
 				// para que cada lote entre no outbox durável antes do processo sair.
@@ -237,18 +360,29 @@ func runIngestMode(ingestURL string) {
 	// APLICAÇÃO segue identificada pelo serviço (uuid), nunca pela máquina.
 	if strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "docker") {
 		collectorID := ""
-		if cid, _, err := exporter.RegisterCollector(ctx, hostID, []string{"metrics", "checks"}, "docker"); err != nil {
+		collectorName := hostID
+		if databaseAgent {
+			collectorName = databaseCollectorName(hostID, installationID)
+		}
+		if cid, _, err := exporter.RegisterCollector(ctx, collectorName, collectorCapabilities(), "docker"); err != nil {
 			log.Warn("docker: registro de collector falhou — sigo sem vínculo máquina↔collector", "err", err)
 		} else {
 			collectorID = cid
 			exporter.SetCollectorID(cid)
 		}
-		dockerHostID, err := exporter.RegisterDockerHost(ctx, hostID, collectorID)
-		if err != nil {
-			log.Warn("docker register falhou — sigo só com métricas de host", "err", err)
+		if databaseAgent {
+			if collectorID != "" {
+				startSelfMetrics()
+			}
+			log.Info("Agent de Banco docker registrado; não será criado host genérico", "collector_id", collectorID, "installation_id", installationID)
 		} else {
-			log.Info("máquina docker registrada", "host_id", dockerHostID, "hostname", hostID)
-			startDockerCheck(ctx, log, out, dockerHostID)
+			dockerHostID, err := exporter.RegisterDockerHost(ctx, hostID, collectorID)
+			if err != nil {
+				log.Warn("docker register falhou — sigo só com métricas de host", "err", err)
+			} else {
+				log.Info("máquina docker registrada", "host_id", dockerHostID, "hostname", hostID)
+				startDockerCheck(ctx, log, out, dockerHostID)
+			}
 		}
 	}
 
@@ -260,23 +394,34 @@ func runIngestMode(ingestURL string) {
 	// (uuid), nunca pela máquina.
 	if strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "linux") {
 		collectorID := ""
-		if cid, _, err := exporter.RegisterCollector(ctx, hostID, []string{"metrics", "checks"}, "linux"); err != nil {
+		collectorName := hostID
+		if databaseAgent {
+			collectorName = databaseCollectorName(hostID, installationID)
+		}
+		if cid, _, err := exporter.RegisterCollector(ctx, collectorName, collectorCapabilities(), "linux"); err != nil {
 			log.Warn("linux: registro de collector falhou — sigo sem vínculo máquina↔collector", "err", err)
 		} else {
 			collectorID = cid
 			exporter.SetCollectorID(cid)
 		}
-		linuxHostID, err := exporter.RegisterLinuxHost(ctx, hostID, collectorID)
-		if err != nil {
-			log.Warn("linux register falhou — sigo só com métricas de host", "err", err)
+		if databaseAgent {
+			if collectorID != "" {
+				startSelfMetrics()
+			}
+			log.Info("Agent de Banco linux registrado; não será criado host genérico", "collector_id", collectorID, "installation_id", installationID)
 		} else {
-			log.Info("máquina linux registrada", "host_id", linuxHostID, "hostname", hostID)
-			startLinuxSystemCheck(ctx, log, out, linuxHostID)
-			// Descoberta de serviços locais (processos que escutam porta +
-			// CPU/mem) → a lente de Máquina mostra "o que roda aqui". Toggle
-			// ISPWATCH_HOST_SERVICES (ligado por padrão).
-			if hostServicesEnabled() {
-				startHostServicesReport(ctx, log, exporter, linuxHostID)
+			linuxHostID, err := exporter.RegisterLinuxHost(ctx, hostID, collectorID)
+			if err != nil {
+				log.Warn("linux register falhou — sigo só com métricas de host", "err", err)
+			} else {
+				log.Info("máquina linux registrada", "host_id", linuxHostID, "hostname", hostID)
+				startLinuxSystemCheck(ctx, log, out, linuxHostID)
+				// Descoberta de serviços locais (processos que escutam porta +
+				// CPU/mem) → a lente de Máquina mostra "o que roda aqui". Toggle
+				// ISPWATCH_HOST_SERVICES (ligado por padrão).
+				if hostServicesEnabled() {
+					startHostServicesReport(ctx, log, exporter, linuxHostID)
+				}
 			}
 		}
 	}
@@ -398,21 +543,23 @@ func runIngestMode(ingestURL string) {
 	// stats acima já contam 100%, então os números seguem exatos.
 	apmSampler := sampler.New(0.10, 2*time.Second)
 	rec.SetTraceSampler(apmSampler.KeepRaw)
-	go func() {
-		t := time.NewTicker(concentrator.BucketDuration)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				_ = apmStats.Send(context.Background(), apmConc.Flush()) // best-effort no shutdown
-				return
-			case <-t.C:
-				if err := apmStats.Send(ctx, apmConc.Flush()); err != nil {
-					log.Warn("apm stats flush failed", "err", err)
+	if !databaseAgent {
+		go func() {
+			t := time.NewTicker(concentrator.BucketDuration)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					_ = apmStats.Send(context.Background(), apmConc.Flush()) // best-effort no shutdown
+					return
+				case <-t.C:
+					if err := apmStats.Send(ctx, apmConc.Flush()); err != nil {
+						log.Warn("apm stats flush failed", "err", err)
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// eBPF L7 tracer no modo ingest (Frente 4 — observabilidade zero-código).
 	// Escuta o tráfego de fio (HTTP/gRPC/Postgres/Redis/…) de QUALQUER app sem
@@ -427,13 +574,15 @@ func runIngestMode(ingestURL string) {
 	// startup, em especial o rec.Start() (receiver OTLP :4318) lá embaixo. É o
 	// mesmo padrão do caminho legado, onde os receivers sobem em goroutine ANTES
 	// do tracer. Best-effort: se o eBPF falhar, o agent segue normal.
-	if getenvOr("ISPWATCH_EBPF_TRACING", "0") == "1" {
+	if !databaseAgent && getenvOr("ISPWATCH_EBPF_TRACING", "0") == "1" {
 		go startEbpfTracer(ctx, log, ebpfStatsSink{conc: apmConc}, out, hostID, databaseMonitors)
 	}
 
 	// Coleta opcional de logs: taila /var/log/pods (CRI) e
 	// encaminha cada linha como OTLP JSON + Bearer pro gateway /api/ingest/v1/logs.
-	if getenvOr("ISPWATCH_LOGS_ENABLED", "0") == "1" {
+	if databaseAgent {
+		log.Info("logs desativados para o perfil database")
+	} else if getenvOr("ISPWATCH_LOGS_ENABLED", "0") == "1" {
 		startIngestPodLogs(ctx, log, exporter, hostID)
 	} else {
 		log.Debug("pod logs desativados (set ISPWATCH_LOGS_ENABLED=1 pra habilitar)")
@@ -441,7 +590,9 @@ func runIngestMode(ingestURL string) {
 
 	// SNMP traps (toggle, B2): receptor UDP/162 que encaminha traps do device pro
 	// backend (/api/ingest/v1/snmptrap) — o device avisa na hora, sem esperar o poll.
-	if getenvOr("ISPWATCH_SNMP_TRAPS_ENABLED", "0") == "1" {
+	if databaseAgent {
+		log.Info("SNMP traps desativados para o perfil database")
+	} else if getenvOr("ISPWATCH_SNMP_TRAPS_ENABLED", "0") == "1" {
 		startSnmpTrapListener(ctx, log, exporter)
 	} else {
 		log.Debug("snmp traps desativados (set ISPWATCH_SNMP_TRAPS_ENABLED=1 pra habilitar)")
@@ -451,7 +602,7 @@ func runIngestMode(ingestURL string) {
 	// que o usuário criou no painel, executando cada um no intervalo. O resultado
 	// vai pelo mesmo canal `out` (PostMetrics entrega). Reusa a máquina mTLS.
 	if getenvOr("ISPWATCH_CHECKS_ENABLED", "1") == "1" {
-		startIngestChecks(ctx, log, exporter, apmStats, token, ingestURL, hostID, out, databaseMonitors)
+		startIngestChecks(ctx, log, exporter, apmStats, token, ingestURL, hostID, out, databaseMonitors, databaseTerminalRemoval, startSelfMetrics)
 	} else {
 		log.Debug("checagens agendadas desativadas (set ISPWATCH_CHECKS_ENABLED=1 pra habilitar)")
 	}
@@ -461,7 +612,9 @@ func runIngestMode(ingestURL string) {
 	// checks e o node-system continuam. Um receptor opcional não derruba o
 	// processo. Desliga de propósito com ISPWATCH_OTLP_HTTP_DISABLE=1; muda de
 	// porta com ISPWATCH_OTLP_HTTP_PORT.
-	if getenvOr("ISPWATCH_OTLP_HTTP_DISABLE", "0") == "1" {
+	if databaseAgent {
+		log.Info("otlp http receiver desativado para o perfil database")
+	} else if getenvOr("ISPWATCH_OTLP_HTTP_DISABLE", "0") == "1" {
 		log.Info("otlp http receiver desligado via ISPWATCH_OTLP_HTTP_DISABLE")
 	} else {
 		go func() {
@@ -562,10 +715,13 @@ func startSbomScan(ctx context.Context, log *slog.Logger, exporter *otlp.IngestE
 // (Bearer) pra obter collector_id+tenant, monta um checks.Runtime emitindo no
 // mesmo canal `out`, e roda o loop de config-pull com um client que injeta o
 // Bearer token. Reusa toda a máquina de checks/scheduler do modo mTLS.
-func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.IngestExporter, apmStats *statsfwd.Forwarder, token, ingestURL, hostID string, out chan<- []*collectorv1.Metric, databaseMonitors *ebpf.DatabaseMonitorRegistry) {
+func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.IngestExporter, apmStats *statsfwd.Forwarder, token, ingestURL, hostID string, out chan<- []*collectorv1.Metric, databaseMonitors *ebpf.DatabaseMonitorRegistry, terminalRemoval func(int), onRegistered func()) {
 	name := strings.TrimSpace(hostID)
 	if name == "" {
 		name, _ = os.Hostname()
+	}
+	if isDatabaseAgent() {
+		name = databaseCollectorName(name, databaseInstallationID())
 	}
 	// Base raiz do servidor (config-pull fica em /api/collector/v1/config, fora
 	// do /api/ingest/v1).
@@ -612,6 +768,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			})
 		}
 		return exporter.PostDatabaseQueryStats(postCtx, otlp.DatabaseQueryStatsPayload{
+			InstallationID: stats.InstallationID, DatabaseID: stats.DatabaseID,
 			DBServer: stats.DBServer, DBName: stats.DBName,
 			WindowSeconds: stats.WindowSeconds, Queries: queries,
 		})
@@ -653,6 +810,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			})
 		}
 		return exporter.PostDatabaseCatalog(postCtx, otlp.DatabaseCatalogPayload{
+			InstallationID: catalog.InstallationID, DatabaseID: catalog.DatabaseID,
 			DBServer: catalog.DBServer, DBName: catalog.DBName,
 			ServerVersion: catalog.ServerVersion, DatabaseSizeBytes: catalog.DatabaseSizeBytes,
 			Fingerprint: catalog.Fingerprint, Truncated: catalog.Truncated, Tables: tables,
@@ -690,6 +848,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			})
 		}
 		return exporter.PostDatabaseDiagnostics(postCtx, otlp.DatabaseDiagnosticsPayload{
+			InstallationID: diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
 			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName,
 			BloatEnabled: diagnostics.BloatEnabled, Capabilities: diagnostics.Capabilities,
 			Sessions: sessions, Blocking: blocking, Waits: waits, Bloat: bloat, Errors: diagnostics.Errors,
@@ -697,9 +856,17 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 	})
 	runtime.SetExplainPusher(func(postCtx context.Context, plan checks.DatabaseExplainPlan) error {
 		return exporter.PostDatabaseExplain(postCtx, otlp.DatabaseExplainPayload{
+			InstallationID: plan.InstallationID, DatabaseID: plan.DatabaseID,
 			RequestID: plan.RequestID, CheckID: plan.CheckID,
 			DBServer: plan.DBServer, DBName: plan.DBName,
 			PlanJSON: plan.PlanJSON, Error: plan.Error,
+		})
+	})
+	runtime.SetInstanceDiscoveryPusher(func(postCtx context.Context, discovery checks.DatabaseInstanceDiscovery) error {
+		return exporter.PostDatabaseInstanceDiscovery(postCtx, otlp.DatabaseInstanceDiscoveryPayload{
+			InstallationID: discovery.InstallationID,
+			Engine: discovery.Engine, Server: discovery.Server, Port: discovery.Port,
+			ServerVersion: discovery.ServerVersion, Databases: discovery.Databases,
 		})
 	})
 
@@ -718,17 +885,17 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 	// F2b — só o Linux systemd tem o helper root de upgrade. Nos outros modos
 	// (k8s/docker) o marcador fica vazio → o agente ignora should_update (k8s/docker
 	// atualizam via helm/docker, decisão F3). Path override via env pra testes.
-	updateMarker := ""
-	if strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "linux") {
-		updateMarker = getenvOr("ISPWATCH_UPDATE_MARKER_PATH", "/var/lib/ispwatch/update-requested")
-	}
+	updateMarker := updateMarkerPath()
 
 	go runCollectorRegistrationLoop(ctx, log, 2*time.Second, 60*time.Second,
 		func(ctx context.Context) (string, string, error) {
 			return exporter.RegisterCollector(ctx, name, collectorCapabilities(), collectorInstallMode())
 		}, func(collectorID, tenantID string) {
 			exporter.SetCollectorID(collectorID)
-			if envEnabled("ISPWATCH_SSH") {
+			if onRegistered != nil {
+				onRegistered()
+			}
+			if !isDatabaseAgent() && envEnabled("ISPWATCH_SSH") {
 				go func() {
 					if err := jobpull.Run(ctx, jobpull.Config{
 						Endpoint: base, CollectorID: collectorID, TenantID: tenantID,
@@ -760,6 +927,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 						apmStats.SetEnabled(apmEnabled)
 					},
 					PostgresTargets: databaseMonitors,
+					OnTerminalRemoval: terminalRemoval,
 				}, runtime); err != nil {
 					log.Warn("config pull (ingest) encerrou", "err", err)
 				}
@@ -774,6 +942,12 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 // operador os ativou no comando gerado pelo portal.
 func collectorCapabilities() []string {
 	caps := []string{"metrics", "checks"}
+	if isDatabaseAgent() {
+		// `database` é perfil no backend, não agent kind. As capabilities apenas
+		// descrevem que este binário coleta PostgreSQL e métricas do host da
+		// instância, sem liberar SNMP/APM por inferência.
+		return append(caps, "db-postgres", "host-metrics")
+	}
 	if !strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "snmp") {
 		return caps
 	}
@@ -797,6 +971,17 @@ func collectorCapabilities() []string {
 }
 
 func collectorInstallMode() string {
+	// O profile database mantém os kinds existentes. No instalador systemd,
+	// ISPWATCH_INSTALL_MODE=linux descreve o mecanismo de instalação; para
+	// esta identidade dedicada o backend precisa receber o kind solicitado
+	// (linux ou docker), não esse detalhe de empacotamento.
+	if isDatabaseAgent() {
+		kind := strings.ToLower(strings.TrimSpace(getenvOr("ISPWATCH_AGENT_KIND", "")))
+		switch kind {
+		case "docker", "linux":
+			return kind
+		}
+	}
 	if mode := strings.ToLower(strings.TrimSpace(getenvOr("ISPWATCH_INSTALL_MODE", ""))); mode == "docker" || mode == "linux" || mode == "k8s" {
 		return mode
 	}

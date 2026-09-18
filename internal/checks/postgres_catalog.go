@@ -26,8 +26,10 @@ const (
 // DatabaseCatalog é um snapshot de metadados. O fingerprint permite ao
 // backend reconhecer que a estrutura não mudou sem comparar cada item.
 type DatabaseCatalog struct {
-	DBServer          string                 `json:"db_server"`
-	DBName            string                 `json:"db_name"`
+	InstallationID     string                 `json:"installation_id"`
+	DatabaseID         string                 `json:"database_id"`
+	DBServer           string                 `json:"db_server"`
+	DBName             string                 `json:"db_name"`
 	ServerVersion     string                 `json:"server_version"`
 	DatabaseSizeBytes int64                  `json:"database_size_bytes"`
 	Fingerprint       string                 `json:"fingerprint"`
@@ -87,12 +89,14 @@ type CatalogCheck interface {
 }
 
 type postgresCatalog struct {
-	id         string
-	interval   time.Duration
-	hostID     string
-	dbServer   string
-	staticTags map[string]string
-	pool       pgxPool
+	id             string
+	interval       time.Duration
+	hostID         string
+	dbServer       string
+	installationID string
+	databaseID     string
+	staticTags     map[string]string
+	pool           pgxPool
 }
 
 // A consulta fica em uma única linha JSON para manter o contrato pgxPool
@@ -189,6 +193,8 @@ func newPostgresCatalogCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 	for k, v := range cfg.GetStaticTags() {
 		tags[k] = v
 	}
+	normalizeDatabaseMetricTags(cfg.GetParams(), tags)
+	installationID, databaseID := databaseIdentity(cfg.GetParams(), tags)
 	server := strings.TrimSpace(tags["db_server"])
 	if server == "" {
 		pool.Close()
@@ -204,6 +210,7 @@ func newPostgresCatalogCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 	}
 	return &postgresCatalog{
 		id: id, interval: interval, hostID: cfg.GetHostId(), dbServer: server,
+		installationID: installationID, databaseID: databaseID,
 		staticTags: tags, pool: pool,
 	}, nil
 }
@@ -246,6 +253,8 @@ func (c *postgresCatalog) RunCatalog(ctx context.Context) (*DatabaseCatalog, err
 		catalog.Truncated = true
 	}
 	catalog.DBServer = c.dbServer
+	catalog.InstallationID = c.installationID
+	catalog.DatabaseID = c.databaseID
 	if catalog.DBName == "" {
 		catalog.DBName = strings.TrimSpace(c.staticTags["db_name"])
 	}

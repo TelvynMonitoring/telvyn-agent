@@ -51,6 +51,14 @@ type IngestExporter struct {
 	// self-metrics com o collector_id REAL em vez do sintético por token.
 	// atomic: setado depois que goroutines de envio já podem estar rodando.
 	collectorID atomic.Value
+	// installationID só existe para um Agent de Banco instalado pelo fluxo de
+	// uma instância. O backend valida esse vínculo pelo token; o valor aqui só
+	// permite ao Agent apresentá-lo no registro e nos payloads de descoberta.
+	installationID atomic.Value
+	// terminalFailureHandler só é disparado pelo status terminal 410 Gone,
+	// reservado para uma instalação de banco removida. 401/403 podem ser token
+	// inválido ou entitlement temporariamente indisponível e mantêm o cooldown.
+	terminalFailureHandler atomic.Value // func(int)
 	// Política de coleção entregue pelo backend no config-pull. Antes da primeira
 	// sincronização preserva compatibilidade; depois, sinais opcionais são fail-closed.
 	enabledModules atomic.Value // map[string]bool
@@ -98,6 +106,34 @@ func (e *IngestExporter) SetCollectorRuntimeStatsProvider(provider func() Collec
 	}
 }
 
+// SetDatabaseInstallationID associa este processo a uma instalação de banco
+// criada pelo portal. Ele não concede autorização: o backend cruza o ID com o
+// token Bearer antes de aceitar o registro ou qualquer payload.
+func (e *IngestExporter) SetDatabaseInstallationID(id string) {
+	if id = strings.TrimSpace(id); id != "" {
+		e.installationID.Store(id)
+	}
+}
+
+// SetTerminalFailureHandler instala uma reação local para HTTP 410 Gone. É
+// usado pelo perfil database depois de o portal remover o par instância/Agent.
+func (e *IngestExporter) SetTerminalFailureHandler(handler func(status int)) {
+	if handler != nil {
+		e.terminalFailureHandler.Store(handler)
+	}
+}
+
+func (e *IngestExporter) databaseInstallationID() string {
+	id, _ := e.installationID.Load().(string)
+	return id
+}
+
+func (e *IngestExporter) noteTerminalRemoval(status int) {
+	if handler, ok := e.terminalFailureHandler.Load().(func(int)); ok && handler != nil {
+		handler(status)
+	}
+}
+
 // SetEnabledModules aplica imediatamente a política do tenant sem reiniciar o agent.
 func (e *IngestExporter) SetEnabledModules(modules []string) {
 	enabled := make(map[string]bool, len(modules))
@@ -130,6 +166,8 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 	case "host/services":
 		return modules["INFRAESTRUTURA"]
 	case "db/query-stats":
+		return modules["BANCOS_DADOS"]
+	case "db/instances/discover":
 		return modules["BANCOS_DADOS"]
 	case "db/catalog":
 		return modules["BANCOS_DADOS"]
@@ -194,8 +232,11 @@ func (e *IngestExporter) PostRaw(ctx context.Context, signal, contentType string
 		// Token revogado/inválido: loga a mensagem clara (rate-limited) pra
 		// TODOS os sinais que passam por aqui — sem isso o operador só via
 		// um "HTTP 401" genérico em loop, sem saber que era o token.
-		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			e.metricsPending.NoteAuthFailure(resp.StatusCode)
+		}
+		if resp.StatusCode == http.StatusGone {
+			e.noteTerminalRemoval(resp.StatusCode)
 		}
 		return fmt.Errorf("ingest %s: %w", signal, &sendbuf.StatusError{Code: resp.StatusCode})
 	}
@@ -207,6 +248,7 @@ func (e *IngestExporter) PostMetrics(ctx context.Context, metrics []*collectorv1
 	if len(metrics) == 0 {
 		return nil
 	}
+	installationID := e.databaseInstallationID()
 	dps := make([]*metricspb.Metric, 0, len(metrics))
 	for _, m := range metrics {
 		if m == nil || m.GetMetricName() == "" {
@@ -218,9 +260,18 @@ func (e *IngestExporter) PostMetrics(ctx context.Context, metrics []*collectorv1
 		} else {
 			tsNano = uint64(time.Now().UnixNano())
 		}
-		attrs := make([]*commonpb.KeyValue, 0, len(m.GetTags())+3)
+		attrs := make([]*commonpb.KeyValue, 0, len(m.GetTags())+4)
 		for k, v := range m.GetTags() {
+			// A identidade do profile database vem da instalação, não de uma
+			// configuração de check que possa estar atrasada. O backend ainda
+			// valida o vínculo token → collector → installation_id.
+			if k == "installation_id" && installationID != "" {
+				continue
+			}
 			attrs = append(attrs, kv(k, v))
+		}
+		if installationID != "" {
+			attrs = append(attrs, kv("installation_id", installationID))
 		}
 		if h := m.GetHostId(); h != "" {
 			attrs = append(attrs, kv("host.id", h))
@@ -251,6 +302,9 @@ func (e *IngestExporter) PostMetrics(ctx context.Context, metrics []*collectorv1
 	}}
 	if e.clusterName != "" {
 		res.Attributes = append(res.Attributes, kv("k8s.cluster.name", e.clusterName))
+	}
+	if installationID != "" {
+		res.Attributes = append(res.Attributes, kv("installation_id", installationID))
 	}
 	reqMsg := &metricscolpb.ExportMetricsServiceRequest{
 		ResourceMetrics: []*metricspb.ResourceMetrics{{
@@ -336,10 +390,12 @@ func (e *IngestExporter) PostHostServices(ctx context.Context, payload map[strin
 // DatabaseQueryStatsPayload é o agregado de uma janela de pg_stat_statements.
 // Os valores das linhas são deltas, não contadores cumulativos.
 type DatabaseQueryStatsPayload struct {
-	DBServer      string              `json:"db_server"`
-	DBName        string              `json:"db_name"`
-	WindowSeconds int                 `json:"window_seconds"`
-	Queries       []DatabaseQueryStat `json:"queries"`
+	InstallationID string              `json:"installation_id"`
+	DatabaseID     string              `json:"database_id"`
+	DBServer       string              `json:"db_server"`
+	DBName         string              `json:"db_name"`
+	WindowSeconds  int                 `json:"window_seconds"`
+	Queries        []DatabaseQueryStat `json:"queries"`
 }
 
 type DatabaseQueryStat struct {
@@ -357,6 +413,12 @@ func (e *IngestExporter) PostDatabaseQueryStats(ctx context.Context, payload Dat
 	if len(payload.Queries) == 0 {
 		return nil
 	}
+	if installationID := e.databaseInstallationID(); installationID != "" {
+		payload.InstallationID = installationID
+		if payload.DatabaseID == "" {
+			return fmt.Errorf("database query stats: database_id obrigatório para Agent de Banco")
+		}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -367,8 +429,10 @@ func (e *IngestExporter) PostDatabaseQueryStats(ctx context.Context, payload Dat
 // DatabaseCatalogPayload é um snapshot de metadados. Não contém linhas de
 // negócio: apenas estrutura e estatísticas agregadas do banco.
 type DatabaseCatalogPayload struct {
-	DBServer          string                 `json:"db_server"`
-	DBName            string                 `json:"db_name"`
+	InstallationID     string                 `json:"installation_id"`
+	DatabaseID         string                 `json:"database_id"`
+	DBServer           string                 `json:"db_server"`
+	DBName             string                 `json:"db_name"`
 	ServerVersion     string                 `json:"server_version"`
 	DatabaseSizeBytes int64                  `json:"database_size_bytes"`
 	Fingerprint       string                 `json:"fingerprint"`
@@ -428,6 +492,12 @@ func (e *IngestExporter) PostDatabaseCatalog(ctx context.Context, payload Databa
 	if payload.DBServer == "" || payload.DBName == "" {
 		return fmt.Errorf("database catalog: db_server e db_name são obrigatórios")
 	}
+	if installationID := e.databaseInstallationID(); installationID != "" {
+		payload.InstallationID = installationID
+		if payload.DatabaseID == "" {
+			return fmt.Errorf("database catalog: database_id obrigatório para Agent de Banco")
+		}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -439,15 +509,17 @@ func (e *IngestExporter) PostDatabaseCatalog(ctx context.Context, payload Databa
 // Ao contrário de métricas, seus itens permanecem em PostgreSQL no backend e
 // não criam uma série por sessão, lock ou consulta no VictoriaMetrics.
 type DatabaseDiagnosticsPayload struct {
-	DBServer     string                        `json:"db_server"`
-	DBName       string                        `json:"db_name"`
-	BloatEnabled bool                          `json:"bloat_enabled"`
-	Capabilities map[string]string             `json:"capabilities"`
-	Sessions     []DatabaseDiagnosticsSession  `json:"sessions"`
-	Blocking     []DatabaseDiagnosticsBlocking `json:"blocking"`
-	Waits        []DatabaseDiagnosticsWait     `json:"waits"`
-	Bloat        []DatabaseDiagnosticsBloat    `json:"bloat"`
-	Errors       []string                      `json:"errors,omitempty"`
+	InstallationID string                        `json:"installation_id"`
+	DatabaseID     string                        `json:"database_id"`
+	DBServer       string                        `json:"db_server"`
+	DBName         string                        `json:"db_name"`
+	BloatEnabled   bool                          `json:"bloat_enabled"`
+	Capabilities   map[string]string             `json:"capabilities"`
+	Sessions       []DatabaseDiagnosticsSession  `json:"sessions"`
+	Blocking       []DatabaseDiagnosticsBlocking `json:"blocking"`
+	Waits          []DatabaseDiagnosticsWait     `json:"waits"`
+	Bloat          []DatabaseDiagnosticsBloat    `json:"bloat"`
+	Errors         []string                      `json:"errors,omitempty"`
 }
 
 type DatabaseDiagnosticsSession struct {
@@ -489,6 +561,12 @@ func (e *IngestExporter) PostDatabaseDiagnostics(ctx context.Context, payload Da
 	if payload.DBServer == "" || payload.DBName == "" {
 		return fmt.Errorf("database diagnostics: db_server e db_name são obrigatórios")
 	}
+	if installationID := e.databaseInstallationID(); installationID != "" {
+		payload.InstallationID = installationID
+		if payload.DatabaseID == "" {
+			return fmt.Errorf("database diagnostics: database_id obrigatório para Agent de Banco")
+		}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -499,12 +577,14 @@ func (e *IngestExporter) PostDatabaseDiagnostics(ctx context.Context, payload Da
 // DatabaseExplainPayload é o resultado de uma solicitação pontual de plano.
 // O plano é JSON do PostgreSQL; EXPLAIN sem ANALYZE nunca executa a consulta.
 type DatabaseExplainPayload struct {
-	RequestID string `json:"request_id"`
-	CheckID   string `json:"check_id"`
-	DBServer  string `json:"db_server"`
-	DBName    string `json:"db_name"`
-	PlanJSON  string `json:"plan_json,omitempty"`
-	Error     string `json:"error,omitempty"`
+	InstallationID string `json:"installation_id"`
+	DatabaseID     string `json:"database_id"`
+	RequestID      string `json:"request_id"`
+	CheckID        string `json:"check_id"`
+	DBServer       string `json:"db_server"`
+	DBName         string `json:"db_name"`
+	PlanJSON       string `json:"plan_json,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // PostDatabaseExplain publica um único plano de execução no canal dedicado.
@@ -514,6 +594,12 @@ func (e *IngestExporter) PostDatabaseExplain(ctx context.Context, payload Databa
 	}
 	if payload.PlanJSON == "" && payload.Error == "" {
 		return fmt.Errorf("database explain: plan_json ou error é obrigatório")
+	}
+	if installationID := e.databaseInstallationID(); installationID != "" {
+		payload.InstallationID = installationID
+		if payload.DatabaseID == "" {
+			return fmt.Errorf("database explain: database_id obrigatório para Agent de Banco")
+		}
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -773,6 +859,36 @@ func (e *IngestExporter) SetCollectorID(id string) {
 	}
 }
 
+// DatabaseInstanceDiscoveryPayload descreve uma instância PostgreSQL e os
+// bancos aos quais a credencial configurada efetivamente pode conectar. O
+// backend usa a instalação vinculada ao token para criar os filhos lógicos e
+// devolver checks individualizados no próximo config-pull.
+type DatabaseInstanceDiscoveryPayload struct {
+	InstallationID string   `json:"installation_id"`
+	Engine         string   `json:"engine"`
+	Server         string   `json:"server"`
+	Port           int      `json:"port"`
+	ServerVersion  string   `json:"server_version"`
+	Databases      []string `json:"databases"`
+}
+
+func (e *IngestExporter) PostDatabaseInstanceDiscovery(ctx context.Context, payload DatabaseInstanceDiscoveryPayload) error {
+	if installationID := e.databaseInstallationID(); installationID != "" {
+		payload.InstallationID = installationID
+	}
+	if payload.InstallationID == "" || payload.Engine == "" || payload.Server == "" || payload.Port <= 0 {
+		return fmt.Errorf("database instance discovery: identidade da instalação, motor, servidor e porta são obrigatórios")
+	}
+	if payload.Databases == nil {
+		payload.Databases = []string{}
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return e.PostRaw(ctx, "db/instances/discover", "application/json", body)
+}
+
 // RegisterDockerHost registra a MÁQUINA docker no backend (POST /host/register,
 // Bearer) → cria o noc_app_host (install_mode=docker) + check docker.host, e
 // amarra o collector deste agente à máquina (self-metrics dela). Devolve o
@@ -837,6 +953,9 @@ func (e *IngestExporter) registerHost(ctx context.Context, hostname, installMode
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == http.StatusGone {
+			e.noteTerminalRemoval(resp.StatusCode)
+		}
 		return "", fmt.Errorf("host register: HTTP %d", resp.StatusCode)
 	}
 	var out struct {
@@ -861,6 +980,11 @@ func (e *IngestExporter) RegisterCollector(ctx context.Context, name string, cap
 		"agent_version": e.version,
 		"capabilities":  capabilities,
 		"install_mode":  installMode,
+	}
+	if installationID := e.databaseInstallationID(); installationID != "" {
+		// O valor é só uma referência opaca. A classificação `database` e a
+		// autorização vêm do token/instalação no backend, nunca deste campo.
+		payload["installation_id"] = installationID
 	}
 	runtime := CollectorRuntimeStats{}
 	if provider, ok := e.runtimeStatsProvider.Load().(func() CollectorRuntimeStats); ok {
@@ -891,6 +1015,9 @@ func (e *IngestExporter) RegisterCollector(ctx context.Context, name string, cap
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == http.StatusGone {
+			e.noteTerminalRemoval(resp.StatusCode)
+		}
 		return "", "", fmt.Errorf("collector register: HTTP %d", resp.StatusCode)
 	}
 	var out struct {

@@ -119,3 +119,34 @@ func TestPullOnce_MirrorsPostgresServerDeltaToTargetRegistry(t *testing.T) {
 		t.Fatalf("target registry deleted = %#v", targets.deleted)
 	}
 }
+
+func TestPullOnceNotifiesOnlyTerminalDatabaseRemoval(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusGone} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+
+			var since atomic.Int64
+			called := make(chan int, 1)
+			err := pullOnce(context.Background(), server.Client(), Config{
+				Endpoint: server.URL, CollectorID: "collector-1", TenantID: "tenant-1",
+				OnTerminalRemoval: func(got int) { called <- got },
+			}, &since, recordingApplier{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if err == nil {
+				t.Fatal("expected pull error")
+			}
+			select {
+			case got := <-called:
+				if status != http.StatusGone || got != http.StatusGone {
+					t.Fatalf("terminal callback status=%d, response=%d", got, status)
+				}
+			default:
+				if status == http.StatusGone {
+					t.Fatal("410 must notify terminal removal")
+				}
+			}
+		})
+	}
+}

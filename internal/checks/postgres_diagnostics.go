@@ -21,15 +21,17 @@ const postgresDiagnosticsQueryTimeout = 5 * time.Second
 // Texto SQL não sai do host do cliente: até um sanitizer parcial poderia deixar
 // escapar literais PostgreSQL (por exemplo, dollar-quoted) ou PII.
 type DatabaseDiagnostics struct {
-	DBServer     string             `json:"db_server"`
-	DBName       string             `json:"db_name"`
-	BloatEnabled bool               `json:"bloat_enabled"`
-	Capabilities map[string]string  `json:"capabilities"`
-	Sessions     []DatabaseSession  `json:"sessions"`
-	Blocking     []DatabaseBlocking `json:"blocking"`
-	Waits        []DatabaseWait     `json:"waits"`
-	Bloat        []DatabaseBloat    `json:"bloat"`
-	Errors       []string           `json:"errors,omitempty"`
+	InstallationID string             `json:"installation_id"`
+	DatabaseID     string             `json:"database_id"`
+	DBServer       string             `json:"db_server"`
+	DBName         string             `json:"db_name"`
+	BloatEnabled   bool               `json:"bloat_enabled"`
+	Capabilities   map[string]string  `json:"capabilities"`
+	Sessions       []DatabaseSession  `json:"sessions"`
+	Blocking       []DatabaseBlocking `json:"blocking"`
+	Waits          []DatabaseWait     `json:"waits"`
+	Bloat          []DatabaseBloat    `json:"bloat"`
+	Errors         []string           `json:"errors,omitempty"`
 }
 
 type DatabaseSession struct {
@@ -75,14 +77,16 @@ type DiagnosticsCheck interface {
 }
 
 type postgresDiagnostics struct {
-	id           string
-	interval     time.Duration
-	hostID       string
-	dbServer     string
-	dbName       string
-	bloatEnabled bool
-	staticTags   map[string]string
-	pool         pgxPool
+	id             string
+	interval       time.Duration
+	hostID         string
+	dbServer       string
+	dbName         string
+	installationID string
+	databaseID     string
+	bloatEnabled   bool
+	staticTags     map[string]string
+	pool           pgxPool
 }
 
 const sqlPostgresDiagnosticSessions = `SELECT COALESCE(json_agg(s ORDER BY s.duration_seconds DESC), '[]'::json)::text
@@ -165,8 +169,10 @@ func newPostgresDiagnosticsCheckWithFactory(cfg *collectorv1.CheckConfig, factor
 	for key, value := range cfg.GetStaticTags() {
 		tags[key] = value
 	}
+	normalizeDatabaseMetricTags(cfg.GetParams(), tags)
 	server := strings.TrimSpace(tags["db_server"])
 	database := strings.TrimSpace(tags["db_name"])
+	installationID, databaseID := databaseIdentity(cfg.GetParams(), tags)
 	if server == "" || database == "" {
 		pool.Close()
 		return nil, fmt.Errorf("postgres.diagnostics: static_tags.db_server e db_name obrigatórios")
@@ -182,6 +188,7 @@ func newPostgresDiagnosticsCheckWithFactory(cfg *collectorv1.CheckConfig, factor
 	bloatEnabled, _ := strconv.ParseBool(cfg.GetParams()["bloat_enabled"])
 	return &postgresDiagnostics{
 		id: id, interval: interval, hostID: cfg.GetHostId(), dbServer: server, dbName: database,
+		installationID: installationID, databaseID: databaseID,
 		bloatEnabled: bloatEnabled, staticTags: tags, pool: pool,
 	}, nil
 }
@@ -206,6 +213,7 @@ func (c *postgresDiagnostics) Run(ctx context.Context) ([]*collectorv1.Metric, e
 
 func (c *postgresDiagnostics) RunDiagnostics(ctx context.Context) (*DatabaseDiagnostics, error) {
 	out := &DatabaseDiagnostics{
+		InstallationID: c.installationID, DatabaseID: c.databaseID,
 		DBServer: c.dbServer, DBName: c.dbName, BloatEnabled: c.bloatEnabled,
 		Capabilities: map[string]string{}, Sessions: []DatabaseSession{}, Blocking: []DatabaseBlocking{},
 		Waits: []DatabaseWait{}, Bloat: []DatabaseBloat{}, Errors: []string{},

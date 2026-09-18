@@ -74,6 +74,10 @@ type Config struct {
 	// PostgresTargets mirrors postgres.server configuration into the eBPF
 	// monitor registry. Nil preserves the ordinary checks-only path.
 	PostgresTargets PostgresTargetRegistry
+	// OnTerminalRemoval recebe HTTP 410 Gone antes de o loop registrar o erro.
+	// Esse status é reservado para uma instalação database removida. 401/403
+	// permanecem retentáveis, pois também podem representar entitlement atual.
+	OnTerminalRemoval func(status int)
 }
 
 // Run inicia o loop em foreground (bloqueante). Chamar em goroutine.
@@ -221,6 +225,9 @@ func pullOnce(
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
+		if resp.StatusCode == http.StatusGone && cfg.OnTerminalRemoval != nil {
+			cfg.OnTerminalRemoval(resp.StatusCode)
+		}
 		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body[:min(200, len(body))]))
 	}
 

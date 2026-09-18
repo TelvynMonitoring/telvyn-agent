@@ -18,11 +18,12 @@ func TestPostgresCustom_ExecutesReadOnlyNumericQuery(t *testing.T) {
 		CheckType:  "postgres.custom",
 		Interval:   durationpb.New(30 * time.Second),
 		HostId:     "host-1",
-		StaticTags: map[string]string{"db_server": "db.internal", "custom_name": "Pedidos"},
+		StaticTags: map[string]string{"db_server": "db.internal", "custom_name": "Pedidos", "db_monitor_id": "logical-db-1"},
 		Params: map[string]string{
-			"dsn":         "postgres://u:p@h:5432/d",
-			"query":       "SELECT count(*) FROM orders",
-			"metric_name": "orders.count",
+			"dsn":             "postgres://u:p@h:5432/d",
+			"query":           "SELECT count(*) FROM orders",
+			"metric_name":     "orders.count",
+			"installation_id": "installation-1",
 		},
 	}
 	check, err := newPostgresCustomCheckWithFactory(cfg, newStubPoolFactory(stub, nil))
@@ -41,6 +42,9 @@ func TestPostgresCustom_ExecutesReadOnlyNumericQuery(t *testing.T) {
 	}
 	if metrics[0].Tags["custom_query"] != "Pedidos" {
 		t.Errorf("custom query tag missing: %+v", metrics[0].Tags)
+	}
+	if metrics[0].Tags["installation_id"] != "installation-1" || metrics[0].Tags["database_id"] != "logical-db-1" {
+		t.Errorf("database identity tags missing: %+v", metrics[0].Tags)
 	}
 }
 

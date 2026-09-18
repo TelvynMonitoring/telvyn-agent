@@ -174,6 +174,10 @@ func newPostgresServerCheckWithFactory(cfg *collectorv1.CheckConfig, factory pgx
 	for k, v := range cfg.GetStaticTags() {
 		tags[k] = v
 	}
+	// O backend fornece IDs imutáveis para o Agent de Banco por instância. Eles
+	// seguem nas séries OTLP para que a ingestão valide o filho lógico, sem
+	// confiar em db_server/db_name fornecidos pelo processo.
+	normalizeDatabaseMetricTags(cfg.GetParams(), tags)
 
 	return &postgresServer{
 		id:         id,
