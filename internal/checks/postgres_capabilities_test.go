@@ -46,3 +46,42 @@ func TestDiscoverPostgresExtensionRelationCapabilitiesReportsCatalogFailure(t *t
 		t.Fatal("expected capability discovery error")
 	}
 }
+
+func TestDiscoverPostgresRelationCapabilitiesUsesNativeCatalog(t *testing.T) {
+	stub := newStubPgxPool()
+	stub.rowsBySQLPrefix["WITH relation AS"] = &stubRow{vals: []any{
+		`"pg_catalog"."pg_stat_replication"`,
+		"pid\x1fapplication_name\x1fsent_lsn\x1freplay_lsn",
+	}}
+
+	capabilities, err := discoverPostgresRelationCapabilities(
+		context.Background(), stub, "pg_catalog", "pg_stat_replication",
+	)
+	if err != nil {
+		t.Fatalf("native capability discovery failed: %v", err)
+	}
+	if !capabilities.hasColumn("sent_lsn") || !capabilities.hasColumn("replay_lsn") {
+		t.Fatalf("unexpected native capabilities: %+v", capabilities.columns)
+	}
+}
+
+func TestDiscoverPostgresWALFunctionsNegotiatesModernAndLegacyNames(t *testing.T) {
+	for _, tt := range []struct {
+		name, difference, current string
+	}{
+		{"modern", "pg_wal_lsn_diff", "pg_current_wal_lsn"},
+		{"legacy", "pg_xlog_location_diff", "pg_current_xlog_location"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newStubPgxPool()
+			stub.rowsBySQLPrefix["FROM pg_proc p"] = &stubRow{vals: []any{tt.difference, tt.current}}
+			functions, err := discoverPostgresWALFunctions(context.Background(), stub)
+			if err != nil {
+				t.Fatalf("WAL capability discovery failed: %v", err)
+			}
+			if functions.difference != tt.difference || functions.current != tt.current {
+				t.Fatalf("unexpected WAL functions: %+v", functions)
+			}
+		})
+	}
+}

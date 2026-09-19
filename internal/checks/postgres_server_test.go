@@ -78,6 +78,8 @@ func newStubPgxPool() *stubPgxPool {
 			"pg_wal_lsn_diff":              {vals: []any{int64(1024)}},
 			"last_autovacuum":              {vals: []any{int64(3)}},
 			"pg_postmaster_start_time":     {vals: []any{float64(86400)}},
+			"temp_bytes":                   {vals: []any{int64(4096)}},
+			"temp_files":                   {vals: []any{int64(3)}},
 		},
 	}
 }
@@ -174,6 +176,8 @@ func TestPostgresServer_RunEmitsAllMetrics(t *testing.T) {
 		"postgres.wal_lag_bytes":          false,
 		"postgres.vacuum_stale_tables":    false,
 		"postgres.uptime_seconds":        false,
+		"postgres.temp_bytes":            false,
+		"postgres.temp_files":            false,
 	}
 	for _, m := range metrics {
 		if _, ok := wantNames[m.MetricName]; ok {

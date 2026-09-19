@@ -32,10 +32,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shirou/gopsutil/v4/disk"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
@@ -142,6 +144,19 @@ const (
 
 	sqlDatabaseSize = `SELECT pg_database_size(current_database())::BIGINT`
 
+	// Contadores por database. O backend calcula o aumento na janela e nunca
+	// apresenta o valor acumulado desde o último reset como consumo recente.
+	sqlTempBytes = `SELECT COALESCE(temp_bytes, 0)::BIGINT ` +
+		`FROM pg_stat_database WHERE datname = current_database()`
+
+	sqlTempFiles = `SELECT COALESCE(temp_files, 0)::BIGINT ` +
+		`FROM pg_stat_database WHERE datname = current_database()`
+
+	// SHOW data_directory existe em todas as versões PostgreSQL suportadas. O
+	// stat do filesystem é local ao Agent: se o collector estiver remoto ou não
+	// puder acessar o caminho, as três métricas simplesmente não são emitidas.
+	sqlDataDirectory = `SHOW data_directory`
+
 	// Tempo desde o último boot do processo PostgreSQL. É uma medida do
 	// servidor, não do banco lógico, mas a mesma instância pode atender vários
 	// bancos e a informação é útil para correlacionar resets de contadores.
@@ -229,7 +244,7 @@ func (c *postgresServer) Close() error {
 // retornado se ctx cancelar.
 func (c *postgresServer) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
 	now := timestamppb.Now()
-	out := make([]*collectorv1.Metric, 0, 15)
+	out := make([]*collectorv1.Metric, 0, 20)
 
 	queryInt64 := func(sql string) (int64, bool) {
 		qctx, cancel := context.WithTimeout(ctx, postgresQueryTimeout)
@@ -294,6 +309,23 @@ func (c *postgresServer) Run(ctx context.Context) ([]*collectorv1.Metric, error)
 	if v, ok := queryInt64(sqlDatabaseSize); ok {
 		out = append(out, c.metric(now, "postgres.database_size_bytes", float64(v)))
 	}
+	if v, ok := queryInt64(sqlTempBytes); ok {
+		out = append(out, c.metric(now, "postgres.temp_bytes", float64(v)))
+	}
+	if v, ok := queryInt64(sqlTempFiles); ok {
+		out = append(out, c.metric(now, "postgres.temp_files", float64(v)))
+	}
+	if dataDirectory, ok := queryString(c.pool, ctx, sqlDataDirectory); ok {
+		if usage, err := disk.UsageWithContext(ctx, strings.TrimSpace(dataDirectory)); err == nil && usage.Total > 0 {
+			out = append(out,
+				c.metric(now, "postgres.storage_used_bytes", float64(usage.Used)),
+				c.metric(now, "postgres.storage_total_bytes", float64(usage.Total)),
+				c.metric(now, "postgres.storage_used_percent", usage.UsedPercent),
+			)
+		} else if err != nil {
+			log.Printf("postgres.server[%s]: data directory filesystem unavailable: %v", c.id, err)
+		}
+	}
 	if v, ok := queryFloat64(sqlUptimeSeconds); ok {
 		out = append(out, c.metric(now, "postgres.uptime_seconds", v))
 	}
@@ -302,6 +334,16 @@ func (c *postgresServer) Run(ctx context.Context) ([]*collectorv1.Metric, error)
 		return out, err
 	}
 	return out, nil
+}
+
+func queryString(pool pgxPool, ctx context.Context, sql string) (string, bool) {
+	qctx, cancel := context.WithTimeout(ctx, postgresQueryTimeout)
+	defer cancel()
+	var value string
+	if err := pool.QueryRow(qctx, sql).Scan(&value); err != nil {
+		return "", false
+	}
+	return value, strings.TrimSpace(value) != ""
 }
 
 // metric constrói um Metric com staticTags do CheckConfig + Source fixo.
