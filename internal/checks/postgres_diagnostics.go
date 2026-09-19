@@ -22,23 +22,23 @@ const postgresDiagnosticsQueryTimeout = 5 * time.Second
 // Texto SQL não sai do host do cliente: até um sanitizer parcial poderia deixar
 // escapar literais PostgreSQL (por exemplo, dollar-quoted) ou PII.
 type DatabaseDiagnostics struct {
-	InstallationID string             `json:"installation_id"`
-	DatabaseID     string             `json:"database_id"`
-	DBServer       string             `json:"db_server"`
-	DBName         string             `json:"db_name"`
-	BloatEnabled   bool               `json:"bloat_enabled"`
-	Capabilities   map[string]string  `json:"capabilities"`
-	Sessions       []DatabaseSession  `json:"sessions"`
-	Blocking       []DatabaseBlocking `json:"blocking"`
-	Waits          []DatabaseWait     `json:"waits"`
-	Bloat          []DatabaseBloat    `json:"bloat"`
-	Replicas       []DatabaseReplica  `json:"replicas"`
-	ReplicationSlots []DatabaseReplicationSlot `json:"replication_slots"`
+	InstallationID        string                         `json:"installation_id"`
+	DatabaseID            string                         `json:"database_id"`
+	DBServer              string                         `json:"db_server"`
+	DBName                string                         `json:"db_name"`
+	BloatEnabled          bool                           `json:"bloat_enabled"`
+	Capabilities          map[string]string              `json:"capabilities"`
+	Sessions              []DatabaseSession              `json:"sessions"`
+	Blocking              []DatabaseBlocking             `json:"blocking"`
+	Waits                 []DatabaseWait                 `json:"waits"`
+	Bloat                 []DatabaseBloat                `json:"bloat"`
+	Replicas              []DatabaseReplica              `json:"replicas"`
+	ReplicationSlots      []DatabaseReplicationSlot      `json:"replication_slots"`
 	MaintenanceOperations []DatabaseMaintenanceOperation `json:"maintenance_operations"`
-	Checkpoints    *DatabaseCheckpoints `json:"checkpoints,omitempty"`
-	Wraparound     *DatabaseWraparound  `json:"wraparound,omitempty"`
-	WAL            *DatabaseWAL         `json:"wal,omitempty"`
-	Errors         []string           `json:"errors,omitempty"`
+	Checkpoints           *DatabaseCheckpoints           `json:"checkpoints,omitempty"`
+	Wraparound            *DatabaseWraparound            `json:"wraparound,omitempty"`
+	WAL                   *DatabaseWAL                   `json:"wal,omitempty"`
+	Errors                []string                       `json:"errors,omitempty"`
 }
 
 type DatabaseReplica struct {
@@ -57,14 +57,14 @@ type DatabaseReplica struct {
 }
 
 type DatabaseReplicationSlot struct {
-	SlotName     string `json:"slot_name"`
-	Plugin       string `json:"plugin"`
-	SlotType     string `json:"slot_type"`
-	Database     string `json:"database"`
-	Active       bool   `json:"active"`
-	RestartLSN   string `json:"restart_lsn"`
-	ConfirmedLSN string `json:"confirmed_lsn"`
-	RetainedBytes int64 `json:"retained_bytes"`
+	SlotName      string `json:"slot_name"`
+	Plugin        string `json:"plugin"`
+	SlotType      string `json:"slot_type"`
+	Database      string `json:"database"`
+	Active        bool   `json:"active"`
+	RestartLSN    string `json:"restart_lsn"`
+	ConfirmedLSN  string `json:"confirmed_lsn"`
+	RetainedBytes int64  `json:"retained_bytes"`
 }
 
 type DatabaseMaintenanceOperation struct {
@@ -87,10 +87,10 @@ type DatabaseCheckpoints struct {
 }
 
 type DatabaseWraparound struct {
-	DatabaseAge   int64  `json:"database_age"`
-	FreezeMaxAge  int64  `json:"freeze_max_age"`
-	OldestTableAge int64 `json:"oldest_table_age"`
-	OldestTable   string `json:"oldest_table"`
+	DatabaseAge    int64  `json:"database_age"`
+	FreezeMaxAge   int64  `json:"freeze_max_age"`
+	OldestTableAge int64  `json:"oldest_table_age"`
+	OldestTable    string `json:"oldest_table"`
 }
 
 type DatabaseWAL struct {
@@ -380,6 +380,15 @@ func postgresWALQuery(caps postgresRelationCapabilities) string {
 		`'stats_reset', ` + diagnosticTextColumn(caps, "stats_reset") + `)::text FROM ` + caps.qualifiedName + ` r`
 }
 
+func postgresWALPositionQuery(functions postgresWALFunctions) string {
+	if functions.difference == "" || functions.current == "" {
+		return ""
+	}
+	return `SELECT json_build_object(` +
+		`'bytes', GREATEST(pg_catalog.` + functions.difference +
+		`(pg_catalog.` + functions.current + `(), '0/0'), 0)::numeric::bigint)::text`
+}
+
 func postgresArchiverQuery(caps postgresRelationCapabilities) string {
 	return `SELECT json_build_object(` +
 		`'archived_count', ` + diagnosticColumn(caps, "archived_count", "0") + `::bigint, ` +
@@ -494,31 +503,54 @@ func (c *postgresDiagnostics) RunDiagnostics(ctx context.Context) (*DatabaseDiag
 	}
 
 	if caps := discover("pg_stat_wal"); caps.available() {
-		if read("wal", postgresWALQuery(caps), &out.WAL) && out.WAL != nil {
-			now := time.Now()
-			c.walMu.Lock()
-			if !c.lastWalAt.IsZero() && out.WAL.Bytes >= c.lastWalBytes {
-				out.WAL.SampleSeconds = now.Sub(c.lastWalAt).Seconds()
-				out.WAL.GeneratedBytes = out.WAL.Bytes - c.lastWalBytes
-				if out.WAL.SampleSeconds > 0 {
-					out.WAL.BytesPerSecond = float64(out.WAL.GeneratedBytes) / out.WAL.SampleSeconds
-				}
-			}
-			c.lastWalBytes, c.lastWalAt = out.WAL.Bytes, now
-			c.walMu.Unlock()
+		var walStats *DatabaseWAL
+		if read("wal", postgresWALQuery(caps), &walStats) {
+			out.WAL = walStats
 		}
 	} else {
-		out.Capabilities["wal"] = "unavailable"
+		// pg_stat_wal only exists in newer PostgreSQL releases. Older versions
+		// still expose the current WAL position and the difference function,
+		// which are enough to calculate generated bytes and bytes/second between
+		// consecutive snapshots without binding the Agent to one server version.
+		functions, err := discoverPostgresWALFunctions(ctx, c.pool)
+		query := postgresWALPositionQuery(functions)
+		if err != nil || query == "" {
+			out.Capabilities["wal"] = "unavailable"
+			if err != nil {
+				out.Errors = append(out.Errors, truncateDiagnosticsError("wal: "+err.Error()))
+			}
+		} else {
+			var walPosition *DatabaseWAL
+			if read("wal", query, &walPosition) {
+				out.WAL = walPosition
+			}
+		}
+	}
+	if out.WAL != nil {
+		now := time.Now()
+		c.walMu.Lock()
+		if !c.lastWalAt.IsZero() && out.WAL.Bytes >= c.lastWalBytes {
+			out.WAL.SampleSeconds = now.Sub(c.lastWalAt).Seconds()
+			out.WAL.GeneratedBytes = out.WAL.Bytes - c.lastWalBytes
+			if out.WAL.SampleSeconds > 0 {
+				out.WAL.BytesPerSecond = float64(out.WAL.GeneratedBytes) / out.WAL.SampleSeconds
+			}
+		}
+		c.lastWalBytes, c.lastWalAt = out.WAL.Bytes, now
+		c.walMu.Unlock()
 	}
 	if caps := discover("pg_stat_archiver"); caps.available() {
-		read("archiver", postgresArchiverQuery(caps), &out.WAL)
+		var archiver *DatabaseWAL
+		if read("archiver", postgresArchiverQuery(caps), &archiver) {
+			out.WAL = mergeDatabaseWAL(out.WAL, archiver)
+		}
 	} else {
 		out.Capabilities["archiver"] = "unavailable"
 	}
 
 	for relation, operation := range map[string]string{
-		"pg_stat_progress_vacuum": "vacuum",
-		"pg_stat_progress_analyze": "analyze",
+		"pg_stat_progress_vacuum":       "vacuum",
+		"pg_stat_progress_analyze":      "analyze",
 		"pg_stat_progress_create_index": "create_index",
 	} {
 		caps := discover(relation)
@@ -539,6 +571,25 @@ func (c *postgresDiagnostics) RunDiagnostics(ctx context.Context) (*DatabaseDiag
 		return nil, err
 	}
 	return out, nil
+}
+
+func mergeDatabaseWAL(metrics, archiver *DatabaseWAL) *DatabaseWAL {
+	if metrics == nil {
+		metrics = &DatabaseWAL{}
+	}
+	if archiver == nil {
+		return metrics
+	}
+	metrics.ArchivedCount = archiver.ArchivedCount
+	metrics.FailedCount = archiver.FailedCount
+	metrics.LastArchivedWAL = archiver.LastArchivedWAL
+	metrics.LastArchivedTime = archiver.LastArchivedTime
+	metrics.LastFailedWAL = archiver.LastFailedWAL
+	metrics.LastFailedTime = archiver.LastFailedTime
+	if metrics.StatsReset == "" {
+		metrics.StatsReset = archiver.StatsReset
+	}
+	return metrics
 }
 
 func truncateDiagnosticsError(value string) string {

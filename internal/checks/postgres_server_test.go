@@ -46,7 +46,7 @@ func (r *stubRow) Scan(dest ...any) error {
 
 // stubPgxPool implementa pgxPool em memória.
 type stubPgxPool struct {
-	pingErr  error
+	pingErr         error
 	rowsBySQLPrefix map[string]*stubRow // chave: prefixo da SQL (primeiros 40 chars)
 	defaultRow      *stubRow
 	queries         []string
@@ -56,10 +56,15 @@ type stubPgxPool struct {
 func (p *stubPgxPool) Ping(ctx context.Context) error { return p.pingErr }
 func (p *stubPgxPool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	p.queries = append(p.queries, sql)
+	var matchedPrefix string
+	var matchedRow *stubRow
 	for prefix, row := range p.rowsBySQLPrefix {
-		if strings.Contains(sql, prefix) {
-			return row
+		if strings.Contains(sql, prefix) && len(prefix) > len(matchedPrefix) {
+			matchedPrefix, matchedRow = prefix, row
 		}
+	}
+	if matchedRow != nil {
+		return matchedRow
 	}
 	if p.defaultRow != nil {
 		return p.defaultRow
@@ -71,15 +76,15 @@ func (p *stubPgxPool) Close() { p.closed = true }
 func newStubPgxPool() *stubPgxPool {
 	return &stubPgxPool{
 		rowsBySQLPrefix: map[string]*stubRow{
-			"state = 'active'":             {vals: []any{int64(5)}},
-			"idle in transaction":          {vals: []any{int64(2)}},
-			"query_start <":                {vals: []any{int64(1)}},
+			"state = 'active'":              {vals: []any{int64(5)}},
+			"idle in transaction":           {vals: []any{int64(2)}},
+			"query_start <":                 {vals: []any{int64(1)}},
 			"pg_last_xact_replay_timestamp": {vals: []any{float64(0.5)}},
-			"pg_wal_lsn_diff":              {vals: []any{int64(1024)}},
-			"last_autovacuum":              {vals: []any{int64(3)}},
-			"pg_postmaster_start_time":     {vals: []any{float64(86400)}},
-			"temp_bytes":                   {vals: []any{int64(4096)}},
-			"temp_files":                   {vals: []any{int64(3)}},
+			"pg_wal_lsn_diff":               {vals: []any{int64(1024)}},
+			"last_autovacuum":               {vals: []any{int64(3)}},
+			"pg_postmaster_start_time":      {vals: []any{float64(86400)}},
+			"temp_bytes":                    {vals: []any{int64(4096)}},
+			"temp_files":                    {vals: []any{int64(3)}},
 		},
 	}
 }
@@ -169,15 +174,15 @@ func TestPostgresServer_RunEmitsAllMetrics(t *testing.T) {
 	}
 
 	wantNames := map[string]bool{
-		"postgres.active_connections":     false,
-		"postgres.idle_in_transaction":    false,
-		"postgres.slow_queries":           false,
+		"postgres.active_connections":      false,
+		"postgres.idle_in_transaction":     false,
+		"postgres.slow_queries":            false,
 		"postgres.replication_lag_seconds": false,
-		"postgres.wal_lag_bytes":          false,
-		"postgres.vacuum_stale_tables":    false,
-		"postgres.uptime_seconds":        false,
-		"postgres.temp_bytes":            false,
-		"postgres.temp_files":            false,
+		"postgres.wal_lag_bytes":           false,
+		"postgres.vacuum_stale_tables":     false,
+		"postgres.uptime_seconds":          false,
+		"postgres.temp_bytes":              false,
+		"postgres.temp_files":              false,
 	}
 	for _, m := range metrics {
 		if _, ok := wantNames[m.MetricName]; ok {

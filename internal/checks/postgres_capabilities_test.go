@@ -74,7 +74,7 @@ func TestDiscoverPostgresWALFunctionsNegotiatesModernAndLegacyNames(t *testing.T
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stub := newStubPgxPool()
-			stub.rowsBySQLPrefix["FROM pg_proc p"] = &stubRow{vals: []any{tt.difference, tt.current}}
+			stub.rowsBySQLPrefix[sqlPostgresWALFunctions] = &stubRow{vals: []any{tt.difference, tt.current}}
 			functions, err := discoverPostgresWALFunctions(context.Background(), stub)
 			if err != nil {
 				t.Fatalf("WAL capability discovery failed: %v", err)
