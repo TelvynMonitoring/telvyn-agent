@@ -176,7 +176,7 @@ func TestLinuxSystem_EmitsLoadFamilies(t *testing.T) {
 	}
 }
 
-// TestLinuxSystem_DiskFiltersFstype verifies that disk.used_pct is emitted
+// TestLinuxSystem_DiskFiltersFstype verifies that disk capacity is emitted
 // for physical filesystems (ext4, xfs, etc.) but not for virtual ones
 // (tmpfs, devtmpfs, etc.).
 func TestLinuxSystem_DiskFiltersFstype(t *testing.T) {
@@ -209,6 +209,22 @@ func TestLinuxSystem_DiskFiltersFstype(t *testing.T) {
 			}
 		}
 	}
+	for _, m := range metrics {
+		if m.MetricName != "disk.used_pct" {
+			continue
+		}
+		foundUsed, foundTotal := false, false
+		for _, candidate := range metrics {
+			if candidate.Tags["mount"] != m.Tags["mount"] || candidate.Tags["device"] != m.Tags["device"] {
+				continue
+			}
+			foundUsed = foundUsed || candidate.MetricName == "disk.used_bytes"
+			foundTotal = foundTotal || candidate.MetricName == "disk.total_bytes"
+		}
+		if !foundUsed || !foundTotal {
+			t.Errorf("disk capacity metrics missing for mount=%q device=%q", m.Tags["mount"], m.Tags["device"])
+		}
+	}
 }
 
 func TestLinuxSystem_DiskIOLatencyUsesCounterDeltas(t *testing.T) {
@@ -223,22 +239,27 @@ func TestLinuxSystem_DiskIOLatencyUsesCounterDeltas(t *testing.T) {
 	// The first counter observation is only a baseline, never a synthetic
 	// zero-latency point.
 	first := c.diskIOLatencyMetrics(now, map[string]disk.IOCountersStat{
-		"/dev/sda1": {ReadCount: 100, WriteCount: 40, ReadTime: 400, WriteTime: 80},
+		"/dev/sda1": {ReadCount: 100, WriteCount: 40, ReadTime: 400, WriteTime: 80, ReadBytes: 1000, WriteBytes: 2000},
 	})
 	if len(first) != 0 {
 		t.Fatalf("first disk I/O sample emitted %d metric(s), want none", len(first))
 	}
 
-	metrics := c.diskIOLatencyMetrics(now, map[string]disk.IOCountersStat{
+	metrics := c.diskIOLatencyMetrics(timestamppb.New(now.AsTime().Add(10*time.Second)), map[string]disk.IOCountersStat{
 		// 10 reads + 20 writes and 120ms + 60ms elapsed I/O time = 6ms/op.
-		"/dev/sda1": {ReadCount: 110, WriteCount: 60, ReadTime: 520, WriteTime: 140},
+		"/dev/sda1": {ReadCount: 110, WriteCount: 60, ReadTime: 520, WriteTime: 140, ReadBytes: 3000, WriteBytes: 6000},
 	})
-	if len(metrics) != 1 {
-		t.Fatalf("got %d disk I/O latency metric(s), want 1", len(metrics))
+	if len(metrics) != 5 {
+		t.Fatalf("got %d disk I/O metric(s), want 5", len(metrics))
 	}
-	got := metrics[0]
-	if got.MetricName != "disk.io_latency_ms" {
-		t.Errorf("metric name = %q, want disk.io_latency_ms", got.MetricName)
+	var got *collectorv1.Metric
+	for _, metric := range metrics {
+		if metric.MetricName == "disk.io_latency_ms" {
+			got = metric
+		}
+	}
+	if got == nil {
+		t.Fatal("disk.io_latency_ms was not emitted")
 	}
 	if math.Abs(got.Value-6) > 0.0001 {
 		t.Errorf("latency = %vms/op, want 6", got.Value)
@@ -255,18 +276,18 @@ func TestLinuxSystem_DiskIOLatencySkipsNoIOAndCounterReset(t *testing.T) {
 	c := &linuxSystemCheck{}
 	now := timestamppb.Now()
 	c.diskIOLatencyMetrics(now, map[string]disk.IOCountersStat{
-		"/dev/sda": {ReadCount: 100, WriteCount: 50, ReadTime: 200, WriteTime: 100},
+		"/dev/sda": {ReadCount: 100, WriteCount: 50, ReadTime: 200, WriteTime: 100, ReadBytes: 1000, WriteBytes: 1000},
 	})
 
-	noIO := c.diskIOLatencyMetrics(now, map[string]disk.IOCountersStat{
-		"/dev/sda": {ReadCount: 100, WriteCount: 50, ReadTime: 200, WriteTime: 100},
+	noIO := c.diskIOLatencyMetrics(timestamppb.New(now.AsTime().Add(time.Second)), map[string]disk.IOCountersStat{
+		"/dev/sda": {ReadCount: 100, WriteCount: 50, ReadTime: 200, WriteTime: 100, ReadBytes: 1000, WriteBytes: 1000},
 	})
-	if len(noIO) != 0 {
-		t.Fatalf("zero I/O delta emitted %d metric(s), want none", len(noIO))
+	if len(noIO) != 4 {
+		t.Fatalf("zero I/O delta emitted %d metric(s), want 4 zero-rate metrics", len(noIO))
 	}
 
-	reset := c.diskIOLatencyMetrics(now, map[string]disk.IOCountersStat{
-		"/dev/sda": {ReadCount: 2, WriteCount: 1, ReadTime: 4, WriteTime: 2},
+	reset := c.diskIOLatencyMetrics(timestamppb.New(now.AsTime().Add(2*time.Second)), map[string]disk.IOCountersStat{
+		"/dev/sda": {ReadCount: 2, WriteCount: 1, ReadTime: 4, WriteTime: 2, ReadBytes: 20, WriteBytes: 10},
 	})
 	if len(reset) != 0 {
 		t.Fatalf("counter reset emitted %d metric(s), want none", len(reset))
@@ -274,14 +295,20 @@ func TestLinuxSystem_DiskIOLatencySkipsNoIOAndCounterReset(t *testing.T) {
 
 	// The reset observation becomes the new baseline. A later monotonic sample
 	// can be reported normally (4ms over 2 operations = 2ms/op).
-	afterReset := c.diskIOLatencyMetrics(now, map[string]disk.IOCountersStat{
-		"/dev/sda": {ReadCount: 3, WriteCount: 2, ReadTime: 7, WriteTime: 3},
+	afterReset := c.diskIOLatencyMetrics(timestamppb.New(now.AsTime().Add(3*time.Second)), map[string]disk.IOCountersStat{
+		"/dev/sda": {ReadCount: 3, WriteCount: 2, ReadTime: 7, WriteTime: 3, ReadBytes: 40, WriteBytes: 30},
 	})
-	if len(afterReset) != 1 {
-		t.Fatalf("post-reset monotonic sample emitted %d metric(s), want 1", len(afterReset))
+	if len(afterReset) != 5 {
+		t.Fatalf("post-reset monotonic sample emitted %d metric(s), want 5", len(afterReset))
 	}
-	if math.Abs(afterReset[0].Value-2) > 0.0001 {
-		t.Errorf("post-reset latency = %vms/op, want 2", afterReset[0].Value)
+	var latency float64
+	for _, metric := range afterReset {
+		if metric.MetricName == "disk.io_latency_ms" {
+			latency = metric.Value
+		}
+	}
+	if math.Abs(latency-2) > 0.0001 {
+		t.Errorf("post-reset latency = %vms/op, want 2", latency)
 	}
 }
 

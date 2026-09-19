@@ -33,14 +33,20 @@ type DatabaseCatalog struct {
 	ServerVersion     string                 `json:"server_version"`
 	DatabaseSizeBytes int64                  `json:"database_size_bytes"`
 	Fingerprint       string                 `json:"fingerprint"`
-	Truncated         bool                   `json:"truncated"`
-	Tables            []DatabaseCatalogTable `json:"tables"`
+	Truncated          bool                      `json:"truncated"`
+	FunctionsTruncated bool                      `json:"functions_truncated"`
+	Tables             []DatabaseCatalogTable    `json:"tables"`
+	Functions          []DatabaseCatalogFunction `json:"functions"`
+	Settings           []DatabaseCatalogSetting   `json:"settings"`
+	Extensions         []DatabaseCatalogExtension `json:"extensions"`
 }
 
 type DatabaseCatalogTable struct {
 	SchemaName      string                      `json:"schema_name"`
 	TableName       string                      `json:"table_name"`
 	TableKind       string                      `json:"table_kind"`
+	OwnerName       string                      `json:"owner_name"`
+	CacheHitRatio   *float64                    `json:"cache_hit_ratio,omitempty"`
 	TotalSizeBytes  int64                       `json:"total_size_bytes"`
 	TableSizeBytes  int64                       `json:"table_size_bytes"`
 	IndexSizeBytes  int64                       `json:"index_size_bytes"`
@@ -55,6 +61,27 @@ type DatabaseCatalogTable struct {
 	Columns         []DatabaseCatalogColumn     `json:"columns"`
 	Indexes         []DatabaseCatalogIndex      `json:"indexes"`
 	Constraints     []DatabaseCatalogConstraint `json:"constraints"`
+}
+
+type DatabaseCatalogFunction struct {
+	SchemaName   string `json:"schema_name"`
+	FunctionName string `json:"function_name"`
+	OwnerName    string `json:"owner_name"`
+	Language     string `json:"language"`
+}
+
+type DatabaseCatalogSetting struct {
+	Name        string `json:"name"`
+	Setting     string `json:"setting"`
+	Unit        string `json:"unit"`
+	Context     string `json:"context"`
+	Source      string `json:"source"`
+	Description string `json:"description"`
+}
+
+type DatabaseCatalogExtension struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 type DatabaseCatalogColumn struct {
@@ -113,6 +140,10 @@ const sqlPostgresCatalog = `WITH table_catalog AS (
            WHEN 'f' THEN 'foreign_table'
            ELSE c.relkind::text
          END AS table_kind,
+         pg_get_userbyid(c.relowner) AS owner_name,
+         CASE WHEN COALESCE(io.heap_blks_hit, 0) + COALESCE(io.heap_blks_read, 0) > 0
+              THEN io.heap_blks_hit::float8 / (io.heap_blks_hit + io.heap_blks_read)::float8
+              ELSE NULL END AS cache_hit_ratio,
          pg_total_relation_size(c.oid)::bigint AS total_size_bytes,
          pg_table_size(c.oid)::bigint AS table_size_bytes,
          pg_indexes_size(c.oid)::bigint AS index_size_bytes,
@@ -165,19 +196,52 @@ const sqlPostgresCatalog = `WITH table_catalog AS (
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     LEFT JOIN pg_stat_user_tables st ON st.relid = c.oid
+    LEFT JOIN pg_statio_user_tables io ON io.relid = c.oid
    WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
      AND n.nspname NOT IN ('pg_catalog', 'information_schema')
      AND n.nspname NOT LIKE 'pg_toast%'
      AND n.nspname NOT LIKE 'pg_temp_%'
    ORDER BY n.nspname, c.relname
    LIMIT 10001
+), function_catalog AS (
+  SELECT n.nspname AS schema_name,
+         p.proname AS function_name,
+         pg_get_userbyid(p.proowner) AS owner_name,
+         l.lanname AS language
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_language l ON l.oid = p.prolang
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+     AND n.nspname NOT LIKE 'pg_toast%'
+     AND n.nspname NOT LIKE 'pg_temp_%'
+   ORDER BY n.nspname, p.proname, p.oid
+   LIMIT 10001
+), safe_settings AS (
+  SELECT name, setting, COALESCE(unit, '') AS unit, context, source, short_desc AS description
+    FROM pg_settings
+   WHERE name IN (
+     'max_connections', 'shared_buffers', 'effective_cache_size', 'work_mem',
+     'maintenance_work_mem', 'wal_level', 'max_wal_size', 'min_wal_size',
+     'checkpoint_timeout', 'autovacuum', 'autovacuum_max_workers',
+     'autovacuum_vacuum_scale_factor', 'track_io_timing',
+     'shared_preload_libraries', 'logging_collector'
+   )
+   ORDER BY name
+), installed_extensions AS (
+  SELECT extname AS name, extversion AS version
+    FROM pg_extension
+   ORDER BY extname
 )
 SELECT json_build_object(
   'db_name', current_database(),
   'server_version', current_setting('server_version'),
   'database_size_bytes', pg_database_size(current_database())::bigint,
   'tables', COALESCE((SELECT json_agg(t ORDER BY t.schema_name, t.table_name)
-                      FROM table_catalog t), '[]'::json)
+                      FROM table_catalog t), '[]'::json),
+  'functions', COALESCE((SELECT json_agg(f ORDER BY f.schema_name, f.function_name)
+						 FROM function_catalog f), '[]'::json),
+	'settings', COALESCE((SELECT json_agg(s ORDER BY s.name) FROM safe_settings s), '[]'::json),
+	'extensions', COALESCE((SELECT json_agg(e ORDER BY e.name) FROM installed_extensions e), '[]'::json)
 )::text`
 
 func newPostgresCatalogCheck(cfg *collectorv1.CheckConfig) (Check, error) {
@@ -252,15 +316,50 @@ func (c *postgresCatalog) RunCatalog(ctx context.Context) (*DatabaseCatalog, err
 		catalog.Tables = catalog.Tables[:postgresCatalogTableLimit]
 		catalog.Truncated = true
 	}
+	if len(catalog.Functions) > postgresCatalogTableLimit {
+		catalog.Functions = catalog.Functions[:postgresCatalogTableLimit]
+		catalog.FunctionsTruncated = true
+	}
 	catalog.DBServer = c.dbServer
 	catalog.InstallationID = c.installationID
 	catalog.DatabaseID = c.databaseID
 	if catalog.DBName == "" {
 		catalog.DBName = strings.TrimSpace(c.staticTags["db_name"])
 	}
-	sum := sha256.Sum256([]byte(body))
-	catalog.Fingerprint = hex.EncodeToString(sum[:])
+	catalog.Fingerprint = structuralCatalogFingerprint(catalog)
 	return &catalog, nil
+}
+
+func structuralCatalogFingerprint(catalog DatabaseCatalog) string {
+	hash := sha256.New()
+	write := func(values ...any) {
+		for _, value := range values {
+			fmt.Fprint(hash, value, "\x1f")
+		}
+		fmt.Fprint(hash, "\x1e")
+	}
+	for _, table := range catalog.Tables {
+		write("table", table.SchemaName, table.TableName, table.TableKind, table.OwnerName)
+		for _, column := range table.Columns {
+			write("column", column.Name, column.Ordinal, column.DataType, column.Nullable, column.HasDefault)
+		}
+		for _, index := range table.Indexes {
+			write("index", index.Name, index.Definition, index.Unique, index.Primary)
+		}
+		for _, constraint := range table.Constraints {
+			write("constraint", constraint.Name, constraint.ConstraintType, constraint.Definition)
+		}
+	}
+	for _, function := range catalog.Functions {
+		write("function", function.SchemaName, function.FunctionName, function.OwnerName, function.Language)
+	}
+	for _, setting := range catalog.Settings {
+		write("setting", setting.Name, setting.Setting, setting.Unit, setting.Context, setting.Source)
+	}
+	for _, extension := range catalog.Extensions {
+		write("extension", extension.Name, extension.Version)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func init() {

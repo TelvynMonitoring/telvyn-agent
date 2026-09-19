@@ -880,6 +880,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			}
 			tables = append(tables, otlp.DatabaseCatalogTable{
 				SchemaName: table.SchemaName, TableName: table.TableName, TableKind: table.TableKind,
+				OwnerName: table.OwnerName, CacheHitRatio: table.CacheHitRatio,
 				TotalSizeBytes: table.TotalSizeBytes, TableSizeBytes: table.TableSizeBytes,
 				IndexSizeBytes: table.IndexSizeBytes, EstimatedRows: table.EstimatedRows,
 				SeqScans: table.SeqScans, IndexScans: table.IndexScans, DeadRows: table.DeadRows,
@@ -888,11 +889,31 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 				Columns: columns, Indexes: indexes, Constraints: constraints,
 			})
 		}
+		functions := make([]otlp.DatabaseCatalogFunction, 0, len(catalog.Functions))
+		for _, function := range catalog.Functions {
+			functions = append(functions, otlp.DatabaseCatalogFunction{
+				SchemaName: function.SchemaName, FunctionName: function.FunctionName,
+				OwnerName: function.OwnerName, Language: function.Language,
+			})
+		}
+		settings := make([]otlp.DatabaseCatalogSetting, 0, len(catalog.Settings))
+		for _, item := range catalog.Settings {
+			settings = append(settings, otlp.DatabaseCatalogSetting{
+				Name: item.Name, Setting: item.Setting, Unit: item.Unit, Context: item.Context,
+				Source: item.Source, Description: item.Description,
+			})
+		}
+		extensions := make([]otlp.DatabaseCatalogExtension, 0, len(catalog.Extensions))
+		for _, item := range catalog.Extensions {
+			extensions = append(extensions, otlp.DatabaseCatalogExtension{Name: item.Name, Version: item.Version})
+		}
 		return exporter.PostDatabaseCatalog(postCtx, otlp.DatabaseCatalogPayload{
 			InstallationID: catalog.InstallationID, DatabaseID: catalog.DatabaseID,
 			DBServer: catalog.DBServer, DBName: catalog.DBName,
 			ServerVersion: catalog.ServerVersion, DatabaseSizeBytes: catalog.DatabaseSizeBytes,
-			Fingerprint: catalog.Fingerprint, Truncated: catalog.Truncated, Tables: tables,
+			Fingerprint: catalog.Fingerprint, Truncated: catalog.Truncated,
+			FunctionsTruncated: catalog.FunctionsTruncated, Tables: tables, Functions: functions,
+			Settings: settings, Extensions: extensions,
 		})
 	})
 	runtime.SetDiagnosticsPusher(func(postCtx context.Context, diagnostics checks.DatabaseDiagnostics) error {
@@ -926,11 +947,64 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 				FreePercent: item.FreePercent,
 			})
 		}
+		replicas := make([]otlp.DatabaseDiagnosticsReplica, 0, len(diagnostics.Replicas))
+		for _, item := range diagnostics.Replicas {
+			replicas = append(replicas, otlp.DatabaseDiagnosticsReplica{
+				Identity: item.Identity, User: item.User, Client: item.Client, State: item.State, Mode: item.Mode,
+				WriteLagSeconds: item.WriteLagSeconds, FlushLagSeconds: item.FlushLagSeconds,
+				ReplayLagSeconds: item.ReplayLagSeconds, SentLSN: item.SentLSN, WriteLSN: item.WriteLSN,
+				FlushLSN: item.FlushLSN, ReplayLSN: item.ReplayLSN,
+			})
+		}
+		slots := make([]otlp.DatabaseDiagnosticsReplicationSlot, 0, len(diagnostics.ReplicationSlots))
+		for _, item := range diagnostics.ReplicationSlots {
+			slots = append(slots, otlp.DatabaseDiagnosticsReplicationSlot{
+				SlotName: item.SlotName, Plugin: item.Plugin, SlotType: item.SlotType, Database: item.Database,
+				Active: item.Active, RestartLSN: item.RestartLSN, ConfirmedLSN: item.ConfirmedLSN,
+				RetainedBytes: item.RetainedBytes,
+			})
+		}
+		maintenance := make([]otlp.DatabaseDiagnosticsMaintenanceOperation, 0, len(diagnostics.MaintenanceOperations))
+		for _, item := range diagnostics.MaintenanceOperations {
+			maintenance = append(maintenance, otlp.DatabaseDiagnosticsMaintenanceOperation{
+				Operation: item.Operation, SchemaName: item.SchemaName, TableName: item.TableName, Phase: item.Phase,
+				ProcessedBlocks: item.ProcessedBlocks, TotalBlocks: item.TotalBlocks, ProgressPercent: item.ProgressPercent,
+			})
+		}
+		var checkpoints *otlp.DatabaseDiagnosticsCheckpoints
+		if diagnostics.Checkpoints != nil {
+			checkpoints = &otlp.DatabaseDiagnosticsCheckpoints{
+				Timed: diagnostics.Checkpoints.Timed, Requested: diagnostics.Checkpoints.Requested,
+				WriteTimeMS: diagnostics.Checkpoints.WriteTimeMS, SyncTimeMS: diagnostics.Checkpoints.SyncTimeMS,
+				BuffersWritten: diagnostics.Checkpoints.BuffersWritten, StatsReset: diagnostics.Checkpoints.StatsReset,
+			}
+		}
+		var wraparound *otlp.DatabaseDiagnosticsWraparound
+		if diagnostics.Wraparound != nil {
+			wraparound = &otlp.DatabaseDiagnosticsWraparound{
+				DatabaseAge: diagnostics.Wraparound.DatabaseAge, FreezeMaxAge: diagnostics.Wraparound.FreezeMaxAge,
+				OldestTableAge: diagnostics.Wraparound.OldestTableAge, OldestTable: diagnostics.Wraparound.OldestTable,
+			}
+		}
+		var wal *otlp.DatabaseDiagnosticsWAL
+		if diagnostics.WAL != nil {
+			wal = &otlp.DatabaseDiagnosticsWAL{
+				Records: diagnostics.WAL.Records, FullPageImages: diagnostics.WAL.FullPageImages,
+				Bytes: diagnostics.WAL.Bytes, GeneratedBytes: diagnostics.WAL.GeneratedBytes,
+				BytesPerSecond: diagnostics.WAL.BytesPerSecond, SampleSeconds: diagnostics.WAL.SampleSeconds,
+				ArchivedCount: diagnostics.WAL.ArchivedCount, FailedCount: diagnostics.WAL.FailedCount,
+				LastArchivedWAL: diagnostics.WAL.LastArchivedWAL, LastArchivedTime: diagnostics.WAL.LastArchivedTime,
+				LastFailedWAL: diagnostics.WAL.LastFailedWAL, LastFailedTime: diagnostics.WAL.LastFailedTime,
+				StatsReset: diagnostics.WAL.StatsReset,
+			}
+		}
 		return exporter.PostDatabaseDiagnostics(postCtx, otlp.DatabaseDiagnosticsPayload{
 			InstallationID: diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
 			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName,
 			BloatEnabled: diagnostics.BloatEnabled, Capabilities: diagnostics.Capabilities,
-			Sessions: sessions, Blocking: blocking, Waits: waits, Bloat: bloat, Errors: diagnostics.Errors,
+			Sessions: sessions, Blocking: blocking, Waits: waits, Bloat: bloat,
+			Replicas: replicas, ReplicationSlots: slots, MaintenanceOperations: maintenance,
+			Checkpoints: checkpoints, Wraparound: wraparound, WAL: wal, Errors: diagnostics.Errors,
 		})
 	})
 	runtime.SetExplainPusher(func(postCtx context.Context, plan checks.DatabaseExplainPlan) error {

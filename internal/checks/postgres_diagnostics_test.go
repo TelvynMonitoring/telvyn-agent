@@ -92,3 +92,35 @@ func TestPostgresDiagnostics_Registered(t *testing.T) {
 		t.Fatal("postgres.diagnostics must be registered")
 	}
 }
+
+func TestPostgresDiagnosticsQueriesFollowDiscoveredCapabilities(t *testing.T) {
+	modern := postgresRelationCapabilities{
+		qualifiedName: `"pg_catalog"."pg_replication_slots"`,
+		columns: map[string]struct{}{
+			"slot_name": {}, "restart_lsn": {}, "confirmed_flush_lsn": {},
+		},
+	}
+	slots := postgresReplicationSlotsQuery(modern, postgresWALFunctions{
+		difference: "pg_wal_lsn_diff", current: "pg_current_wal_lsn",
+	})
+	for _, expected := range []string{"pg_catalog.pg_wal_lsn_diff", "pg_catalog.pg_current_wal_lsn", "retained_bytes"} {
+		if !strings.Contains(slots, expected) {
+			t.Fatalf("slot query must use discovered capability %q: %s", expected, slots)
+		}
+	}
+
+	legacy := postgresReplicationSlotsQuery(modern, postgresWALFunctions{
+		difference: "pg_xlog_location_diff", current: "pg_current_xlog_location",
+	})
+	if !strings.Contains(legacy, "pg_catalog.pg_xlog_location_diff") || !strings.Contains(legacy, "pg_catalog.pg_current_xlog_location") {
+		t.Fatalf("slot query must support legacy WAL functions: %s", legacy)
+	}
+
+	progress := postgresProgressQuery(postgresRelationCapabilities{
+		qualifiedName: `"pg_catalog"."pg_stat_progress_create_index"`,
+		columns: map[string]struct{}{"command": {}, "blocks_done": {}, "blocks_total": {}, "phase": {}},
+	}, "create_index")
+	if !strings.Contains(progress, "replace(COALESCE(r.command") {
+		t.Fatalf("progress query must distinguish CREATE INDEX from REINDEX: %s", progress)
+	}
+}

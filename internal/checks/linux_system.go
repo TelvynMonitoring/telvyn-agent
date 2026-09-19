@@ -7,7 +7,11 @@
 //   - mem.used / mem.available / mem.used_pct          (bytes / %)
 //   - mem.swap_used                                     (bytes)
 //   - disk.used_pct{mount, device}                     (%, physical fstypes only)
+//   - disk.used_bytes{mount, device}                   (bytes, physical fstypes only)
+//   - disk.total_bytes{mount, device}                  (bytes, physical fstypes only)
 //   - disk.io_latency_ms{device}                       (ms/op, delta-based)
+//   - disk.read_bytes_per_second{device}               (bytes/s, delta-based)
+//   - disk.write_bytes_per_second{device}              (bytes/s, delta-based)
 //   - net.bytes_in / net.bytes_out{interface_name}     (cumulative bytes, lo skipped)
 //   - load.1 / load.5 / load.15                        (Linux/macOS only)
 //
@@ -69,6 +73,7 @@ type linuxSystemCheck struct {
 	// The first sample (and a device first seen later) is therefore a baseline,
 	// not a zero-latency observation.
 	lastDiskIO map[string]disk.IOCountersStat
+	lastDiskIOAt time.Time
 }
 
 // newLinuxSystemCheck is the Factory function registered at init() for
@@ -170,6 +175,8 @@ func (c *linuxSystemCheck) Run(ctx context.Context) ([]*collectorv1.Metric, erro
 			"device": p.Device,
 		}
 		out = append(out, c.metric(now, "disk.used_pct", u.UsedPercent, tags))
+		out = append(out, c.metric(now, "disk.used_bytes", float64(u.Used), tags))
+		out = append(out, c.metric(now, "disk.total_bytes", float64(u.Total), tags))
 	}
 	if ioErr == nil {
 		out = append(out, c.diskIOLatencyMetrics(now, physicalDiskIO)...)
@@ -229,8 +236,14 @@ func diskIOCounterForDevice(counters map[string]disk.IOCountersStat, device stri
 // counter reset from being presented as a real 0 ms observation.
 func (c *linuxSystemCheck) diskIOLatencyMetrics(now *timestamppb.Timestamp, current map[string]disk.IOCountersStat) []*collectorv1.Metric {
 	previous := c.lastDiskIO
+	previousAt := c.lastDiskIOAt
 	c.lastDiskIO = current
-	if len(previous) == 0 {
+	c.lastDiskIOAt = now.AsTime()
+	if len(previous) == 0 || previousAt.IsZero() {
+		return nil
+	}
+	elapsedSeconds := now.AsTime().Sub(previousAt).Seconds()
+	if elapsedSeconds <= 0 {
 		return nil
 	}
 
@@ -243,18 +256,25 @@ func (c *linuxSystemCheck) diskIOLatencyMetrics(now *timestamppb.Timestamp, curr
 		// A restarted device or reset kernel counters would otherwise underflow
 		// and produce a bogus value. Treat the new value as the next baseline.
 		if counters.ReadCount < last.ReadCount || counters.WriteCount < last.WriteCount ||
-			counters.ReadTime < last.ReadTime || counters.WriteTime < last.WriteTime {
+			counters.ReadTime < last.ReadTime || counters.WriteTime < last.WriteTime ||
+			counters.ReadBytes < last.ReadBytes || counters.WriteBytes < last.WriteBytes {
 			continue
 		}
 
-		operations := float64(counters.ReadCount-last.ReadCount) + float64(counters.WriteCount-last.WriteCount)
-		if operations == 0 {
-			continue
+		tags := map[string]string{"device": device}
+		readOperations := float64(counters.ReadCount - last.ReadCount)
+		writeOperations := float64(counters.WriteCount - last.WriteCount)
+		out = append(out,
+			c.metric(now, "disk.read_bytes_per_second", float64(counters.ReadBytes-last.ReadBytes)/elapsedSeconds, tags),
+			c.metric(now, "disk.write_bytes_per_second", float64(counters.WriteBytes-last.WriteBytes)/elapsedSeconds, tags),
+			c.metric(now, "disk.read_operations_per_second", readOperations/elapsedSeconds, tags),
+			c.metric(now, "disk.write_operations_per_second", writeOperations/elapsedSeconds, tags),
+		)
+		operations := readOperations + writeOperations
+		if operations > 0 {
+			elapsedMilliseconds := float64(counters.ReadTime-last.ReadTime) + float64(counters.WriteTime-last.WriteTime)
+			out = append(out, c.metric(now, "disk.io_latency_ms", elapsedMilliseconds/operations, tags))
 		}
-		elapsedMilliseconds := float64(counters.ReadTime-last.ReadTime) + float64(counters.WriteTime-last.WriteTime)
-		out = append(out, c.metric(now, "disk.io_latency_ms", elapsedMilliseconds/operations, map[string]string{
-			"device": device,
-		}))
 	}
 	return out
 }
