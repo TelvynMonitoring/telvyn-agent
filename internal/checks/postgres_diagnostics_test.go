@@ -115,12 +115,60 @@ func TestPostgresDiagnosticsQueriesFollowDiscoveredCapabilities(t *testing.T) {
 	if !strings.Contains(legacy, "pg_catalog.pg_xlog_location_diff") || !strings.Contains(legacy, "pg_catalog.pg_current_xlog_location") {
 		t.Fatalf("slot query must support legacy WAL functions: %s", legacy)
 	}
+	for _, tc := range []struct {
+		name      string
+		functions postgresWALFunctions
+		want      []string
+	}{
+		{
+			name:      "modern",
+			functions: postgresWALFunctions{difference: "pg_wal_lsn_diff", current: "pg_current_wal_lsn"},
+			want:      []string{"pg_catalog.pg_wal_lsn_diff", "pg_catalog.pg_current_wal_lsn", "'0/0'"},
+		},
+		{
+			name:      "legacy",
+			functions: postgresWALFunctions{difference: "pg_xlog_location_diff", current: "pg_current_xlog_location"},
+			want:      []string{"pg_catalog.pg_xlog_location_diff", "pg_catalog.pg_current_xlog_location", "'0/0'"},
+		},
+	} {
+		t.Run("wal_position_"+tc.name, func(t *testing.T) {
+			query := postgresWALPositionQuery(tc.functions)
+			for _, expected := range tc.want {
+				if !strings.Contains(query, expected) {
+					t.Fatalf("WAL position query must contain %q: %s", expected, query)
+				}
+			}
+		})
+	}
 
 	progress := postgresProgressQuery(postgresRelationCapabilities{
 		qualifiedName: `"pg_catalog"."pg_stat_progress_create_index"`,
-		columns: map[string]struct{}{"command": {}, "blocks_done": {}, "blocks_total": {}, "phase": {}},
+		columns:       map[string]struct{}{"command": {}, "blocks_done": {}, "blocks_total": {}, "phase": {}},
 	}, "create_index")
 	if !strings.Contains(progress, "replace(COALESCE(r.command") {
 		t.Fatalf("progress query must distinguish CREATE INDEX from REINDEX: %s", progress)
+	}
+}
+
+func TestMergeDatabaseWALPreservesMetricsAndAddsArchiver(t *testing.T) {
+	metrics := &DatabaseWAL{
+		Records: 42, Bytes: 4096, GeneratedBytes: 512, BytesPerSecond: 8,
+		SampleSeconds: 64, StatsReset: "wal-reset",
+	}
+	archiver := &DatabaseWAL{
+		ArchivedCount: 9, FailedCount: 1, LastArchivedWAL: "000000010000000000000001",
+		LastArchivedTime: "2026-09-19T10:00:00Z", LastFailedWAL: "000000010000000000000002",
+		LastFailedTime: "2026-09-19T10:01:00Z", StatsReset: "archiver-reset",
+	}
+
+	got := mergeDatabaseWAL(metrics, archiver)
+	if got.Bytes != 4096 || got.GeneratedBytes != 512 || got.BytesPerSecond != 8 || got.Records != 42 {
+		t.Fatalf("WAL metrics were overwritten by archiver data: %+v", got)
+	}
+	if got.ArchivedCount != 9 || got.FailedCount != 1 || got.LastArchivedWAL != archiver.LastArchivedWAL {
+		t.Fatalf("archiver data was not merged: %+v", got)
+	}
+	if got.StatsReset != "wal-reset" {
+		t.Fatalf("WAL stats reset must win when both sources report it: %+v", got)
 	}
 }
