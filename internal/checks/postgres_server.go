@@ -74,6 +74,22 @@ var defaultPgxPoolFactory pgxPoolFactory = func(ctx context.Context, dsn string)
 	}
 	poolCfg.MaxConns = postgresMaxConns
 	poolCfg.MinConns = postgresMinConns
+	// Defesa de carga aplicada pelo próprio servidor, além dos contexts Go.
+	// Funciona nas versões PostgreSQL suportadas e impede que uma consulta de
+	// monitoramento permaneça executando após uma falha de rede/cancelamento.
+	if poolCfg.ConnConfig.RuntimeParams == nil {
+		poolCfg.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	for key, value := range map[string]string{
+		"application_name":              "telvyn-agent",
+		"default_transaction_read_only": "on",
+		"statement_timeout":             "15000",
+		"lock_timeout":                  "1000",
+	} {
+		if _, configured := poolCfg.ConnConfig.RuntimeParams[key]; !configured {
+			poolCfg.ConnConfig.RuntimeParams[key] = value
+		}
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {

@@ -26,19 +26,63 @@ const (
 // DatabaseCatalog é um snapshot de metadados. O fingerprint permite ao
 // backend reconhecer que a estrutura não mudou sem comparar cada item.
 type DatabaseCatalog struct {
-	InstallationID     string                 `json:"installation_id"`
-	DatabaseID         string                 `json:"database_id"`
-	DBServer           string                 `json:"db_server"`
-	DBName             string                 `json:"db_name"`
-	ServerVersion     string                 `json:"server_version"`
-	DatabaseSizeBytes int64                  `json:"database_size_bytes"`
-	Fingerprint       string                 `json:"fingerprint"`
-	Truncated          bool                      `json:"truncated"`
-	FunctionsTruncated bool                      `json:"functions_truncated"`
-	Tables             []DatabaseCatalogTable    `json:"tables"`
-	Functions          []DatabaseCatalogFunction `json:"functions"`
+	InstallationID     string                     `json:"installation_id"`
+	DatabaseID         string                     `json:"database_id"`
+	DBServer           string                     `json:"db_server"`
+	DBName             string                     `json:"db_name"`
+	ServerVersion      string                     `json:"server_version"`
+	DatabaseSizeBytes  int64                      `json:"database_size_bytes"`
+	Fingerprint        string                     `json:"fingerprint"`
+	Truncated          bool                       `json:"truncated"`
+	FunctionsTruncated bool                       `json:"functions_truncated"`
+	Tables             []DatabaseCatalogTable     `json:"tables"`
+	Functions          []DatabaseCatalogFunction  `json:"functions"`
 	Settings           []DatabaseCatalogSetting   `json:"settings"`
 	Extensions         []DatabaseCatalogExtension `json:"extensions"`
+	Schemas            []DatabaseCatalogSchema    `json:"schemas"`
+	Sequences          []DatabaseCatalogSequence  `json:"sequences"`
+	Triggers           []DatabaseCatalogTrigger   `json:"triggers"`
+	Partitions         []DatabaseCatalogPartition `json:"partitions"`
+	Policies           []DatabaseCatalogPolicy    `json:"policies"`
+	Enums              []DatabaseCatalogEnum      `json:"enums"`
+}
+
+type DatabaseCatalogSchema struct {
+	Name      string `json:"name"`
+	OwnerName string `json:"owner_name"`
+}
+type DatabaseCatalogSequence struct {
+	SchemaName   string `json:"schema_name"`
+	SequenceName string `json:"sequence_name"`
+	OwnerName    string `json:"owner_name"`
+}
+type DatabaseCatalogTrigger struct {
+	SchemaName   string `json:"schema_name"`
+	TableName    string `json:"table_name"`
+	TriggerName  string `json:"trigger_name"`
+	FunctionName string `json:"function_name"`
+	Enabled      string `json:"enabled"`
+	Definition   string `json:"definition"`
+}
+type DatabaseCatalogPartition struct {
+	ParentSchema string `json:"parent_schema"`
+	ParentTable  string `json:"parent_table"`
+	ChildSchema  string `json:"child_schema"`
+	ChildTable   string `json:"child_table"`
+}
+type DatabaseCatalogPolicy struct {
+	SchemaName      string   `json:"schema_name"`
+	TableName       string   `json:"table_name"`
+	PolicyName      string   `json:"policy_name"`
+	Command         string   `json:"command"`
+	Roles           []string `json:"roles"`
+	UsingExpression string   `json:"using_expression"`
+	CheckExpression string   `json:"check_expression"`
+}
+type DatabaseCatalogEnum struct {
+	SchemaName string   `json:"schema_name"`
+	TypeName   string   `json:"type_name"`
+	Values     []string `json:"values"`
 }
 
 type DatabaseCatalogTable struct {
@@ -68,6 +112,8 @@ type DatabaseCatalogFunction struct {
 	FunctionName string `json:"function_name"`
 	OwnerName    string `json:"owner_name"`
 	Language     string `json:"language"`
+	Arguments    string `json:"arguments"`
+	ResultType   string `json:"result_type"`
 }
 
 type DatabaseCatalogSetting struct {
@@ -207,7 +253,9 @@ const sqlPostgresCatalog = `WITH table_catalog AS (
   SELECT n.nspname AS schema_name,
          p.proname AS function_name,
          pg_get_userbyid(p.proowner) AS owner_name,
-         l.lanname AS language
+         l.lanname AS language,
+         pg_get_function_arguments(p.oid) AS arguments,
+         pg_get_function_result(p.oid) AS result_type
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     JOIN pg_language l ON l.oid = p.prolang
@@ -231,6 +279,47 @@ const sqlPostgresCatalog = `WITH table_catalog AS (
   SELECT extname AS name, extversion AS version
     FROM pg_extension
    ORDER BY extname
+), schema_catalog AS (
+  SELECT n.nspname AS name, pg_get_userbyid(n.nspowner) AS owner_name
+    FROM pg_namespace n
+   WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+     AND n.nspname NOT LIKE 'pg_toast%' AND n.nspname NOT LIKE 'pg_temp_%'
+   ORDER BY n.nspname LIMIT 10001
+), sequence_catalog AS (
+  SELECT n.nspname AS schema_name, c.relname AS sequence_name, pg_get_userbyid(c.relowner) AS owner_name
+    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+   WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema')
+   ORDER BY n.nspname,c.relname LIMIT 10001
+), trigger_catalog AS (
+  SELECT n.nspname AS schema_name, c.relname AS table_name, t.tgname AS trigger_name,
+         pn.nspname || '.' || p.proname AS function_name, t.tgenabled::text AS enabled,
+         pg_get_triggerdef(t.oid) AS definition
+    FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+    JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace
+   WHERE NOT t.tgisinternal AND n.nspname NOT IN ('pg_catalog','information_schema')
+   ORDER BY n.nspname,c.relname,t.tgname LIMIT 10001
+), partition_catalog AS (
+  SELECT pn.nspname AS parent_schema, pc.relname AS parent_table,
+         cn.nspname AS child_schema, cc.relname AS child_table
+    FROM pg_inherits i JOIN pg_class pc ON pc.oid=i.inhparent JOIN pg_namespace pn ON pn.oid=pc.relnamespace
+    JOIN pg_class cc ON cc.oid=i.inhrelid JOIN pg_namespace cn ON cn.oid=cc.relnamespace
+   WHERE pn.nspname NOT IN ('pg_catalog','information_schema')
+   ORDER BY pn.nspname,pc.relname,cn.nspname,cc.relname LIMIT 10001
+), policy_catalog AS (
+  SELECT n.nspname AS schema_name, c.relname AS table_name, p.polname AS policy_name,
+         CASE p.polcmd WHEN 'r' THEN 'select' WHEN 'a' THEN 'insert' WHEN 'w' THEN 'update' WHEN 'd' THEN 'delete' ELSE 'all' END AS command,
+         COALESCE((SELECT json_agg(CASE WHEN role_oid=0 THEN 'public' ELSE pg_get_userbyid(role_oid) END ORDER BY role_oid) FROM unnest(p.polroles) role_oid), '[]'::json) AS roles,
+         COALESCE(pg_get_expr(p.polqual,p.polrelid),'') AS using_expression,
+         COALESCE(pg_get_expr(p.polwithcheck,p.polrelid),'') AS check_expression
+    FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+   WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+   ORDER BY n.nspname,c.relname,p.polname LIMIT 10001
+), enum_catalog AS (
+  SELECT n.nspname AS schema_name, t.typname AS type_name,
+         json_agg(e.enumlabel ORDER BY e.enumsortorder) AS values
+    FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace JOIN pg_enum e ON e.enumtypid=t.oid
+   WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+   GROUP BY n.nspname,t.typname ORDER BY n.nspname,t.typname LIMIT 10001
 )
 SELECT json_build_object(
   'db_name', current_database(),
@@ -242,6 +331,12 @@ SELECT json_build_object(
 						 FROM function_catalog f), '[]'::json),
 	'settings', COALESCE((SELECT json_agg(s ORDER BY s.name) FROM safe_settings s), '[]'::json),
 	'extensions', COALESCE((SELECT json_agg(e ORDER BY e.name) FROM installed_extensions e), '[]'::json)
+	,'schemas', COALESCE((SELECT json_agg(s ORDER BY s.name) FROM schema_catalog s), '[]'::json)
+	,'sequences', COALESCE((SELECT json_agg(s ORDER BY s.schema_name,s.sequence_name) FROM sequence_catalog s), '[]'::json)
+	,'triggers', COALESCE((SELECT json_agg(t ORDER BY t.schema_name,t.table_name,t.trigger_name) FROM trigger_catalog t), '[]'::json)
+	,'partitions', COALESCE((SELECT json_agg(p ORDER BY p.parent_schema,p.parent_table,p.child_schema,p.child_table) FROM partition_catalog p), '[]'::json)
+	,'policies', COALESCE((SELECT json_agg(p ORDER BY p.schema_name,p.table_name,p.policy_name) FROM policy_catalog p), '[]'::json)
+	,'enums', COALESCE((SELECT json_agg(e ORDER BY e.schema_name,e.type_name) FROM enum_catalog e), '[]'::json)
 )::text`
 
 func newPostgresCatalogCheck(cfg *collectorv1.CheckConfig) (Check, error) {
@@ -351,13 +446,31 @@ func structuralCatalogFingerprint(catalog DatabaseCatalog) string {
 		}
 	}
 	for _, function := range catalog.Functions {
-		write("function", function.SchemaName, function.FunctionName, function.OwnerName, function.Language)
+		write("function", function.SchemaName, function.FunctionName, function.OwnerName, function.Language, function.Arguments, function.ResultType)
 	}
 	for _, setting := range catalog.Settings {
 		write("setting", setting.Name, setting.Setting, setting.Unit, setting.Context, setting.Source)
 	}
 	for _, extension := range catalog.Extensions {
 		write("extension", extension.Name, extension.Version)
+	}
+	for _, schema := range catalog.Schemas {
+		write("schema", schema.Name, schema.OwnerName)
+	}
+	for _, sequence := range catalog.Sequences {
+		write("sequence", sequence.SchemaName, sequence.SequenceName, sequence.OwnerName)
+	}
+	for _, trigger := range catalog.Triggers {
+		write("trigger", trigger.SchemaName, trigger.TableName, trigger.TriggerName, trigger.FunctionName, trigger.Enabled, trigger.Definition)
+	}
+	for _, partition := range catalog.Partitions {
+		write("partition", partition.ParentSchema, partition.ParentTable, partition.ChildSchema, partition.ChildTable)
+	}
+	for _, policy := range catalog.Policies {
+		write("policy", policy.SchemaName, policy.TableName, policy.PolicyName, policy.Command, policy.Roles, policy.UsingExpression, policy.CheckExpression)
+	}
+	for _, enum := range catalog.Enums {
+		write("enum", enum.SchemaName, enum.TypeName, enum.Values)
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }

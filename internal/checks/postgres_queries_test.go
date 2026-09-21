@@ -21,6 +21,12 @@ func postgresQueryCapabilities(columns ...string) postgresRelationCapabilities {
 	return capabilities
 }
 
+func postgresActivityCapabilities(columns ...string) postgresRelationCapabilities {
+	capabilities := postgresQueryCapabilities(columns...)
+	capabilities.qualifiedName = `"pg_catalog"."pg_stat_activity"`
+	return capabilities
+}
+
 func TestBuildPostgresQueryStatsSQLSelectsAvailableTimeCapability(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -92,13 +98,39 @@ func TestPostgresQueriesFactoryRejectsUnavailableExtensionAndClosesPool(t *testi
 	}
 }
 
+func TestPostgresQueriesFactoryKeepsAggregatesWhenActivityDiscoveryFails(t *testing.T) {
+	stub := newStubPgxPool()
+	stub.rowsBySQLPrefix["WITH extension_relation"] = &stubRow{vals: []any{
+		`"public"."pg_stat_statements"`,
+		"dbid\x1fqueryid\x1fquery\x1fcalls\x1ftotal_exec_time\x1frows",
+	}}
+	cfg := &collectorv1.CheckConfig{
+		CheckType:  "postgres.queries",
+		HostId:     "host-1",
+		StaticTags: map[string]string{"db_server": "db.internal", "db_name": "billing"},
+		Params:     map[string]string{"dsn": "postgres://u:p@h:5432/d"},
+	}
+
+	check, err := newPostgresQueriesCheckWithFactory(cfg, newStubPoolFactory(stub, nil))
+	if err != nil {
+		t.Fatalf("activity samples are optional and must not disable aggregates: %v", err)
+	}
+	if check == nil || stub.closed {
+		t.Fatal("aggregate query check must remain active")
+	}
+}
+
 func TestPostgresQueries_UsesDeltaAndSanitizesText(t *testing.T) {
 	stub := newStubPgxPool()
 	stub.rowsBySQLPrefix["WITH extension_relation"] = &stubRow{vals: []any{
 		`"public"."pg_stat_statements"`,
 		"userid\x1fdbid\x1fqueryid\x1fquery\x1fcalls\x1ftotal_exec_time\x1frows",
 	}}
-	stub.rowsBySQLPrefix[`FROM "public"."pg_stat_statements"`] = &stubRow{vals: []any{`[{"query_id":"42","text":"SELECT * FROM accounts WHERE email = 'ana@example.com' AND id = 17 -- secret","calls":10,"total_ms":100.0,"rows":20}]`}}
+	stub.rowsBySQLPrefix["WITH relation AS"] = &stubRow{vals: []any{
+		`"pg_catalog"."pg_stat_activity"`,
+		"datname\x1fpid\x1fusename\x1fapplication_name\x1fclient_addr\x1fstate\x1fwait_event_type\x1fwait_event\x1fquery\x1fquery_start",
+	}}
+	stub.rowsBySQLPrefix[`WITH query_stats AS`] = &stubRow{vals: []any{`{"queries":[{"query_id":"42","text":"SELECT * FROM accounts WHERE email = 'ana@example.com' AND id = 17 -- secret","calls":10,"total_ms":100.0,"rows":20}],"samples":[]}`}}
 	cfg := &collectorv1.CheckConfig{
 		CheckId:    "pg-queries-1",
 		CheckType:  "postgres.queries",
@@ -121,7 +153,7 @@ func TestPostgresQueries_UsesDeltaAndSanitizesText(t *testing.T) {
 		t.Fatalf("first read must only establish baseline; got %d rows", len(first.Queries))
 	}
 
-	stub.rowsBySQLPrefix[`FROM "public"."pg_stat_statements"`] = &stubRow{vals: []any{`[{"query_id":"42","text":"SELECT * FROM accounts WHERE email = 'ana@example.com' AND id = 17","calls":13,"total_ms":145.0,"rows":26}]`}}
+	stub.rowsBySQLPrefix[`WITH query_stats AS`] = &stubRow{vals: []any{`{"queries":[{"query_id":"42","text":"SELECT * FROM accounts WHERE email = 'ana@example.com' AND id = 17","calls":13,"total_ms":145.0,"rows":26}],"samples":[{"sample_id":"sample-1:10","query_id":"sample-1","query":"SELECT * FROM accounts WHERE email = 'ana@example.com'","user":"app","application":"api","client":"10.0.0.5","state":"active","wait_type":"","wait_event":"","duration_ms":120,"sampled_at":"2026-09-20T10:00:00Z"}]}`}}
 	second, err := qcheck.RunQueryStats(context.Background())
 	if err != nil {
 		t.Fatalf("second RunQueryStats failed: %v", err)
@@ -141,6 +173,38 @@ func TestPostgresQueries_UsesDeltaAndSanitizesText(t *testing.T) {
 	}
 	if second.DBServer != "db.internal" || second.DBName != "billing" || second.WindowSeconds != 60 {
 		t.Errorf("unexpected payload identity: %+v", second)
+	}
+	if len(second.Samples) != 1 || second.Samples[0].Text != "SELECT * FROM accounts WHERE email = ?" {
+		t.Fatalf("expected one redacted query sample, got %+v", second.Samples)
+	}
+	if second.Samples[0].SampleID != "sample-1:10" || second.Samples[0].SampledAt != "2026-09-20T10:00:00Z" {
+		t.Fatalf("sample identity/timestamp was not preserved: %+v", second.Samples[0])
+	}
+}
+
+func TestPostgresQuerySamplesCTENegotiatesLegacyActivityColumns(t *testing.T) {
+	query := postgresQuerySamplesCTE(postgresActivityCapabilities(
+		"datname", "procpid", "usename", "current_query", "query_start",
+	), 10)
+	if !strings.Contains(query, "a.current_query") || !strings.Contains(query, "a.procpid") {
+		t.Fatalf("legacy activity columns were not negotiated: %s", query)
+	}
+	if strings.Contains(query, "a.wait_event") || strings.Contains(query, "a.application_name") {
+		t.Fatalf("query referenced optional columns unavailable on the server: %s", query)
+	}
+}
+
+func TestSanitizeContinuousPlanKeepsStructureAndDropsExpressions(t *testing.T) {
+	plan, err := sanitizeContinuousPlan([]byte(`[{"Plan":{"Node Type":"Index Scan","Relation Name":"orders","Index Name":"orders_pkey","Filter":"(email = 'secret@example.com')","Total Cost":8.2}}]`))
+	if err != nil {
+		t.Fatalf("sanitize plan: %v", err)
+	}
+	got := string(plan)
+	if strings.Contains(got, "secret") || strings.Contains(got, "Filter") {
+		t.Fatalf("plan leaked expressions: %s", got)
+	}
+	if !strings.Contains(got, "Index Scan") || !strings.Contains(got, "orders_pkey") {
+		t.Fatalf("plan lost structural fields: %s", got)
 	}
 }
 

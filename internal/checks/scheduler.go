@@ -660,7 +660,7 @@ func (r *Runtime) pushQueryStats(checkID string, stats DatabaseQueryStats) {
 	pusher := r.queryStatsPusher
 	parent := r.parent
 	r.mu.Unlock()
-	if pusher == nil || parent == nil || len(stats.Queries) == 0 {
+	if pusher == nil || parent == nil || (len(stats.Queries) == 0 && len(stats.Samples) == 0) {
 		return
 	}
 	go func() {

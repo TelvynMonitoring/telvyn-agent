@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"regexp"
 	"strings"
 	"sync"
@@ -19,8 +20,10 @@ import (
 )
 
 const (
-	postgresQueryStatsLimit = 200
-	postgresQueryTextLimit  = 4096
+	postgresQueryStatsLimit     = 200
+	postgresQueryTextLimit      = 4096
+	postgresQuerySampleLimit    = 50
+	postgresContinuousPlanLimit = 5
 )
 
 // DatabaseQueryStat é uma linha de uma janela de coleta. Calls, TotalMS e
@@ -41,6 +44,26 @@ type DatabaseQueryStats struct {
 	DBName         string
 	WindowSeconds  int
 	Queries        []DatabaseQueryStat
+	Samples        []DatabaseQuerySample
+}
+
+// DatabaseQuerySample is a bounded, redacted observation from
+// pg_stat_activity. Query literals never leave the monitored host. PlanJSON is
+// optional and contains only the structural/cost fields allowlisted below.
+type DatabaseQuerySample struct {
+	SampleID    string          `json:"sample_id"`
+	QueryID     string          `json:"query_id"`
+	Text        string          `json:"text"`
+	User        string          `json:"user"`
+	Application string          `json:"application"`
+	Client      string          `json:"client"`
+	State       string          `json:"state"`
+	WaitType    string          `json:"wait_type"`
+	WaitEvent   string          `json:"wait_event"`
+	DurationMS  float64         `json:"duration_ms"`
+	SampledAt   string          `json:"sampled_at"`
+	PlanJSON    json.RawMessage `json:"plan,omitempty"`
+	PlanStatus  string          `json:"plan_status,omitempty"`
 }
 
 // QueryStatsCheck é implementado por checks que têm um canal agregado além de
@@ -64,23 +87,50 @@ type postgresQueryCounter struct {
 	rows    int64
 }
 
+type postgresQuerySampleRow struct {
+	SampleID    string  `json:"sample_id"`
+	QueryID     string  `json:"query_id"`
+	Query       string  `json:"query"`
+	User        string  `json:"user"`
+	Application string  `json:"application"`
+	Client      string  `json:"client"`
+	State       string  `json:"state"`
+	WaitType    string  `json:"wait_type"`
+	WaitEvent   string  `json:"wait_event"`
+	DurationMS  float64 `json:"duration_ms"`
+	SampledAt   string  `json:"sampled_at"`
+}
+
+type postgresQuerySnapshot struct {
+	Queries []postgresQueryStatRow   `json:"queries"`
+	Samples []postgresQuerySampleRow `json:"samples"`
+}
+
 type postgresQueries struct {
-	id             string
-	interval       time.Duration
-	hostID         string
-	dbServer       string
-	dbName         string
-	installationID string
-	databaseID     string
-	staticTags     map[string]string
-	pool           pgxPool
-	querySQL       string
+	id                          string
+	interval                    time.Duration
+	hostID                      string
+	dbServer                    string
+	dbName                      string
+	installationID              string
+	databaseID                  string
+	staticTags                  map[string]string
+	pool                        pgxPool
+	querySQL                    string
+	sampleLimit                 int
+	continuousPlans             bool
+	continuousPlanLimit         int
+	continuousPlanMinDurationMS float64
 
 	mu       sync.Mutex
 	previous map[string]postgresQueryCounter
 }
 
 func buildPostgresQueryStatsSQL(capabilities postgresRelationCapabilities) (string, error) {
+	return buildPostgresQuerySnapshotSQL(capabilities, postgresRelationCapabilities{}, postgresQueryStatsLimit, postgresQuerySampleLimit)
+}
+
+func buildPostgresQuerySnapshotSQL(capabilities, activityCapabilities postgresRelationCapabilities, statsLimit, sampleLimit int) (string, error) {
 	if !capabilities.available() {
 		return "", fmt.Errorf("extensão pg_stat_statements não instalada ou indisponível")
 	}
@@ -110,8 +160,10 @@ func buildPostgresQueryStatsSQL(capabilities postgresRelationCapabilities) (stri
 		rowsExpression = "s.rows::bigint"
 	}
 
-	return fmt.Sprintf(`SELECT COALESCE(json_agg(q ORDER BY q.total_ms DESC), '[]'::json)::text
-  FROM (
+	statsLimit = boundedInt(statsLimit, 1, postgresQueryStatsLimit, postgresQueryStatsLimit)
+	sampleLimit = boundedInt(sampleLimit, 1, postgresQuerySampleLimit, postgresQuerySampleLimit)
+	sampleCTE := postgresQuerySamplesCTE(activityCapabilities, sampleLimit)
+	return fmt.Sprintf(`WITH query_stats AS (
     SELECT %s AS query_id,
            s.query AS text,
            s.calls::bigint AS calls,
@@ -123,13 +175,87 @@ func buildPostgresQueryStatsSQL(capabilities postgresRelationCapabilities) (stri
        AND s.calls > 0
      ORDER BY total_ms DESC
      LIMIT %d
-  ) q`,
+	), %s
+SELECT json_build_object(
+	'queries', COALESCE((SELECT json_agg(q ORDER BY q.total_ms DESC) FROM query_stats q), '[]'::json),
+	'samples', COALESCE((SELECT json_agg(s ORDER BY s.duration_ms DESC) FROM query_samples s), '[]'::json)
+)::text`,
 		queryIDExpression,
 		timeColumn,
 		rowsExpression,
 		capabilities.qualifiedName,
-		postgresQueryStatsLimit,
+		statsLimit,
+		sampleCTE,
 	), nil
+}
+
+func postgresQuerySamplesCTE(capabilities postgresRelationCapabilities, sampleLimit int) string {
+	empty := `query_samples AS (
+	SELECT ''::text AS sample_id, ''::text AS query_id, ''::text AS query,
+	       ''::text AS "user", ''::text AS application, ''::text AS client,
+	       ''::text AS state, ''::text AS wait_type, ''::text AS wait_event,
+	       0::float8 AS duration_ms, clock_timestamp()::text AS sampled_at
+	 WHERE false
+)`
+	if !capabilities.available() || !capabilities.hasColumn("datname") {
+		return empty
+	}
+	queryColumn := firstPostgresColumn(capabilities, "query", "current_query")
+	pidColumn := firstPostgresColumn(capabilities, "pid", "procpid")
+	if queryColumn == "" || pidColumn == "" {
+		return empty
+	}
+	expression := func(column, fallback string) string {
+		if capabilities.hasColumn(column) {
+			return fmt.Sprintf("COALESCE(a.%s::text, '')", column)
+		}
+		return fallback
+	}
+	stateFilter := ""
+	if capabilities.hasColumn("state") {
+		stateFilter = " AND COALESCE(a.state, '') <> 'idle'"
+	} else if queryColumn == "current_query" {
+		stateFilter = " AND a.current_query <> '<IDLE>'"
+	}
+	duration := "0::float8"
+	order := ""
+	if capabilities.hasColumn("query_start") {
+		duration = "GREATEST(COALESCE(EXTRACT(EPOCH FROM clock_timestamp() - a.query_start) * 1000, 0), 0)::float8"
+		order = " ORDER BY a.query_start NULLS LAST"
+	}
+	return fmt.Sprintf(`query_samples AS (
+	SELECT md5(COALESCE(a.%[1]s::text, '') || ':' || a.%[2]s::text) AS sample_id,
+	       md5(a.%[1]s::text) AS query_id,
+	       a.%[1]s::text AS query,
+	       %[3]s AS "user",
+	       %[4]s AS application,
+	       %[5]s AS client,
+	       %[6]s AS state,
+	       %[7]s AS wait_type,
+	       %[8]s AS wait_event,
+	       %[9]s AS duration_ms,
+	       clock_timestamp()::text AS sampled_at
+	  FROM %[10]s a
+	 WHERE a.datname = current_database()
+	   AND a.%[2]s <> pg_backend_pid()
+	   AND a.%[1]s IS NOT NULL
+	   AND a.%[1]s::text <> ''%[11]s%[12]s
+	 LIMIT %[13]d
+)`, queryColumn, pidColumn,
+		expression("usename", "''::text"), expression("application_name", "''::text"),
+		expression("client_addr", "''::text"), expression("state", "''::text"),
+		expression("wait_event_type", "''::text"), expression("wait_event", "''::text"),
+		duration, capabilities.qualifiedName, stateFilter, order,
+		boundedInt(sampleLimit, 1, postgresQuerySampleLimit, postgresQuerySampleLimit))
+}
+
+func firstPostgresColumn(capabilities postgresRelationCapabilities, candidates ...string) string {
+	for _, candidate := range candidates {
+		if capabilities.hasColumn(candidate) {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func newPostgresQueriesCheck(cfg *collectorv1.CheckConfig) (Check, error) {
@@ -137,6 +263,7 @@ func newPostgresQueriesCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 }
 
 func newPostgresQueriesCheckWithFactory(cfg *collectorv1.CheckConfig, factory pgxPoolFactory) (Check, error) {
+	params := cfg.GetParams()
 	pool, err := openPostgresPool(cfg, factory, "postgres.queries")
 	if err != nil {
 		return nil, err
@@ -149,14 +276,14 @@ func newPostgresQueriesCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 	for k, v := range cfg.GetStaticTags() {
 		tags[k] = v
 	}
-	normalizeDatabaseMetricTags(cfg.GetParams(), tags)
+	normalizeDatabaseMetricTags(params, tags)
 	server := strings.TrimSpace(tags["db_server"])
 	if server == "" {
 		pool.Close()
 		return nil, fmt.Errorf("postgres.queries: static_tags.db_server obrigatório")
 	}
 	database := strings.TrimSpace(tags["db_name"])
-	installationID, databaseID := databaseIdentity(cfg.GetParams(), tags)
+	installationID, databaseID := databaseIdentity(params, tags)
 	capabilities, err := discoverPostgresExtensionRelationCapabilities(
 		context.Background(),
 		pool,
@@ -167,7 +294,25 @@ func newPostgresQueriesCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 		pool.Close()
 		return nil, fmt.Errorf("postgres.queries: %w", err)
 	}
-	querySQL, err := buildPostgresQueryStatsSQL(capabilities)
+	// Valida primeiro a extensão. Assim uma instalação sem
+	// pg_stat_statements continua recebendo o erro correto, sem depender da
+	// descoberta opcional de amostras em pg_stat_activity.
+	if _, err := buildPostgresQuerySnapshotSQL(capabilities, postgresRelationCapabilities{}, 1, 1); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("postgres.queries: %w", err)
+	}
+	activityCapabilities, err := discoverPostgresRelationCapabilities(
+		context.Background(), pool, "pg_catalog", "pg_stat_activity",
+	)
+	if err != nil {
+		// Amostras são adicionais. Uma falha de descoberta não pode desligar o
+		// ranking agregado de pg_stat_statements que já foi negociado acima.
+		log.Printf("postgres.queries: pg_stat_activity indisponível para amostras: %v", err)
+		activityCapabilities = postgresRelationCapabilities{}
+	}
+	statsLimit := boundedParam(params, "query_limit", 1, postgresQueryStatsLimit, postgresQueryStatsLimit)
+	sampleLimit := boundedParam(params, "sample_limit", 1, postgresQuerySampleLimit, 20)
+	querySQL, err := buildPostgresQuerySnapshotSQL(capabilities, activityCapabilities, statsLimit, sampleLimit)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("postgres.queries: %w", err)
@@ -180,7 +325,11 @@ func newPostgresQueriesCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 		id: id, interval: interval, hostID: cfg.GetHostId(), dbServer: server, dbName: database,
 		installationID: installationID, databaseID: databaseID,
 		staticTags: tags, pool: pool, querySQL: querySQL,
-		previous: make(map[string]postgresQueryCounter),
+		sampleLimit:                 sampleLimit,
+		continuousPlans:             boolParam(params, "continuous_plans_enabled", false),
+		continuousPlanLimit:         boundedParam(params, "continuous_plan_limit", 1, postgresContinuousPlanLimit, 2),
+		continuousPlanMinDurationMS: floatParam(params, "continuous_plan_min_duration_ms", 0, 300000, 1000),
+		previous:                    make(map[string]postgresQueryCounter),
 	}, nil
 }
 
@@ -210,8 +359,8 @@ func (c *postgresQueries) RunQueryStats(ctx context.Context) (*DatabaseQueryStat
 		log.Printf("postgres.queries[%s]: query failed: %v", c.id, err)
 		return nil, err
 	}
-	var rows []postgresQueryStatRow
-	if err := json.Unmarshal([]byte(body), &rows); err != nil {
+	var snapshot postgresQuerySnapshot
+	if err := json.Unmarshal([]byte(body), &snapshot); err != nil {
 		return nil, fmt.Errorf("postgres.queries: resposta inválida: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -223,9 +372,10 @@ func (c *postgresQueries) RunQueryStats(ctx context.Context) (*DatabaseQueryStat
 	out := &DatabaseQueryStats{
 		InstallationID: c.installationID, DatabaseID: c.databaseID,
 		DBServer: c.dbServer, DBName: c.dbName, WindowSeconds: max(1, int(c.interval/time.Second)),
-		Queries: make([]DatabaseQueryStat, 0, len(rows)),
+		Queries: make([]DatabaseQueryStat, 0, len(snapshot.Queries)),
+		Samples: make([]DatabaseQuerySample, 0, len(snapshot.Samples)),
 	}
-	for _, row := range rows {
+	for _, row := range snapshot.Queries {
 		if row.QueryID == "" || row.Calls <= 0 {
 			continue
 		}
@@ -252,7 +402,99 @@ func (c *postgresQueries) RunQueryStats(ctx context.Context) (*DatabaseQueryStat
 			MeanMS: totalMS / float64(calls), Rows: readRows,
 		})
 	}
+	plansCollected := 0
+	for index, row := range snapshot.Samples {
+		if len(out.Samples) >= c.sampleLimit || strings.TrimSpace(row.Query) == "" {
+			break
+		}
+		sample := DatabaseQuerySample{
+			SampleID: limitText(row.SampleID, 128), QueryID: row.QueryID,
+			Text: sanitizeQueryText(row.Query), User: limitText(row.User, 128),
+			Application: limitText(row.Application, 128), Client: limitText(row.Client, 128),
+			State: limitText(row.State, 32), WaitType: limitText(row.WaitType, 64),
+			WaitEvent: limitText(row.WaitEvent, 128), DurationMS: math.Max(row.DurationMS, 0),
+			SampledAt: normalizedSampledAt(row.SampledAt),
+		}
+		if sample.SampleID == "" {
+			sample.SampleID = fmt.Sprintf("%s:%d", sample.QueryID, index)
+		}
+		if c.continuousPlans && plansCollected < c.continuousPlanLimit &&
+			row.DurationMS >= c.continuousPlanMinDurationMS {
+			sample.PlanJSON, sample.PlanStatus = c.explainSample(ctx, row.Query)
+			plansCollected++
+		}
+		out.Samples = append(out.Samples, sample)
+	}
 	return out, nil
+}
+
+func normalizedSampledAt(raw string) string {
+	value, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw))
+	if err != nil {
+		return time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func (c *postgresQueries) explainSample(ctx context.Context, query string) (json.RawMessage, string) {
+	if err := validateReadOnlyQuery(query); err != nil {
+		return nil, "ineligible"
+	}
+	qctx, cancel := context.WithTimeout(ctx, postgresQueryTimeout)
+	defer cancel()
+	var raw string
+	if err := c.pool.QueryRow(qctx, "EXPLAIN (FORMAT JSON) "+query).Scan(&raw); err != nil {
+		return nil, "unavailable"
+	}
+	plan, err := sanitizeContinuousPlan([]byte(raw))
+	if err != nil {
+		return nil, "invalid"
+	}
+	return plan, "ready"
+}
+
+var allowedPlanKeys = map[string]struct{}{
+	"Plan": {}, "Plans": {}, "Node Type": {}, "Parent Relationship": {},
+	"Parallel Aware": {}, "Async Capable": {}, "Join Type": {}, "Strategy": {},
+	"Relation Name": {}, "Schema": {}, "Alias": {}, "Index Name": {},
+	"Startup Cost": {}, "Total Cost": {}, "Plan Rows": {}, "Plan Width": {},
+}
+
+func sanitizeContinuousPlan(raw []byte) (json.RawMessage, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	var clean func(any) any
+	clean = func(input any) any {
+		switch typed := input.(type) {
+		case []any:
+			out := make([]any, 0, len(typed))
+			for _, item := range typed {
+				out = append(out, clean(item))
+			}
+			return out
+		case map[string]any:
+			out := make(map[string]any)
+			for key, item := range typed {
+				if _, ok := allowedPlanKeys[key]; ok {
+					out[key] = clean(item)
+				}
+			}
+			return out
+		default:
+			return typed
+		}
+	}
+	return json.Marshal(clean(value))
+}
+
+func limitText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) > limit {
+		return value[:limit]
+	}
+	return value
 }
 
 func counterDelta(current, previous int64) int64 {

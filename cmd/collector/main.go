@@ -858,10 +858,19 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 				TotalMS: q.TotalMS, MeanMS: q.MeanMS, Rows: q.Rows,
 			})
 		}
+		samples := make([]otlp.DatabaseQuerySample, 0, len(stats.Samples))
+		for _, sample := range stats.Samples {
+			samples = append(samples, otlp.DatabaseQuerySample{
+				SampleID: sample.SampleID, QueryID: sample.QueryID, Text: sample.Text, User: sample.User,
+				Application: sample.Application, Client: sample.Client, State: sample.State,
+				WaitType: sample.WaitType, WaitEvent: sample.WaitEvent, DurationMS: sample.DurationMS,
+				SampledAt: sample.SampledAt, Plan: sample.PlanJSON, PlanStatus: sample.PlanStatus,
+			})
+		}
 		return exporter.PostDatabaseQueryStats(postCtx, otlp.DatabaseQueryStatsPayload{
 			InstallationID: stats.InstallationID, DatabaseID: stats.DatabaseID,
 			DBServer: stats.DBServer, DBName: stats.DBName,
-			WindowSeconds: stats.WindowSeconds, Queries: queries,
+			WindowSeconds: stats.WindowSeconds, Queries: queries, Samples: samples,
 		})
 	})
 	runtime.SetCatalogPusher(func(postCtx context.Context, catalog checks.DatabaseCatalog) error {
@@ -906,6 +915,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			functions = append(functions, otlp.DatabaseCatalogFunction{
 				SchemaName: function.SchemaName, FunctionName: function.FunctionName,
 				OwnerName: function.OwnerName, Language: function.Language,
+				Arguments: function.Arguments, ResultType: function.ResultType,
 			})
 		}
 		settings := make([]otlp.DatabaseCatalogSetting, 0, len(catalog.Settings))
@@ -919,13 +929,38 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 		for _, item := range catalog.Extensions {
 			extensions = append(extensions, otlp.DatabaseCatalogExtension{Name: item.Name, Version: item.Version})
 		}
+		schemas := make([]otlp.DatabaseCatalogSchema, 0, len(catalog.Schemas))
+		for _, item := range catalog.Schemas {
+			schemas = append(schemas, otlp.DatabaseCatalogSchema{Name: item.Name, OwnerName: item.OwnerName})
+		}
+		sequences := make([]otlp.DatabaseCatalogSequence, 0, len(catalog.Sequences))
+		for _, item := range catalog.Sequences {
+			sequences = append(sequences, otlp.DatabaseCatalogSequence{SchemaName: item.SchemaName, SequenceName: item.SequenceName, OwnerName: item.OwnerName})
+		}
+		triggers := make([]otlp.DatabaseCatalogTrigger, 0, len(catalog.Triggers))
+		for _, item := range catalog.Triggers {
+			triggers = append(triggers, otlp.DatabaseCatalogTrigger{SchemaName: item.SchemaName, TableName: item.TableName, TriggerName: item.TriggerName, FunctionName: item.FunctionName, Enabled: item.Enabled, Definition: item.Definition})
+		}
+		partitions := make([]otlp.DatabaseCatalogPartition, 0, len(catalog.Partitions))
+		for _, item := range catalog.Partitions {
+			partitions = append(partitions, otlp.DatabaseCatalogPartition{ParentSchema: item.ParentSchema, ParentTable: item.ParentTable, ChildSchema: item.ChildSchema, ChildTable: item.ChildTable})
+		}
+		policies := make([]otlp.DatabaseCatalogPolicy, 0, len(catalog.Policies))
+		for _, item := range catalog.Policies {
+			policies = append(policies, otlp.DatabaseCatalogPolicy{SchemaName: item.SchemaName, TableName: item.TableName, PolicyName: item.PolicyName, Command: item.Command, Roles: item.Roles, UsingExpression: item.UsingExpression, CheckExpression: item.CheckExpression})
+		}
+		enums := make([]otlp.DatabaseCatalogEnum, 0, len(catalog.Enums))
+		for _, item := range catalog.Enums {
+			enums = append(enums, otlp.DatabaseCatalogEnum{SchemaName: item.SchemaName, TypeName: item.TypeName, Values: item.Values})
+		}
 		return exporter.PostDatabaseCatalog(postCtx, otlp.DatabaseCatalogPayload{
 			InstallationID: catalog.InstallationID, DatabaseID: catalog.DatabaseID,
 			DBServer: catalog.DBServer, DBName: catalog.DBName,
 			ServerVersion: catalog.ServerVersion, DatabaseSizeBytes: catalog.DatabaseSizeBytes,
 			Fingerprint: catalog.Fingerprint, Truncated: catalog.Truncated,
 			FunctionsTruncated: catalog.FunctionsTruncated, Tables: tables, Functions: functions,
-			Settings: settings, Extensions: extensions,
+			Settings: settings, Extensions: extensions, Schemas: schemas, Sequences: sequences,
+			Triggers: triggers, Partitions: partitions, Policies: policies, Enums: enums,
 		})
 	})
 	runtime.SetDiagnosticsPusher(func(postCtx context.Context, diagnostics checks.DatabaseDiagnostics) error {
@@ -1048,8 +1083,9 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 	runtime.SetInstanceDiscoveryPusher(func(postCtx context.Context, discovery checks.DatabaseInstanceDiscovery) error {
 		return exporter.PostDatabaseInstanceDiscovery(postCtx, otlp.DatabaseInstanceDiscoveryPayload{
 			InstallationID: discovery.InstallationID,
-			Engine: discovery.Engine, Server: discovery.Server, Port: discovery.Port,
-			ServerVersion: discovery.ServerVersion, Databases: discovery.Databases,
+			Engine:         discovery.Engine, Server: discovery.Server, Port: discovery.Port,
+			ServerVersion: discovery.ServerVersion, Role: discovery.Role,
+			PostmasterStartedAt: discovery.PostmasterStartedAt, Databases: discovery.Databases,
 		})
 	})
 
@@ -1109,7 +1145,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 						}
 						apmStats.SetEnabled(apmEnabled)
 					},
-					PostgresTargets: databaseMonitors,
+					PostgresTargets:   databaseMonitors,
 					OnTerminalRemoval: terminalRemoval,
 				}, runtime); err != nil {
 					log.Warn("config pull (ingest) encerrou", "err", err)
