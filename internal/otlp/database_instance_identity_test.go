@@ -108,6 +108,24 @@ func TestTerminalRemovalOnlyFiresForGone(t *testing.T) {
 	}
 }
 
+func TestForbiddenSignalDoesNotBlockHostMetricsQueue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	exporter := NewIngestExporter(server.URL, "iwI_test", "db-host", "", "vtest", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	exporter.client = server.Client()
+	defer exporter.metricsPending.Close()
+
+	if err := exporter.PostRaw(context.Background(), "db/runtime", "application/json", []byte(`{}`)); err == nil {
+		t.Fatal("expected HTTP 403")
+	}
+	if exporter.metricsPending.Blocked() {
+		t.Fatal("403 de um sinal de banco não pode bloquear as métricas do host")
+	}
+}
+
 func TestDatabaseProfileMetricsUseExporterInstallationID(t *testing.T) {
 	t.Setenv("ISPWATCH_STATE_DIR", t.TempDir())
 	var body []byte

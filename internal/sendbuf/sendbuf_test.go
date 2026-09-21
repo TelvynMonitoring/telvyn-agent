@@ -105,6 +105,20 @@ func TestAuthFailureDropsAndBlocks(t *testing.T) {
 	})
 }
 
+// 403 pode ser uma rejeição de escopo/identidade de um único sinal. O payload
+// recusado é terminal, mas não pode pausar as demais métricas do Agent.
+func TestForbiddenPayloadDropsWithoutBlocking(t *testing.T) {
+	q := New("test", 1<<20, nil)
+	q.Offer([]byte("runtime-discovery"), fmt.Errorf("ingest db/runtime: %w", &StatusError{Code: 403}))
+	if q.Blocked() {
+		t.Fatal("403 de um sinal não deveria bloquear a fila compartilhada")
+	}
+	q.Flush(context.Background(), func(_ context.Context, _ []byte) error {
+		t.Fatal("payload de 403 não deveria ter sido retido")
+		return nil
+	})
+}
+
 // 429 (franquia) também é terminal e bloqueia.
 func TestBudgetFailureBlocks(t *testing.T) {
 	q := New("test", 1<<20, nil)

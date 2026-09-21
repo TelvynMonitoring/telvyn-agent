@@ -255,9 +255,9 @@ func (e *IngestExporter) PostRaw(ctx context.Context, signal, contentType string
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		// Token revogado/inválido: loga a mensagem clara (rate-limited) pra
-		// TODOS os sinais que passam por aqui — sem isso o operador só via
-		// um "HTTP 401" genérico em loop, sem saber que era o token.
+		// 401 representa credencial inválida/revogada e bloqueia a fila
+		// compartilhada. 403 é registrado pelo sendbuf como rejeição do sinal,
+		// sem interromper métricas independentes do host.
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			e.metricsPending.NoteAuthFailure(resp.StatusCode)
 		}
