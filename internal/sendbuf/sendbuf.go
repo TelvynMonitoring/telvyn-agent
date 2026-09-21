@@ -475,21 +475,24 @@ func (q *Queue) offerPersistentLocked(body []byte) error {
 	return nil
 }
 
-// NoteAuthFailure permite a caminhos sem retenção (ex.: PostRaw de spans)
-// registrarem o erro claro de token e ativarem o cool-down compartilhado.
+// NoteAuthFailure permite a caminhos sem retenção (ex.: PostRaw de sinais de
+// banco) registrarem respostas terminais. Apenas 401 bloqueia a fila inteira:
+// 403 pode ser uma rejeição de escopo ou identidade de um único sinal e não
+// significa que a credencial compartilhada foi revogada.
 func (q *Queue) NoteAuthFailure(code int) {
 	q.noteTerminal(&StatusError{Code: code})
 }
 
-// noteTerminal devolve true quando o erro é terminal (auth/franquia): ativa o
-// cool-down e loga a mensagem clara (rate-limited).
+// noteTerminal devolve true quando o payload atual não deve ser reenviado.
+// Falhas realmente globais (401/franquia) ativam o cool-down compartilhado;
+// uma rejeição 403 descarta somente o payload recusado.
 func (q *Queue) noteTerminal(err error) bool {
 	var se *StatusError
 	if !errors.As(err, &se) {
 		return false
 	}
 	switch se.Code {
-	case 401, 403:
+	case 401:
 		q.mu.Lock()
 		q.blockedTil = time.Now().Add(authCooldown)
 		shouldLog := time.Since(q.lastAuthLog) >= logInterval
@@ -500,6 +503,18 @@ func (q *Queue) noteTerminal(err error) bool {
 		if shouldLog {
 			q.log.Error("token de ingest INVÁLIDO ou REVOGADO — telemetria sendo descartada; "+
 				"verifique ISPWATCH_INGEST_TOKEN (gere outro em Monitores → instalar agent)",
+				"status", se.Code)
+		}
+		return true
+	case 403:
+		q.mu.Lock()
+		shouldLog := time.Since(q.lastAuthLog) >= logInterval
+		if shouldLog {
+			q.lastAuthLog = time.Now()
+		}
+		q.mu.Unlock()
+		if shouldLog {
+			q.log.Warn("payload de telemetria recusado pelo backend — verifique o escopo e a identidade do sinal",
 				"status", se.Code)
 		}
 		return true
