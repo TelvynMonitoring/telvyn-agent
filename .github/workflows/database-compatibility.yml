@@ -1,0 +1,63 @@
+name: Database compatibility
+
+on:
+  pull_request:
+    paths:
+      - "internal/checks/postgres_*.go"
+      - "internal/otlp/database_*.go"
+      - ".github/workflows/database-compatibility.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    name: PostgreSQL ${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["9.6", "10", "11", "12", "13", "14", "15", "16", "17", "18"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Generate protocol stubs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          protoc --proto_path=proto/v1 --proto_path=/usr/include \
+            --go_out=proto/v1 --go_opt=paths=source_relative \
+            --go-grpc_out=proto/v1 --go-grpc_opt=paths=source_relative \
+            proto/v1/collector.proto proto/v1/apm_stats.proto
+      - name: Start PostgreSQL
+        run: >-
+          docker run --detach --name postgres-compat
+          --env POSTGRES_PASSWORD=postgres
+          --publish 5432:5432
+          postgres:${{ matrix.postgres }}
+          -c shared_preload_libraries=pg_stat_statements
+      - name: Wait for PostgreSQL
+        run: |
+          for attempt in {1..60}; do
+            if docker exec postgres-compat pg_isready -U postgres; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs postgres-compat
+          exit 1
+      - name: Enable statistics extension
+        run: docker exec postgres-compat psql -U postgres -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements'
+      - name: Run compatibility contract
+        env:
+          POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+        run: go test -tags=postgres_integration ./internal/checks -run TestPostgresCompatibilityMatrix -count=1
