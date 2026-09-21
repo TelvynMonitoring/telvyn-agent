@@ -199,6 +199,8 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return modules["BANCOS_DADOS"]
 	case "db/explain":
 		return modules["BANCOS_DADOS"]
+	case "db/capabilities", "db/runtime":
+		return modules["BANCOS_DADOS"]
 	default:
 		return true
 	}
@@ -414,6 +416,7 @@ func (e *IngestExporter) PostHostServices(ctx context.Context, payload map[strin
 // DatabaseQueryStatsPayload é o agregado de uma janela de pg_stat_statements.
 // Os valores das linhas são deltas, não contadores cumulativos.
 type DatabaseQueryStatsPayload struct {
+	DatabaseSignalEnvelope
 	InstallationID string              `json:"installation_id"`
 	DatabaseID     string              `json:"database_id"`
 	DBServer       string              `json:"db_server"`
@@ -443,6 +446,9 @@ func (e *IngestExporter) PostDatabaseQueryStats(ctx context.Context, payload Dat
 			return fmt.Errorf("database query stats: database_id obrigatório para Agent de Banco")
 		}
 	}
+	payload.DatabaseSignalEnvelope = databaseEnvelope(
+		DatabaseSignalQueryMetrics, "postgres", payload.DatabaseSignalEnvelope,
+	)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -453,6 +459,7 @@ func (e *IngestExporter) PostDatabaseQueryStats(ctx context.Context, payload Dat
 // DatabaseCatalogPayload é um snapshot de metadados. Não contém linhas de
 // negócio: apenas estrutura e estatísticas agregadas do banco.
 type DatabaseCatalogPayload struct {
+	DatabaseSignalEnvelope
 	InstallationID     string                 `json:"installation_id"`
 	DatabaseID         string                 `json:"database_id"`
 	DBServer           string                 `json:"db_server"`
@@ -549,6 +556,9 @@ func (e *IngestExporter) PostDatabaseCatalog(ctx context.Context, payload Databa
 			return fmt.Errorf("database catalog: database_id obrigatório para Agent de Banco")
 		}
 	}
+	payload.DatabaseSignalEnvelope = databaseEnvelope(
+		DatabaseSignalCatalogSnapshot, "postgres", payload.DatabaseSignalEnvelope,
+	)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -560,6 +570,7 @@ func (e *IngestExporter) PostDatabaseCatalog(ctx context.Context, payload Databa
 // Ao contrário de métricas, seus itens permanecem em PostgreSQL no backend e
 // não criam uma série por sessão, lock ou consulta no VictoriaMetrics.
 type DatabaseDiagnosticsPayload struct {
+	DatabaseSignalEnvelope
 	InstallationID string                        `json:"installation_id"`
 	DatabaseID     string                        `json:"database_id"`
 	DBServer       string                        `json:"db_server"`
@@ -692,6 +703,9 @@ func (e *IngestExporter) PostDatabaseDiagnostics(ctx context.Context, payload Da
 			return fmt.Errorf("database diagnostics: database_id obrigatório para Agent de Banco")
 		}
 	}
+	payload.DatabaseSignalEnvelope = databaseEnvelope(
+		DatabaseSignalDiagnostics, "postgres", payload.DatabaseSignalEnvelope,
+	)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -702,6 +716,7 @@ func (e *IngestExporter) PostDatabaseDiagnostics(ctx context.Context, payload Da
 // DatabaseExplainPayload é o resultado de uma solicitação pontual de plano.
 // O plano é JSON do PostgreSQL; EXPLAIN sem ANALYZE nunca executa a consulta.
 type DatabaseExplainPayload struct {
+	DatabaseSignalEnvelope
 	InstallationID string `json:"installation_id"`
 	DatabaseID     string `json:"database_id"`
 	RequestID      string `json:"request_id"`
@@ -726,6 +741,9 @@ func (e *IngestExporter) PostDatabaseExplain(ctx context.Context, payload Databa
 			return fmt.Errorf("database explain: database_id obrigatório para Agent de Banco")
 		}
 	}
+	payload.DatabaseSignalEnvelope = databaseEnvelope(
+		DatabaseSignalExplainPlan, "postgres", payload.DatabaseSignalEnvelope,
+	)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -989,6 +1007,7 @@ func (e *IngestExporter) SetCollectorID(id string) {
 // backend usa a instalação vinculada ao token para criar os filhos lógicos e
 // devolver checks individualizados no próximo config-pull.
 type DatabaseInstanceDiscoveryPayload struct {
+	DatabaseSignalEnvelope
 	InstallationID string   `json:"installation_id"`
 	Engine         string   `json:"engine"`
 	Server         string   `json:"server"`
@@ -1007,6 +1026,9 @@ func (e *IngestExporter) PostDatabaseInstanceDiscovery(ctx context.Context, payl
 	if payload.Databases == nil {
 		payload.Databases = []string{}
 	}
+	payload.DatabaseSignalEnvelope = databaseEnvelope(
+		DatabaseSignalInstanceDiscovery, payload.Engine, payload.DatabaseSignalEnvelope,
+	)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err

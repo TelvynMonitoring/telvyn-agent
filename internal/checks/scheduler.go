@@ -15,6 +15,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -115,12 +116,14 @@ type StatusReporter func(checkID string, ok bool, message string)
 // ExecutionReport não carrega métricas nem segredos; somente saúde, motivo e
 // duração da execução.
 type ExecutionReport struct {
-	CheckID  string
-	OK       bool
-	TimedOut bool
-	Message  string
-	Duration time.Duration
-	At       time.Time
+	CheckID     string
+	CheckSignal string
+	Tags        map[string]string
+	OK          bool
+	TimedOut    bool
+	Message     string
+	Duration    time.Duration
+	At          time.Time
 }
 
 type ExecutionReporter func(ExecutionReport)
@@ -569,8 +572,7 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			clog.Warn("check run error", "err", err, "consecutive", n, "run_timeout", runTimeout.String())
 			r.emitCheckError(c)
 			reportar(false, err.Error())
-			r.reportExecution(ExecutionReport{CheckID: c.ID(), OK: false, TimedOut: timedOut,
-				Message: err.Error(), Duration: duration, At: time.Now()})
+			r.reportExecution(databaseExecutionReport(c, false, timedOut, err.Error(), duration))
 			return
 		}
 		if timedOut {
@@ -578,13 +580,14 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			clog.Warn("check run exceeded timeout", "consecutive", n, "run_timeout", runTimeout.String())
 			r.emitCheckError(c)
 			reportar(false, "sem resposta em "+runTimeout.String())
-			r.reportExecution(ExecutionReport{CheckID: c.ID(), OK: false, TimedOut: true,
-				Message: "sem resposta em " + runTimeout.String(), Duration: duration, At: time.Now()})
+			r.reportExecution(databaseExecutionReport(
+				c, false, true, "sem resposta em "+runTimeout.String(), duration,
+			))
 			return
 		}
 		consecutiveErrors.Store(0)
 		reportar(true, "")
-		r.reportExecution(ExecutionReport{CheckID: c.ID(), OK: true, Duration: duration, At: time.Now()})
+		r.reportExecution(databaseExecutionReport(c, true, false, "", duration))
 		if queryStats != nil {
 			r.pushQueryStats(c.ID(), *queryStats)
 		}
@@ -614,6 +617,42 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			runOnce()
 		}
 	}
+}
+
+func databaseExecutionReport(c Check, ok, timedOut bool, message string, duration time.Duration) ExecutionReport {
+	report := ExecutionReport{
+		CheckID: c.ID(), CheckSignal: databaseCheckSignal(c), OK: ok,
+		TimedOut: timedOut, Message: message, Duration: duration, At: time.Now(),
+	}
+	if report.CheckSignal == "" {
+		return report
+	}
+	report.Tags = make(map[string]string, 2)
+	for _, key := range []string{"installation_id", "database_id"} {
+		if value := strings.TrimSpace(c.Tags()[key]); value != "" {
+			report.Tags[key] = value
+		}
+	}
+	return report
+}
+
+func databaseCheckSignal(c Check) string {
+	if _, ok := any(c).(ExplainCheck); ok {
+		return "explain_plan"
+	}
+	if _, ok := any(c).(InstanceDiscoveryCheck); ok {
+		return "instance_discovery"
+	}
+	if _, ok := any(c).(QueryStatsCheck); ok {
+		return "query_metrics"
+	}
+	if _, ok := any(c).(CatalogCheck); ok {
+		return "catalog_snapshot"
+	}
+	if _, ok := any(c).(DiagnosticsCheck); ok {
+		return "diagnostics_snapshot"
+	}
+	return ""
 }
 
 func (r *Runtime) pushQueryStats(checkID string, stats DatabaseQueryStats) {

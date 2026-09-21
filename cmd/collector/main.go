@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -817,6 +818,17 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			if err := exporter.PostCheckStatus(postCtx, report.CheckID, report.OK, report.Message); err != nil {
 				log.Debug("check execution não reportada", "check_id", report.CheckID, "err", err)
 			}
+			if report.CheckSignal != "" && report.Tags["installation_id"] != "" {
+				err := exporter.PostDatabaseCollectorRuntime(postCtx, otlp.DatabaseCollectorRuntimePayload{
+					InstallationID: report.Tags["installation_id"], DatabaseID: report.Tags["database_id"],
+					CheckID: report.CheckID, CheckSignal: report.CheckSignal,
+					OK: report.OK, TimedOut: report.TimedOut, DurationMS: max(report.Duration.Milliseconds(), 0),
+					ObservedAt: report.At.UTC().Format(time.RFC3339Nano), Error: report.Message,
+				})
+				if err != nil {
+					log.Debug("telemetria do check de banco não reportada", "check_id", report.CheckID, "err", err)
+				}
+			}
 		}(report)
 	})
 	exporter.SetCollectorRuntimeStatsProvider(func() otlp.CollectorRuntimeStats {
@@ -998,13 +1010,31 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 				StatsReset: diagnostics.WAL.StatsReset,
 			}
 		}
-		return exporter.PostDatabaseDiagnostics(postCtx, otlp.DatabaseDiagnosticsPayload{
+		if err := exporter.PostDatabaseDiagnostics(postCtx, otlp.DatabaseDiagnosticsPayload{
 			InstallationID: diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
 			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName,
 			BloatEnabled: diagnostics.BloatEnabled, Capabilities: diagnostics.Capabilities,
 			Sessions: sessions, Blocking: blocking, Waits: waits, Bloat: bloat,
 			Replicas: replicas, ReplicationSlots: slots, MaintenanceOperations: maintenance,
 			Checkpoints: checkpoints, Wraparound: wraparound, WAL: wal, Errors: diagnostics.Errors,
+		}); err != nil {
+			return err
+		}
+		capabilityNames := make([]string, 0, len(diagnostics.Capabilities))
+		for name := range diagnostics.Capabilities {
+			capabilityNames = append(capabilityNames, name)
+		}
+		sort.Strings(capabilityNames)
+		capabilities := make([]otlp.DatabaseCapability, 0, len(capabilityNames))
+		for _, name := range capabilityNames {
+			capabilities = append(capabilities, otlp.DatabaseCapability{
+				Name: name, Status: diagnostics.Capabilities[name],
+			})
+		}
+		return exporter.PostDatabaseCapabilities(postCtx, otlp.DatabaseCapabilitiesPayload{
+			InstallationID: diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
+			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName,
+			Capabilities: capabilities, Errors: diagnostics.Errors,
 		})
 	})
 	runtime.SetExplainPusher(func(postCtx context.Context, plan checks.DatabaseExplainPlan) error {
