@@ -86,3 +86,42 @@ func TestPostgresCustom_RejectsUnsafeMetricName(t *testing.T) {
 		t.Fatalf("unsafe metric name should be rejected, got %v", err)
 	}
 }
+
+func TestPostgresCustom_EmitsTypedColumnsWithBoundedTags(t *testing.T) {
+	stub := newStubPgxPool()
+	stub.rowsBySQLPrefix["SELECT COALESCE(json_agg"] = &stubRow{vals: []any{`[{"status":"paid","orders":12,"latency_ms":4.5}]`}}
+	cfg := &collectorv1.CheckConfig{
+		CheckId: "typed", HostId: "host-1",
+		StaticTags: map[string]string{"db_server": "db.internal", "custom_name": "Orders"},
+		Params: map[string]string{
+			"dsn": "postgres://u:p@h/d", "query": "SELECT status, count(*) AS orders, avg(latency_ms) AS latency_ms FROM orders GROUP BY status",
+			"metric_name": "orders", "columns_json": `[{"name":"status","type":"tag"},{"name":"orders","type":"count"},{"name":"latency_ms","type":"gauge"}]`,
+		},
+	}
+	check, err := newPostgresCustomCheckWithFactory(cfg, newStubPoolFactory(stub, nil))
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	metrics, err := check.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(metrics) != 2 {
+		t.Fatalf("metrics = %+v", metrics)
+	}
+	if metrics[0].Tags["custom.status"] != "paid" || metrics[0].Tags["custom_metric_type"] != "count" {
+		t.Fatalf("typed tags = %+v", metrics[0].Tags)
+	}
+}
+
+func TestParsePostgresCustomColumnsRejectsUnsafeSchema(t *testing.T) {
+	for _, raw := range []string{
+		`[{"name":"value","type":"unknown"}]`,
+		`[{"name":"bad name","type":"gauge"}]`,
+		`[{"name":"same","type":"gauge"},{"name":"same","type":"tag"}]`,
+	} {
+		if _, err := parsePostgresCustomColumns(raw); err == nil {
+			t.Fatalf("expected rejection for %s", raw)
+		}
+	}
+}

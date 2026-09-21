@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/jackc/pgx/v5"
 )
 
 const postgresInstanceDiscoveryTimeout = 10 * time.Second
@@ -23,12 +23,14 @@ const postgresInstanceDiscoveryTimeout = 10 * time.Second
 // dedicado. O backend, não o Agent, decide quais filhos lógicos criar/arquivar
 // e quais checks entregar depois pelo config-pull.
 type DatabaseInstanceDiscovery struct {
-	InstallationID string
-	Engine         string
-	Server         string
-	Port           int
-	ServerVersion  string
-	Databases      []string
+	InstallationID      string
+	Engine              string
+	Server              string
+	Port                int
+	ServerVersion       string
+	Role                string
+	PostmasterStartedAt string
+	Databases           []string
 }
 
 // InstanceDiscoveryCheck marca checks que informam a topologia lógica de uma
@@ -54,6 +56,8 @@ type postgresInstanceDiscovery struct {
 // metadados visíveis em pg_database.
 const sqlPostgresInstanceDiscovery = `SELECT json_build_object(
   'server_version', current_setting('server_version'),
+	'role', CASE WHEN pg_is_in_recovery() THEN 'standby' ELSE 'primary' END,
+	'postmaster_started_at', pg_postmaster_start_time()::text,
   'databases', COALESCE((
     SELECT json_agg(d.datname ORDER BY d.datname)
       FROM pg_database d
@@ -162,8 +166,10 @@ func (c *postgresInstanceDiscovery) RunInstanceDiscovery(ctx context.Context) (*
 		return nil, err
 	}
 	var result struct {
-		ServerVersion string   `json:"server_version"`
-		Databases     []string `json:"databases"`
+		ServerVersion       string   `json:"server_version"`
+		Role                string   `json:"role"`
+		PostmasterStartedAt string   `json:"postmaster_started_at"`
+		Databases           []string `json:"databases"`
 	}
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		return nil, fmt.Errorf("postgres.instance_discovery: resposta inválida: %w", err)
@@ -175,12 +181,14 @@ func (c *postgresInstanceDiscovery) RunInstanceDiscovery(ctx context.Context) (*
 		result.Databases = []string{}
 	}
 	return &DatabaseInstanceDiscovery{
-		InstallationID: c.installationID,
-		Engine:         "postgres",
-		Server:         c.server,
-		Port:           c.port,
-		ServerVersion:  result.ServerVersion,
-		Databases:      result.Databases,
+		InstallationID:      c.installationID,
+		Engine:              "postgres",
+		Server:              c.server,
+		Port:                c.port,
+		ServerVersion:       result.ServerVersion,
+		Role:                result.Role,
+		PostmasterStartedAt: result.PostmasterStartedAt,
+		Databases:           result.Databases,
 	}, nil
 }
 

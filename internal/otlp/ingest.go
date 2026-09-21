@@ -59,7 +59,7 @@ type IngestExporter struct {
 	// Database Agents have a process identity which is replaced on a fresh
 	// installation, plus a stable machine identity used by Telvyn to preserve
 	// the monitored instance during that replacement.
-	databaseAgentID atomic.Value
+	databaseAgentID   atomic.Value
 	databaseMachineID atomic.Value
 	// terminalFailureHandler só é disparado pelo status terminal 410 Gone,
 	// reservado para uma instalação de banco removida. 401/403 podem ser token
@@ -417,12 +417,13 @@ func (e *IngestExporter) PostHostServices(ctx context.Context, payload map[strin
 // Os valores das linhas são deltas, não contadores cumulativos.
 type DatabaseQueryStatsPayload struct {
 	DatabaseSignalEnvelope
-	InstallationID string              `json:"installation_id"`
-	DatabaseID     string              `json:"database_id"`
-	DBServer       string              `json:"db_server"`
-	DBName         string              `json:"db_name"`
-	WindowSeconds  int                 `json:"window_seconds"`
-	Queries        []DatabaseQueryStat `json:"queries"`
+	InstallationID string                `json:"installation_id"`
+	DatabaseID     string                `json:"database_id"`
+	DBServer       string                `json:"db_server"`
+	DBName         string                `json:"db_name"`
+	WindowSeconds  int                   `json:"window_seconds"`
+	Queries        []DatabaseQueryStat   `json:"queries"`
+	Samples        []DatabaseQuerySample `json:"samples"`
 }
 
 type DatabaseQueryStat struct {
@@ -434,10 +435,26 @@ type DatabaseQueryStat struct {
 	Rows    int64   `json:"rows"`
 }
 
+type DatabaseQuerySample struct {
+	SampleID    string          `json:"sample_id"`
+	QueryID     string          `json:"query_id"`
+	Text        string          `json:"text"`
+	User        string          `json:"user"`
+	Application string          `json:"application"`
+	Client      string          `json:"client"`
+	State       string          `json:"state"`
+	WaitType    string          `json:"wait_type"`
+	WaitEvent   string          `json:"wait_event"`
+	DurationMS  float64         `json:"duration_ms"`
+	SampledAt   string          `json:"sampled_at"`
+	Plan        json.RawMessage `json:"plan,omitempty"`
+	PlanStatus  string          `json:"plan_status,omitempty"`
+}
+
 // PostDatabaseQueryStats publica uma janela no sinal próprio de banco. Query
 // stats são agregados e não devem virar uma série por consulta no VM.
 func (e *IngestExporter) PostDatabaseQueryStats(ctx context.Context, payload DatabaseQueryStatsPayload) error {
-	if len(payload.Queries) == 0 {
+	if len(payload.Queries) == 0 && len(payload.Samples) == 0 {
 		return nil
 	}
 	if installationID := e.databaseInstallationID(); installationID != "" {
@@ -460,19 +477,63 @@ func (e *IngestExporter) PostDatabaseQueryStats(ctx context.Context, payload Dat
 // negócio: apenas estrutura e estatísticas agregadas do banco.
 type DatabaseCatalogPayload struct {
 	DatabaseSignalEnvelope
-	InstallationID     string                 `json:"installation_id"`
-	DatabaseID         string                 `json:"database_id"`
-	DBServer           string                 `json:"db_server"`
-	DBName             string                 `json:"db_name"`
-	ServerVersion     string                 `json:"server_version"`
-	DatabaseSizeBytes int64                  `json:"database_size_bytes"`
-	Fingerprint       string                 `json:"fingerprint"`
-	Truncated          bool                      `json:"truncated"`
-	FunctionsTruncated bool                      `json:"functions_truncated"`
-	Tables             []DatabaseCatalogTable    `json:"tables"`
-	Functions          []DatabaseCatalogFunction `json:"functions"`
+	InstallationID     string                     `json:"installation_id"`
+	DatabaseID         string                     `json:"database_id"`
+	DBServer           string                     `json:"db_server"`
+	DBName             string                     `json:"db_name"`
+	ServerVersion      string                     `json:"server_version"`
+	DatabaseSizeBytes  int64                      `json:"database_size_bytes"`
+	Fingerprint        string                     `json:"fingerprint"`
+	Truncated          bool                       `json:"truncated"`
+	FunctionsTruncated bool                       `json:"functions_truncated"`
+	Tables             []DatabaseCatalogTable     `json:"tables"`
+	Functions          []DatabaseCatalogFunction  `json:"functions"`
 	Settings           []DatabaseCatalogSetting   `json:"settings"`
 	Extensions         []DatabaseCatalogExtension `json:"extensions"`
+	Schemas            []DatabaseCatalogSchema    `json:"schemas"`
+	Sequences          []DatabaseCatalogSequence  `json:"sequences"`
+	Triggers           []DatabaseCatalogTrigger   `json:"triggers"`
+	Partitions         []DatabaseCatalogPartition `json:"partitions"`
+	Policies           []DatabaseCatalogPolicy    `json:"policies"`
+	Enums              []DatabaseCatalogEnum      `json:"enums"`
+}
+
+type DatabaseCatalogSchema struct {
+	Name      string `json:"name"`
+	OwnerName string `json:"owner_name"`
+}
+type DatabaseCatalogSequence struct {
+	SchemaName   string `json:"schema_name"`
+	SequenceName string `json:"sequence_name"`
+	OwnerName    string `json:"owner_name"`
+}
+type DatabaseCatalogTrigger struct {
+	SchemaName   string `json:"schema_name"`
+	TableName    string `json:"table_name"`
+	TriggerName  string `json:"trigger_name"`
+	FunctionName string `json:"function_name"`
+	Enabled      string `json:"enabled"`
+	Definition   string `json:"definition"`
+}
+type DatabaseCatalogPartition struct {
+	ParentSchema string `json:"parent_schema"`
+	ParentTable  string `json:"parent_table"`
+	ChildSchema  string `json:"child_schema"`
+	ChildTable   string `json:"child_table"`
+}
+type DatabaseCatalogPolicy struct {
+	SchemaName      string   `json:"schema_name"`
+	TableName       string   `json:"table_name"`
+	PolicyName      string   `json:"policy_name"`
+	Command         string   `json:"command"`
+	Roles           []string `json:"roles"`
+	UsingExpression string   `json:"using_expression"`
+	CheckExpression string   `json:"check_expression"`
+}
+type DatabaseCatalogEnum struct {
+	SchemaName string   `json:"schema_name"`
+	TypeName   string   `json:"type_name"`
+	Values     []string `json:"values"`
 }
 
 type DatabaseCatalogTable struct {
@@ -502,6 +563,8 @@ type DatabaseCatalogFunction struct {
 	FunctionName string `json:"function_name"`
 	OwnerName    string `json:"owner_name"`
 	Language     string `json:"language"`
+	Arguments    string `json:"arguments"`
+	ResultType   string `json:"result_type"`
 }
 
 type DatabaseCatalogSetting struct {
@@ -571,23 +634,23 @@ func (e *IngestExporter) PostDatabaseCatalog(ctx context.Context, payload Databa
 // não criam uma série por sessão, lock ou consulta no VictoriaMetrics.
 type DatabaseDiagnosticsPayload struct {
 	DatabaseSignalEnvelope
-	InstallationID string                        `json:"installation_id"`
-	DatabaseID     string                        `json:"database_id"`
-	DBServer       string                        `json:"db_server"`
-	DBName         string                        `json:"db_name"`
-	BloatEnabled   bool                          `json:"bloat_enabled"`
-	Capabilities   map[string]string             `json:"capabilities"`
-	Sessions       []DatabaseDiagnosticsSession  `json:"sessions"`
-	Blocking       []DatabaseDiagnosticsBlocking `json:"blocking"`
-	Waits          []DatabaseDiagnosticsWait     `json:"waits"`
-	Bloat          []DatabaseDiagnosticsBloat    `json:"bloat"`
-	Replicas       []DatabaseDiagnosticsReplica  `json:"replicas"`
-	ReplicationSlots []DatabaseDiagnosticsReplicationSlot `json:"replication_slots"`
+	InstallationID        string                                    `json:"installation_id"`
+	DatabaseID            string                                    `json:"database_id"`
+	DBServer              string                                    `json:"db_server"`
+	DBName                string                                    `json:"db_name"`
+	BloatEnabled          bool                                      `json:"bloat_enabled"`
+	Capabilities          map[string]string                         `json:"capabilities"`
+	Sessions              []DatabaseDiagnosticsSession              `json:"sessions"`
+	Blocking              []DatabaseDiagnosticsBlocking             `json:"blocking"`
+	Waits                 []DatabaseDiagnosticsWait                 `json:"waits"`
+	Bloat                 []DatabaseDiagnosticsBloat                `json:"bloat"`
+	Replicas              []DatabaseDiagnosticsReplica              `json:"replicas"`
+	ReplicationSlots      []DatabaseDiagnosticsReplicationSlot      `json:"replication_slots"`
 	MaintenanceOperations []DatabaseDiagnosticsMaintenanceOperation `json:"maintenance_operations"`
-	Checkpoints    *DatabaseDiagnosticsCheckpoints `json:"checkpoints,omitempty"`
-	Wraparound     *DatabaseDiagnosticsWraparound  `json:"wraparound,omitempty"`
-	WAL            *DatabaseDiagnosticsWAL         `json:"wal,omitempty"`
-	Errors         []string                      `json:"errors,omitempty"`
+	Checkpoints           *DatabaseDiagnosticsCheckpoints           `json:"checkpoints,omitempty"`
+	Wraparound            *DatabaseDiagnosticsWraparound            `json:"wraparound,omitempty"`
+	WAL                   *DatabaseDiagnosticsWAL                   `json:"wal,omitempty"`
+	Errors                []string                                  `json:"errors,omitempty"`
 }
 
 type DatabaseDiagnosticsReplica struct {
@@ -606,56 +669,56 @@ type DatabaseDiagnosticsReplica struct {
 }
 
 type DatabaseDiagnosticsReplicationSlot struct {
-	SlotName string `json:"slot_name"`
-	Plugin string `json:"plugin"`
-	SlotType string `json:"slot_type"`
-	Database string `json:"database"`
-	Active bool `json:"active"`
-	RestartLSN string `json:"restart_lsn"`
-	ConfirmedLSN string `json:"confirmed_lsn"`
-	RetainedBytes int64 `json:"retained_bytes"`
+	SlotName      string `json:"slot_name"`
+	Plugin        string `json:"plugin"`
+	SlotType      string `json:"slot_type"`
+	Database      string `json:"database"`
+	Active        bool   `json:"active"`
+	RestartLSN    string `json:"restart_lsn"`
+	ConfirmedLSN  string `json:"confirmed_lsn"`
+	RetainedBytes int64  `json:"retained_bytes"`
 }
 
 type DatabaseDiagnosticsMaintenanceOperation struct {
-	Operation string `json:"operation"`
-	SchemaName string `json:"schema_name"`
-	TableName string `json:"table_name"`
-	Phase string `json:"phase"`
-	ProcessedBlocks int64 `json:"processed_blocks"`
-	TotalBlocks int64 `json:"total_blocks"`
+	Operation       string  `json:"operation"`
+	SchemaName      string  `json:"schema_name"`
+	TableName       string  `json:"table_name"`
+	Phase           string  `json:"phase"`
+	ProcessedBlocks int64   `json:"processed_blocks"`
+	TotalBlocks     int64   `json:"total_blocks"`
 	ProgressPercent float64 `json:"progress_percent"`
 }
 
 type DatabaseDiagnosticsCheckpoints struct {
-	Timed int64 `json:"timed"`
-	Requested int64 `json:"requested"`
-	WriteTimeMS float64 `json:"write_time_ms"`
-	SyncTimeMS float64 `json:"sync_time_ms"`
-	BuffersWritten int64 `json:"buffers_written"`
-	StatsReset string `json:"stats_reset"`
+	Timed          int64   `json:"timed"`
+	Requested      int64   `json:"requested"`
+	WriteTimeMS    float64 `json:"write_time_ms"`
+	SyncTimeMS     float64 `json:"sync_time_ms"`
+	BuffersWritten int64   `json:"buffers_written"`
+	StatsReset     string  `json:"stats_reset"`
 }
 
 type DatabaseDiagnosticsWraparound struct {
-	DatabaseAge int64 `json:"database_age"`
-	FreezeMaxAge int64 `json:"freeze_max_age"`
-	OldestTableAge int64 `json:"oldest_table_age"`
-	OldestTable string `json:"oldest_table"`
+	DatabaseAge    int64  `json:"database_age"`
+	FreezeMaxAge   int64  `json:"freeze_max_age"`
+	OldestTableAge int64  `json:"oldest_table_age"`
+	OldestTable    string `json:"oldest_table"`
 }
 
 type DatabaseDiagnosticsWAL struct {
-	Records int64 `json:"records"`
-	FullPageImages int64 `json:"full_page_images"`
-	Bytes int64 `json:"bytes"`
-	GeneratedBytes int64 `json:"generated_bytes"`
-	BytesPerSecond float64 `json:"bytes_per_second"`
-	SampleSeconds float64 `json:"sample_seconds"`
-	ArchivedCount int64 `json:"archived_count"`
-	FailedCount int64 `json:"failed_count"`
-	LastArchivedWAL string `json:"last_archived_wal"`
-	LastArchivedTime string `json:"last_archived_time"`
-	LastFailedWAL string `json:"last_failed_wal"`
-	LastFailedTime string `json:"last_failed_time"`
-	StatsReset string `json:"stats_reset"`
+	Records          int64   `json:"records"`
+	FullPageImages   int64   `json:"full_page_images"`
+	Bytes            int64   `json:"bytes"`
+	GeneratedBytes   int64   `json:"generated_bytes"`
+	BytesPerSecond   float64 `json:"bytes_per_second"`
+	SampleSeconds    float64 `json:"sample_seconds"`
+	ArchivedCount    int64   `json:"archived_count"`
+	FailedCount      int64   `json:"failed_count"`
+	LastArchivedWAL  string  `json:"last_archived_wal"`
+	LastArchivedTime string  `json:"last_archived_time"`
+	LastFailedWAL    string  `json:"last_failed_wal"`
+	LastFailedTime   string  `json:"last_failed_time"`
+	StatsReset       string  `json:"stats_reset"`
 }
 
 type DatabaseDiagnosticsSession struct {
@@ -1008,12 +1071,14 @@ func (e *IngestExporter) SetCollectorID(id string) {
 // devolver checks individualizados no próximo config-pull.
 type DatabaseInstanceDiscoveryPayload struct {
 	DatabaseSignalEnvelope
-	InstallationID string   `json:"installation_id"`
-	Engine         string   `json:"engine"`
-	Server         string   `json:"server"`
-	Port           int      `json:"port"`
-	ServerVersion  string   `json:"server_version"`
-	Databases      []string `json:"databases"`
+	InstallationID      string   `json:"installation_id"`
+	Engine              string   `json:"engine"`
+	Server              string   `json:"server"`
+	Port                int      `json:"port"`
+	ServerVersion       string   `json:"server_version"`
+	Role                string   `json:"role"`
+	PostmasterStartedAt string   `json:"postmaster_started_at"`
+	Databases           []string `json:"databases"`
 }
 
 func (e *IngestExporter) PostDatabaseInstanceDiscovery(ctx context.Context, payload DatabaseInstanceDiscoveryPayload) error {
