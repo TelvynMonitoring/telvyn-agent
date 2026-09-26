@@ -7,6 +7,7 @@ package checks
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -24,6 +26,9 @@ const (
 	postgresQueryTextLimit      = 4096
 	postgresQuerySampleLimit    = 50
 	postgresContinuousPlanLimit = 5
+	postgresPlanRateLimit       = 60
+	postgresPlanSampleRateLimit = 15
+	postgresPlanRateCacheSize   = 5000
 )
 
 // DatabaseQueryStat é uma linha de uma janela de coleta. Calls, TotalMS e
@@ -73,6 +78,13 @@ type QueryStatsCheck interface {
 	RunQueryStats(context.Context) (*DatabaseQueryStats, error)
 }
 
+// QuerySamplesCheck coleta amostras independentemente da janela agregada.
+type QuerySamplesCheck interface {
+	Check
+	SampleInterval() time.Duration
+	RunQuerySamples(context.Context) (*DatabaseQueryStats, error)
+}
+
 type postgresQueryStatRow struct {
 	QueryID string  `json:"query_id"`
 	Text    string  `json:"text"`
@@ -106,6 +118,11 @@ type postgresQuerySnapshot struct {
 	Samples []postgresQuerySampleRow `json:"samples"`
 }
 
+type postgresRateWindow struct {
+	start time.Time
+	count int
+}
+
 type postgresQueries struct {
 	id                          string
 	interval                    time.Duration
@@ -117,13 +134,24 @@ type postgresQueries struct {
 	staticTags                  map[string]string
 	pool                        pgxPool
 	querySQL                    string
+	sampleSQL                   string
 	sampleLimit                 int
+	sampleInterval              time.Duration
 	continuousPlans             bool
 	continuousPlanLimit         int
 	continuousPlanMinDurationMS float64
 
-	mu       sync.Mutex
-	previous map[string]postgresQueryCounter
+	mu          sync.Mutex
+	previous    map[string]postgresQueryCounter
+	planRuns    map[string]postgresRateWindow
+	planSamples map[string]postgresRateWindow
+}
+
+func buildPostgresQuerySamplesSQL(capabilities postgresRelationCapabilities, sampleLimit int) string {
+	return fmt.Sprintf(`WITH %s
+SELECT json_build_object(
+	'samples', COALESCE((SELECT json_agg(s ORDER BY s.duration_ms DESC) FROM query_samples s), '[]'::json)
+)::text`, postgresQuerySamplesCTE(capabilities, sampleLimit))
 }
 
 func buildPostgresQueryStatsSQL(capabilities postgresRelationCapabilities) (string, error) {
@@ -312,10 +340,17 @@ func newPostgresQueriesCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 	}
 	statsLimit := boundedParam(params, "query_limit", 1, postgresQueryStatsLimit, postgresQueryStatsLimit)
 	sampleLimit := boundedParam(params, "sample_limit", 1, postgresQuerySampleLimit, 20)
-	querySQL, err := buildPostgresQuerySnapshotSQL(capabilities, activityCapabilities, statsLimit, sampleLimit)
+	querySQL, err := buildPostgresQuerySnapshotSQL(capabilities, postgresRelationCapabilities{}, statsLimit, sampleLimit)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("postgres.queries: %w", err)
+	}
+	var sampleInterval time.Duration
+	if params["query_samples_interval_seconds"] != "" {
+		sampleInterval = time.Duration(boundedParam(params, "query_samples_interval_seconds", 1, 60, 1)) * time.Second
+	}
+	if !activityCapabilities.available() || firstPostgresColumn(activityCapabilities, "query", "current_query") == "" {
+		sampleInterval = 0
 	}
 	id := cfg.GetCheckId()
 	if id == "" {
@@ -325,17 +360,22 @@ func newPostgresQueriesCheckWithFactory(cfg *collectorv1.CheckConfig, factory pg
 		id: id, interval: interval, hostID: cfg.GetHostId(), dbServer: server, dbName: database,
 		installationID: installationID, databaseID: databaseID,
 		staticTags: tags, pool: pool, querySQL: querySQL,
+		sampleSQL:                   buildPostgresQuerySamplesSQL(activityCapabilities, sampleLimit),
 		sampleLimit:                 sampleLimit,
-		continuousPlans:             boolParam(params, "continuous_plans_enabled", false),
+		sampleInterval:              sampleInterval,
+		continuousPlans:             boolParam(params, "continuous_plans_enabled", true),
 		continuousPlanLimit:         boundedParam(params, "continuous_plan_limit", 1, postgresContinuousPlanLimit, 2),
-		continuousPlanMinDurationMS: floatParam(params, "continuous_plan_min_duration_ms", 0, 300000, 1000),
+		continuousPlanMinDurationMS: floatParam(params, "continuous_plan_min_duration_ms", 0, 300000, 0),
 		previous:                    make(map[string]postgresQueryCounter),
+		planRuns:                    make(map[string]postgresRateWindow),
+		planSamples:                 make(map[string]postgresRateWindow),
 	}, nil
 }
 
-func (c *postgresQueries) ID() string              { return c.id }
-func (c *postgresQueries) Interval() time.Duration { return c.interval }
-func (c *postgresQueries) Tags() map[string]string { return c.staticTags }
+func (c *postgresQueries) ID() string                    { return c.id }
+func (c *postgresQueries) Interval() time.Duration       { return c.interval }
+func (c *postgresQueries) Tags() map[string]string       { return c.staticTags }
+func (c *postgresQueries) SampleInterval() time.Duration { return c.sampleInterval }
 
 func (c *postgresQueries) Close() error {
 	if c.pool != nil {
@@ -402,10 +442,37 @@ func (c *postgresQueries) RunQueryStats(ctx context.Context) (*DatabaseQueryStat
 			MeanMS: totalMS / float64(calls), Rows: readRows,
 		})
 	}
+	return out, nil
+}
+
+func (c *postgresQueries) RunQuerySamples(ctx context.Context) (*DatabaseQueryStats, error) {
+	if c.sampleInterval <= 0 {
+		return nil, nil
+	}
+	qctx, cancel := context.WithTimeout(ctx, postgresQueryTimeout)
+	defer cancel()
+	var body string
+	if err := c.pool.QueryRow(qctx, c.sampleSQL).Scan(&body); err != nil {
+		return nil, fmt.Errorf("postgres.queries: amostras indisponíveis: %w", err)
+	}
+	var snapshot postgresQuerySnapshot
+	if err := json.Unmarshal([]byte(body), &snapshot); err != nil {
+		return nil, fmt.Errorf("postgres.queries: amostras inválidas: %w", err)
+	}
+	out := &DatabaseQueryStats{
+		InstallationID: c.installationID, DatabaseID: c.databaseID,
+		DBServer: c.dbServer, DBName: c.dbName,
+		WindowSeconds: max(1, int(c.sampleInterval/time.Second)),
+		Samples:       make([]DatabaseQuerySample, 0, len(snapshot.Samples)),
+	}
 	plansCollected := 0
+	seenQueries := make(map[string]struct{}, len(snapshot.Samples))
 	for index, row := range snapshot.Samples {
-		if len(out.Samples) >= c.sampleLimit || strings.TrimSpace(row.Query) == "" {
+		if len(out.Samples) >= c.sampleLimit {
 			break
+		}
+		if strings.TrimSpace(row.Query) == "" {
+			continue
 		}
 		sample := DatabaseQuerySample{
 			SampleID: limitText(row.SampleID, 128), QueryID: row.QueryID,
@@ -418,14 +485,72 @@ func (c *postgresQueries) RunQueryStats(ctx context.Context) (*DatabaseQueryStat
 		if sample.SampleID == "" {
 			sample.SampleID = fmt.Sprintf("%s:%d", sample.QueryID, index)
 		}
-		if c.continuousPlans && plansCollected < c.continuousPlanLimit &&
-			row.DurationMS >= c.continuousPlanMinDurationMS {
-			sample.PlanJSON, sample.PlanStatus = c.explainSample(ctx, row.Query)
-			plansCollected++
+		switch {
+		case !c.continuousPlans:
+			sample.PlanStatus = "disabled"
+		case row.DurationMS < c.continuousPlanMinDurationMS:
+			sample.PlanStatus = "below_threshold"
+		case plansCollected >= c.continuousPlanLimit:
+			sample.PlanStatus = "rate_limited"
+		default:
+			key := sample.Text
+			if _, seen := seenQueries[key]; !seen {
+				seenQueries[key] = struct{}{}
+				if err := validateReadOnlyQuery(row.Query); err != nil {
+					sample.PlanStatus = "ineligible"
+				} else if !c.allowPlanRun(key, time.Now()) {
+					sample.PlanStatus = "rate_limited"
+				} else {
+					plansCollected++
+					sample.PlanJSON, sample.PlanStatus = c.explainSample(ctx, row.Query)
+					if sample.PlanStatus == "ready" && !c.allowPlanSample(key, sample.PlanJSON, time.Now()) {
+						sample.PlanJSON = nil
+						sample.PlanStatus = "rate_limited"
+					}
+				}
+			} else {
+				sample.PlanStatus = "rate_limited"
+			}
 		}
 		out.Samples = append(out.Samples, sample)
 	}
 	return out, nil
+}
+
+func (c *postgresQueries) allowPlanRun(key string, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return allowPostgresRate(c.planRuns, key, postgresPlanRateLimit, now)
+}
+
+func (c *postgresQueries) allowPlanSample(query string, plan json.RawMessage, now time.Time) bool {
+	key := fmt.Sprintf("%s:%x", query, sha256.Sum256(plan))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return allowPostgresRate(c.planSamples, key, postgresPlanSampleRateLimit, now)
+}
+
+func allowPostgresRate(windows map[string]postgresRateWindow, key string, limit int, now time.Time) bool {
+	window, exists := windows[key]
+	if !exists && len(windows) >= postgresPlanRateCacheSize {
+		for candidate, value := range windows {
+			if now.Sub(value.start) >= time.Hour {
+				delete(windows, candidate)
+			}
+		}
+		if len(windows) >= postgresPlanRateCacheSize {
+			return false
+		}
+	}
+	if !exists || now.Sub(window.start) >= time.Hour {
+		window = postgresRateWindow{start: now}
+	}
+	if window.count >= limit {
+		return false
+	}
+	window.count++
+	windows[key] = window
+	return true
 }
 
 func normalizedSampledAt(raw string) string {
@@ -440,6 +565,9 @@ func (c *postgresQueries) explainSample(ctx context.Context, query string) (json
 	if err := validateReadOnlyQuery(query); err != nil {
 		return nil, "ineligible"
 	}
+	if hasQueryParameters(query) {
+		return c.explainParameterizedSample(ctx, query)
+	}
 	qctx, cancel := context.WithTimeout(ctx, postgresQueryTimeout)
 	defer cancel()
 	var raw string
@@ -451,6 +579,56 @@ func (c *postgresQueries) explainSample(ctx context.Context, query string) (json
 		return nil, "invalid"
 	}
 	return plan, "ready"
+}
+
+// PostgreSQL 12+ can produce a generic plan for a prepared statement without
+// executing it. Older servers (or unresolved parameter types) report unavailable.
+func (c *postgresQueries) explainParameterizedSample(ctx context.Context, query string) (json.RawMessage, string) {
+	pool, ok := c.pool.(interface {
+		BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+	})
+	if !ok {
+		return nil, "unavailable"
+	}
+	qctx, cancel := context.WithTimeout(ctx, postgresQueryTimeout)
+	defer cancel()
+	tx, err := pool.BeginTx(qctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, "unavailable"
+	}
+	defer func() {
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), time.Second)
+		defer rollbackCancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
+	if _, err := tx.Exec(qctx, "SET LOCAL plan_cache_mode = force_generic_plan"); err != nil {
+		return nil, "unavailable"
+	}
+	name := fmt.Sprintf("telvyn_plan_%x", sha256.Sum256([]byte(query)))[:28]
+	if _, err := tx.Exec(qctx, "PREPARE "+name+" AS "+query); err != nil {
+		return nil, "unavailable"
+	}
+	var parameterCount int
+	if err := tx.QueryRow(qctx, "SELECT cardinality(parameter_types) FROM pg_prepared_statements WHERE name=$1", name).Scan(&parameterCount); err != nil || parameterCount < 1 || parameterCount > 32 {
+		return nil, "unavailable"
+	}
+	params := strings.TrimSuffix(strings.Repeat("NULL,", parameterCount), ",")
+	var raw string
+	if err := tx.QueryRow(qctx, "EXPLAIN (FORMAT JSON) EXECUTE "+name+"("+params+")").Scan(&raw); err != nil {
+		return nil, "unavailable"
+	}
+	plan, err := sanitizeContinuousPlan([]byte(raw))
+	if err != nil {
+		return nil, "invalid"
+	}
+	return plan, "ready"
+}
+
+func hasQueryParameters(query string) bool {
+	query = maskDollarQuotedStrings(query)
+	query = queryComments.ReplaceAllString(query, " ")
+	query = queryStrings.ReplaceAllString(query, " ")
+	return queryParameters.MatchString(query)
 }
 
 var allowedPlanKeys = map[string]struct{}{
@@ -512,10 +690,11 @@ func floatDelta(current, previous float64) float64 {
 }
 
 var (
-	queryComments = regexp.MustCompile(`(?s)/\*.*?\*/|--[^\r\n]*`)
-	queryStrings  = regexp.MustCompile(`'(?:''|[^'])*'`)
-	queryNumbers  = regexp.MustCompile(`\b\d+(?:\.\d+)?\b`)
-	querySpaces   = regexp.MustCompile(`\s+`)
+	queryComments   = regexp.MustCompile(`(?s)/\*.*?\*/|--[^\r\n]*`)
+	queryStrings    = regexp.MustCompile(`'(?:''|[^'])*'`)
+	queryNumbers    = regexp.MustCompile(`\b\d+(?:\.\d+)?\b`)
+	queryParameters = regexp.MustCompile(`\$[1-9][0-9]*\b`)
+	querySpaces     = regexp.MustCompile(`\s+`)
 )
 
 // sanitizeQueryText conserva o formato útil para agrupar/ler a consulta sem

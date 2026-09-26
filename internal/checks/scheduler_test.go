@@ -26,6 +26,27 @@ type closableCountingCheck struct {
 	closed atomic.Bool
 }
 
+type countingQueryCheck struct {
+	*countingCheck
+	samples atomic.Int32
+	stats   atomic.Int32
+	closed  atomic.Bool
+}
+
+func (c *countingQueryCheck) SampleInterval() time.Duration { return 10 * time.Millisecond }
+func (c *countingQueryCheck) RunQuerySamples(context.Context) (*DatabaseQueryStats, error) {
+	c.samples.Add(1)
+	return nil, nil
+}
+func (c *countingQueryCheck) RunQueryStats(context.Context) (*DatabaseQueryStats, error) {
+	c.stats.Add(1)
+	return nil, nil
+}
+func (c *countingQueryCheck) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
 func (c *closableCountingCheck) Close() error {
 	c.closed.Store(true)
 	return nil
@@ -126,6 +147,24 @@ func TestRuntime_Reload_ClosesResourceCheck(t *testing.T) {
 
 	if !target.closed.Load() {
 		t.Fatal("resource-owning check must be closed when its generation stops")
+	}
+}
+
+func TestRuntime_QuerySamplesRunIndependentlyOfAggregateInterval(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target := &countingQueryCheck{countingCheck: &countingCheck{id: "queries", interval: time.Hour}}
+	reg := NewRegistry()
+	reg.Register("postgres.queries", func(_ *collectorv1.CheckConfig) (Check, error) { return target, nil })
+	rt, _ := makeRuntime(ctx, reg)
+	rt.Reload([]*collectorv1.CheckConfig{cfgFor("queries", "postgres.queries", time.Hour)})
+	time.Sleep(65 * time.Millisecond)
+	rt.Reload(nil)
+	if target.stats.Load() != 1 || target.samples.Load() < 2 {
+		t.Fatalf("independent cadences failed: stats=%d samples=%d", target.stats.Load(), target.samples.Load())
+	}
+	if !target.closed.Load() {
+		t.Fatal("query check must close after sample loop stops")
 	}
 }
 

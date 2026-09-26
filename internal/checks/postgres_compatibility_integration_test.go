@@ -5,6 +5,7 @@ package checks
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -52,13 +53,27 @@ func TestPostgresCompatibilityMatrix(t *testing.T) {
 	})
 
 	t.Run("query metrics", func(t *testing.T) {
-		check, err := newPostgresQueriesCheck(config("postgres.queries"))
+		cfg := config("postgres.queries")
+		cfg.Params["query_samples_interval_seconds"] = "1"
+		check, err := newPostgresQueriesCheck(cfg)
 		if err != nil {
 			t.Fatalf("factory: %v", err)
 		}
 		defer check.(interface{ Close() error }).Close()
 		if _, err := check.(QueryStatsCheck).RunQueryStats(ctx); err != nil {
 			t.Fatalf("query metrics: %v", err)
+		}
+		if _, err := check.(QuerySamplesCheck).RunQuerySamples(ctx); err != nil {
+			t.Fatalf("query samples: %v", err)
+		}
+		var versionText string
+		if err := check.(*postgresQueries).pool.QueryRow(ctx, "SHOW server_version_num").Scan(&versionText); err != nil {
+			t.Fatalf("server version: %v", err)
+		}
+		version, _ := strconv.Atoi(versionText)
+		plan, status := check.(*postgresQueries).explainSample(ctx, "SELECT $1::int")
+		if version >= 120000 && (status != "ready" || len(plan) == 0) {
+			t.Fatalf("parameterized generic plan: status=%s plan=%s", status, plan)
 		}
 	})
 
