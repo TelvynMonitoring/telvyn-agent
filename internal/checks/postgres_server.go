@@ -106,6 +106,9 @@ func (r *realPgxPool) Ping(ctx context.Context) error { return r.p.Ping(ctx) }
 func (r *realPgxPool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	return r.p.QueryRow(ctx, sql, args...)
 }
+func (r *realPgxPool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	return r.p.BeginTx(ctx, options)
+}
 func (r *realPgxPool) Close() { r.p.Close() }
 
 // postgresServer é a implementação concreta de Check para "postgres.server".

@@ -483,6 +483,39 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	if sampleCheck, ok := any(c).(QuerySamplesCheck); ok && sampleCheck.SampleInterval() > 0 {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			sampleTicker := time.NewTicker(sampleCheck.SampleInterval())
+			defer sampleTicker.Stop()
+			var lastErrorLog time.Time
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-sampleTicker.C:
+					runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+					samples, err := sampleCheck.RunQuerySamples(runCtx)
+					cancel()
+					if ctx.Err() != nil {
+						return
+					}
+					if err != nil {
+						if time.Since(lastErrorLog) >= time.Minute {
+							clog.Warn("postgres query samples: coleta falhou", "err", err)
+							lastErrorLog = time.Now()
+						}
+						continue
+					}
+					if samples != nil {
+						r.pushQuerySamples(ctx, c.ID(), *samples)
+					}
+				}
+			}
+		}()
+		defer func() { <-done }()
+	}
 
 	var consecutiveErrors atomic.Int32
 	runTimeout := r.runTimeout(interval)
@@ -670,6 +703,23 @@ func (r *Runtime) pushQueryStats(checkID string, stats DatabaseQueryStats) {
 			r.log.Warn("postgres query stats: envio falhou", "check_id", checkID, "err", err)
 		}
 	}()
+}
+
+func (r *Runtime) pushQuerySamples(ctx context.Context, checkID string, stats DatabaseQueryStats) {
+	if len(stats.Samples) == 0 {
+		return
+	}
+	r.mu.Lock()
+	pusher := r.queryStatsPusher
+	r.mu.Unlock()
+	if pusher == nil {
+		return
+	}
+	pushCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := pusher(pushCtx, stats); err != nil && ctx.Err() == nil {
+		r.log.Warn("postgres query samples: envio falhou", "check_id", checkID, "err", err)
+	}
 }
 
 func (r *Runtime) pushCatalog(checkID string, catalog DatabaseCatalog) {
