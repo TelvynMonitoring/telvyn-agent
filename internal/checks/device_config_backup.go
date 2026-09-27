@@ -1,7 +1,7 @@
 // device_config_backup.go — Check "device.config_backup" para NCM.
 //
 // Coleta a running-config de um device de rede por SSH e manda o texto cru pro
-// backend, que sanitiza → versiona por hash em noc_device_config. v1 é SÓ
+// backend, que sanitiza → guarda cada coleta em noc_device_config. v1 é SÓ
 // LEITURA — o agente NUNCA reescreve o equipamento (só roda comandos de
 // impressão de config).
 //
@@ -20,6 +20,7 @@
 //	secret_kind  password|private_key        — default password
 //	ssh_port     porta SSH                   — default 22
 //	timeout_seconds  timeout do comando      — default 60
+//	next_run_at     próxima coleta em UTC    — opcional (enviado pelo backend)
 package checks
 
 import (
@@ -66,6 +67,7 @@ const (
 type deviceConfigBackupCheck struct {
 	id         string
 	interval   time.Duration
+	nextRunAt  time.Time
 	hostID     string
 	target     string
 	vendor     string
@@ -124,6 +126,14 @@ func newDeviceConfigBackupCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 	if interval <= 0 {
 		interval = defaultConfigBackupInterval
 	}
+	var nextRunAt time.Time
+	if value := strings.TrimSpace(params["next_run_at"]); value != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return nil, fmt.Errorf("device.config_backup: invalid next_run_at: %w", err)
+		}
+		nextRunAt = parsed
+	}
 	id := cfg.GetCheckId()
 	if id == "" {
 		id = "device.config_backup-" + hostID
@@ -136,6 +146,7 @@ func newDeviceConfigBackupCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 	return &deviceConfigBackupCheck{
 		id:         id,
 		interval:   interval,
+		nextRunAt:  nextRunAt,
 		hostID:     hostID,
 		target:     target,
 		vendor:     vendor,
@@ -149,9 +160,10 @@ func newDeviceConfigBackupCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 	}, nil
 }
 
-func (c *deviceConfigBackupCheck) ID() string              { return c.id }
-func (c *deviceConfigBackupCheck) Interval() time.Duration { return c.interval }
-func (c *deviceConfigBackupCheck) Tags() map[string]string { return c.staticTags }
+func (c *deviceConfigBackupCheck) ID() string               { return c.id }
+func (c *deviceConfigBackupCheck) Interval() time.Duration  { return c.interval }
+func (c *deviceConfigBackupCheck) InitialRunAt() time.Time  { return c.nextRunAt }
+func (c *deviceConfigBackupCheck) Tags() map[string]string  { return c.staticTags }
 
 // Run abre SSH no device, roda o comando de impressão de config do vendor
 // (só leitura) e manda o texto cru pro backend versionar. Não emite Metrics
