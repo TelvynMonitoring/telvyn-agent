@@ -1,6 +1,6 @@
 [Unit]
-Description=IspWatch Agent
-Documentation=https://docs.ispwatch.com/agent
+Description=Telvyn Agent
+Documentation=https://docs.telvyn.com.br/agent
 After=network-online.target
 Wants=network-online.target
 
@@ -72,7 +72,7 @@ UMask=0027
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=ispwatch-agent
+SyslogIdentifier=telvyn-agent
 
 [Install]
 WantedBy=multi-user.target

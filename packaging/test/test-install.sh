@@ -17,6 +17,13 @@ grep -Fq 'Group=telvyn' ../telvyn-agent.service
 grep -Fq 'EnvironmentFile=-/etc/telvyn/agent.env' ../telvyn-agent.service
 grep -Fq 'ReadWritePaths=/var/lib/telvyn-agent /var/log/telvyn-agent' ../telvyn-agent.service
 grep -Fq 'DATABASE_UNIT_NAME="telvyn-agent.service"' ../install.sh
+grep -Fq 'GENERIC_UNIT_NAME="telvyn-agent.service"' ../install.sh
+grep -Fq 'LEGACY_GENERIC_UNIT_NAME="ispwatch-agent.service"' ../install.sh
+grep -Fq 'systemctl disable --now "$LEGACY_GENERIC_UNIT_NAME"' ../install.sh
+grep -Fq 'systemctl enable --now "$LEGACY_GENERIC_UNIT_NAME"' ../install.sh
+grep -Fq 'EnvironmentFile=-${ENV_FILE}' ../install.sh
+grep -Fq 'Description=Telvyn Agent' ../ispwatch-agent.service
+grep -Fq 'SyslogIdentifier=telvyn-agent' ../ispwatch-agent.service
 grep -Fq 'DATABASE_UPDATE_UNIT_NAME="telvyn-agent-update.service"' ../install.sh
 grep -Fq 'sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}' ../install.sh
 grep -Fq 'foram encontrados vários Agents de Banco legados neste host' ../install.sh
