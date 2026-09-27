@@ -480,6 +480,17 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		case <-time.After(delay):
 		}
 	}
+	if scheduled, ok := c.(interface{ InitialRunAt() time.Time }); ok {
+		if delay := time.Until(scheduled.InitialRunAt()); delay > 0 {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+			}
+		}
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
