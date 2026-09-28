@@ -123,6 +123,9 @@ func TestPostgresCompatibilityMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("diagnostics: %v", err)
 		}
+		if result.ServerVersion == "" {
+			t.Fatal("diagnostics must report the negotiated server version")
+		}
 		if result.Capabilities["sessions"] != "available" {
 			t.Fatalf("sessions capability: %+v", result.Capabilities)
 		}
