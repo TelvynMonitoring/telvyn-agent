@@ -49,8 +49,10 @@ ETC_DIR="/etc/ispwatch"
 BASE_LIB_DIR="/var/lib/ispwatch"
 BASE_LOG_DIR="/var/log/ispwatch"
 GENERIC_BINARY_PATH="${INSTALL_DIR}/ispwatch-agent"
-GENERIC_UNIT_NAME="ispwatch-agent.service"
+GENERIC_UNIT_NAME="telvyn-agent.service"
 GENERIC_UNIT_PATH="/etc/systemd/system/${GENERIC_UNIT_NAME}"
+LEGACY_GENERIC_UNIT_NAME="ispwatch-agent.service"
+LEGACY_GENERIC_UNIT_PATH="/etc/systemd/system/${LEGACY_GENERIC_UNIT_NAME}"
 DATABASE_UNIT_NAME="telvyn-agent.service"
 DATABASE_UNIT_PATH="/etc/systemd/system/${DATABASE_UNIT_NAME}"
 DATABASE_UPDATE_UNIT_NAME="telvyn-agent-update.service"
@@ -163,6 +165,17 @@ else
     SERVICE_GROUP="telvyn"
 fi
 
+# O nome da unit é único para todos os perfis. Não sobrescreva uma instalação
+# do outro perfil nem inicie dois Agents no mesmo host durante a migração.
+if [[ -f "$UNIT_PATH" ]] && ! grep -Fq "EnvironmentFile=-${ENV_FILE}" "$UNIT_PATH"; then
+    echo "ERROR: ${UNIT_NAME} já pertence a outro perfil de Agent neste host." >&2
+    exit 1
+fi
+if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && -f "$LEGACY_GENERIC_UNIT_PATH" ]]; then
+    echo "ERROR: Agent genérico legado detectado; atualize-o antes de instalar outro perfil neste host." >&2
+    exit 1
+fi
+
 # === Traps =============================================================
 on_error() {
     local lineno=$1
@@ -209,7 +222,7 @@ if command -v systemctl >/dev/null 2>&1; then
         echo "      O agent instala e roda mesmo assim, com sandbox reduzido." >&2
     fi
 else
-    echo "ERROR: systemctl não encontrado — o agent IspWatch requer systemd." >&2
+    echo "ERROR: systemctl não encontrado — o Agent Telvyn requer systemd." >&2
     exit 1
 fi
 
@@ -222,7 +235,7 @@ if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
     if [[ -f "$ENV_FILE" ]] || [[ -f "$BINARY_PATH" ]] || [[ -n "$LEGACY_DATABASE_ENV_FILE" ]]; then
         INSTALLED=true
     fi
-elif [[ -f "$GENERIC_BINARY_PATH" ]] || [[ -f "$GENERIC_UNIT_PATH" ]]; then
+elif [[ -f "$GENERIC_BINARY_PATH" ]] || [[ -f "$GENERIC_UNIT_PATH" ]] || [[ -f "$LEGACY_GENERIC_UNIT_PATH" ]]; then
     INSTALLED=true
 fi
 if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
@@ -233,7 +246,7 @@ if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
     fi
     echo "Modo upgrade: ${UNIT_NAME} detectado — troco apenas seu binário e reinicio (config preservada)."
 elif [[ "$INSTALLED" == "true" ]]; then
-    echo "WARN: instalação existente do agent IspWatch detectada para ${UNIT_NAME}." >&2
+    echo "WARN: instalação existente do Agent Telvyn detectada para ${UNIT_NAME}." >&2
     echo "      Para ATUALIZAR no lugar (preserva token/config), rode com ISPWATCH_UPGRADE=true:" >&2
     if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
         echo "        sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}" >&2
@@ -258,7 +271,7 @@ fi
 if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
     echo "Instalando o Agent de Banco Telvyn ${VERSION} para linux-${GO_ARCH}"
 else
-    echo "Instalando o agent IspWatch ${VERSION} para linux-${GO_ARCH}"
+    echo "Instalando o Agent Telvyn ${VERSION} para linux-${GO_ARCH}"
 fi
 
 TARBALL="ispwatch-agent-${VERSION}-linux-${GO_ARCH}.tar.gz"
@@ -408,6 +421,16 @@ if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
     if [[ -n "$LEGACY_DATABASE_UNIT_NAME" ]]; then
         systemctl disable --now "$LEGACY_DATABASE_UNIT_NAME" || true
         systemctl enable --now "$UNIT_NAME"
+    elif [[ "$ISPWATCH_AGENT_PROFILE" != "database" && -f "$LEGACY_GENERIC_UNIT_PATH" ]]; then
+        systemctl disable --now "$LEGACY_GENERIC_UNIT_NAME"
+        if ! systemctl enable --now "$UNIT_NAME" || ! systemctl is-active --quiet "$UNIT_NAME"; then
+            systemctl disable --now "$UNIT_NAME" || true
+            systemctl enable --now "$LEGACY_GENERIC_UNIT_NAME" || true
+            echo "ERROR: migração para ${UNIT_NAME} falhou; serviço legado restaurado." >&2
+            exit 1
+        fi
+        rm -f -- "$LEGACY_GENERIC_UNIT_PATH"
+        systemctl daemon-reload
     else
         systemctl restart "$UNIT_NAME"
     fi
