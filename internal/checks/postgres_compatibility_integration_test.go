@@ -6,10 +6,12 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -66,6 +68,40 @@ func TestPostgresCompatibilityMatrix(t *testing.T) {
 		if _, err := check.(QuerySamplesCheck).RunQuerySamples(ctx); err != nil {
 			t.Fatalf("query samples: %v", err)
 		}
+		queryConn, err := pgx.Connect(ctx, dsn)
+		if err != nil {
+			t.Fatalf("sample connection: %v", err)
+		}
+		defer queryConn.Close(context.Background())
+		queryCtx, queryCancel := context.WithTimeout(ctx, 12*time.Second)
+		defer queryCancel()
+		queryDone := make(chan error, 1)
+		go func() {
+			queryDone <- queryConn.QueryRow(queryCtx, "SELECT count(*) FROM generate_series(1, 1000000000)").Scan(new(int64))
+		}()
+		deadline := time.Now().Add(10 * time.Second)
+		planReady := false
+		for time.Now().Before(deadline) {
+			samples, err := check.(QuerySamplesCheck).RunQuerySamples(ctx)
+			if err != nil {
+				t.Fatalf("active query samples: %v", err)
+			}
+			for _, sample := range samples.Samples {
+				if strings.Contains(sample.Text, "generate_series") && sample.PlanStatus == "ready" && len(sample.PlanJSON) > 0 {
+					planReady = true
+					break
+				}
+			}
+			if planReady {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if !planReady {
+			t.Fatal("continuous collection did not capture the active read-only query plan")
+		}
+		queryCancel()
+		<-queryDone
 		var versionText string
 		if err := check.(*postgresQueries).pool.QueryRow(ctx, "SHOW server_version_num").Scan(&versionText); err != nil {
 			t.Fatalf("server version: %v", err)
