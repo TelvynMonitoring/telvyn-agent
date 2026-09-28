@@ -1068,7 +1068,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 		}
 		return exporter.PostDatabaseCapabilities(postCtx, otlp.DatabaseCapabilitiesPayload{
 			InstallationID: diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
-			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName,
+			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName, ServerVersion: diagnostics.ServerVersion,
 			Capabilities: capabilities, Errors: diagnostics.Errors,
 		})
 	})

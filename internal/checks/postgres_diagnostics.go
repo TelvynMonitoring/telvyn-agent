@@ -26,6 +26,7 @@ type DatabaseDiagnostics struct {
 	DatabaseID            string                         `json:"database_id"`
 	DBServer              string                         `json:"db_server"`
 	DBName                string                         `json:"db_name"`
+	ServerVersion         string                         `json:"server_version"`
 	BloatEnabled          bool                           `json:"bloat_enabled"`
 	Capabilities          map[string]string              `json:"capabilities"`
 	Sessions              []DatabaseSession              `json:"sessions"`
@@ -437,6 +438,11 @@ func (c *postgresDiagnostics) RunDiagnostics(ctx context.Context) (*DatabaseDiag
 		ReplicationSlots: []DatabaseReplicationSlot{}, MaintenanceOperations: []DatabaseMaintenanceOperation{},
 		Errors: []string{},
 	}
+	versionCtx, cancelVersion := context.WithTimeout(ctx, postgresDiagnosticsQueryTimeout)
+	if err := c.pool.QueryRow(versionCtx, "SELECT current_setting('server_version')").Scan(&out.ServerVersion); err != nil {
+		out.Errors = append(out.Errors, truncateDiagnosticsError("server_version: "+err.Error()))
+	}
+	cancelVersion()
 
 	read := func(name, query string, target any) bool {
 		qctx, cancel := context.WithTimeout(ctx, postgresDiagnosticsQueryTimeout)
