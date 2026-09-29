@@ -868,7 +868,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			})
 		}
 		return exporter.PostDatabaseQueryStats(postCtx, otlp.DatabaseQueryStatsPayload{
-			InstallationID: stats.InstallationID, DatabaseID: stats.DatabaseID,
+			DatabaseSignalEnvelope: otlp.DatabaseSignalEnvelope{Engine: stats.Engine},
+			InstallationID:         stats.InstallationID, DatabaseID: stats.DatabaseID,
 			DBServer: stats.DBServer, DBName: stats.DBName,
 			WindowSeconds: stats.WindowSeconds, Queries: queries, Samples: samples,
 		})
@@ -954,7 +955,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			enums = append(enums, otlp.DatabaseCatalogEnum{SchemaName: item.SchemaName, TypeName: item.TypeName, Values: item.Values})
 		}
 		return exporter.PostDatabaseCatalog(postCtx, otlp.DatabaseCatalogPayload{
-			InstallationID: catalog.InstallationID, DatabaseID: catalog.DatabaseID,
+			DatabaseSignalEnvelope: otlp.DatabaseSignalEnvelope{Engine: catalog.Engine},
+			InstallationID:         catalog.InstallationID, DatabaseID: catalog.DatabaseID,
 			DBServer: catalog.DBServer, DBName: catalog.DBName,
 			ServerVersion: catalog.ServerVersion, DatabaseSizeBytes: catalog.DatabaseSizeBytes,
 			Fingerprint: catalog.Fingerprint, Truncated: catalog.Truncated,
@@ -967,7 +969,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 		sessions := make([]otlp.DatabaseDiagnosticsSession, 0, len(diagnostics.Sessions))
 		for _, session := range diagnostics.Sessions {
 			sessions = append(sessions, otlp.DatabaseDiagnosticsSession{
-				PID: session.PID, User: session.User, Application: session.Application,
+				Identity: session.Identity,
+				PID:      session.PID, User: session.User, Application: session.Application,
 				Client: session.Client, State: session.State, WaitType: session.WaitType,
 				WaitEvent: session.WaitEvent, QueryStart: session.QueryStart, DurationSeconds: session.DurationSeconds,
 			})
@@ -1046,7 +1049,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			}
 		}
 		if err := exporter.PostDatabaseDiagnostics(postCtx, otlp.DatabaseDiagnosticsPayload{
-			InstallationID: diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
+			DatabaseSignalEnvelope: otlp.DatabaseSignalEnvelope{Engine: diagnostics.Engine},
+			InstallationID:         diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
 			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName,
 			BloatEnabled: diagnostics.BloatEnabled, Capabilities: diagnostics.Capabilities,
 			Sessions: sessions, Blocking: blocking, Waits: waits, Bloat: bloat,
