@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -12,6 +13,21 @@ import (
 
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
+
+func TestSanitizedMSSQLPlanExcludesQueryValues(t *testing.T) {
+	raw := `<ShowPlanXML><StmtSimple StatementText="SELECT * FROM customer WHERE email='secret@example.com'">` +
+		`<QueryPlan><RelOp PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="2" ` +
+		`EstimatedTotalSubtreeCost="0.5"><ParameterList ParameterCompiledValue="secret@example.com"/>` +
+		`</RelOp></QueryPlan></StmtSimple></ShowPlanXML>`
+	plan, err := sanitizedMSSQLPlan(raw)
+	if err != nil || strings.Contains(string(plan), "secret@example.com") {
+		t.Fatalf("plano vazou valores: %s, %v", plan, err)
+	}
+	var parsed map[string][]map[string]any
+	if err := json.Unmarshal(plan, &parsed); err != nil || len(parsed["Plan"]) != 1 || parsed["Plan"][0]["Node Type"] != "Index Seek" {
+		t.Fatalf("estrutura do plano ausente: %s, %v", plan, err)
+	}
+}
 
 type stubSQLRow struct {
 	values []any
@@ -44,6 +60,12 @@ func (r *stubSQLRow) Scan(dest ...any) error {
 				return errors.New("stubSQLRow: expected float64")
 			}
 			typed.Float64, typed.Valid = v, true
+		case *string:
+			v, ok := value.(string)
+			if !ok {
+				return errors.New("stubSQLRow: expected string")
+			}
+			*typed = v
 		default:
 			return errors.New("stubSQLRow: unsupported destination")
 		}
@@ -72,6 +94,10 @@ func (p *stubSQLPool) QueryRow(_ context.Context, query string, _ ...any) sqlDat
 	return &stubSQLRow{err: errors.New("stubSQLPool: no row for query")}
 }
 
+func (p *stubSQLPool) Query(context.Context, string, ...any) (sqlDatabaseRows, error) {
+	return nil, errors.New("stubSQLPool: no rows for query")
+}
+
 func (p *stubSQLPool) Close() error {
 	p.closed = true
 	return nil
@@ -88,16 +114,17 @@ func stubSQLPoolFactory(pool sqlDatabasePool, err error) sqlDatabasePoolFactory 
 
 func TestMySQLServer_EmitsCommonDatabaseMetrics(t *testing.T) {
 	pool := &stubSQLPool{rowsBySQLSnippet: map[string]*stubSQLRow{
-		"Threads_running":                      {values: []any{int64(3)}},
-		"Threads_connected":                    {values: []any{int64(9)}},
-		"@@GLOBAL.max_connections":             {values: []any{int64(200)}},
-		"Innodb_buffer_pool_reads":             {values: []any{float64(0.997)}},
-		"information_schema.processlist":       {values: []any{int64(2)}},
-		"VARIABLE_NAME = 'Com_commit'":         {values: []any{int64(71)}},
-		"VARIABLE_NAME = 'Com_rollback'":       {values: []any{int64(4)}},
-		"performance_schema.data_lock_waits":   {values: []any{int64(1)}},
-		"information_schema.tables":            {values: []any{int64(1024)}},
-		"replication_applier_status_by_worker": {values: []any{nil}},
+		"Threads_running":                        {values: []any{"Threads_running", "3"}},
+		"Threads_connected":                      {values: []any{"Threads_connected", "9"}},
+		"@@GLOBAL.max_connections":               {values: []any{int64(200)}},
+		"Innodb_buffer_pool_reads'":              {values: []any{"Innodb_buffer_pool_reads", "3"}},
+		"Innodb_buffer_pool_read_requests'":      {values: []any{"Innodb_buffer_pool_read_requests", "1000"}},
+		"information_schema.processlist":         {values: []any{int64(2)}},
+		"SHOW GLOBAL STATUS LIKE 'Com_commit'":   {values: []any{"Com_commit", "71"}},
+		"SHOW GLOBAL STATUS LIKE 'Com_rollback'": {values: []any{"Com_rollback", "4"}},
+		"performance_schema.data_lock_waits":     {values: []any{int64(1)}},
+		"information_schema.tables":              {values: []any{int64(1024)}},
+		"replication_applier_status_by_worker":   {values: []any{nil}},
 	}}
 	cfg := &collectorv1.CheckConfig{
 		CheckType: "mysql.server", CheckId: "mysql-1", HostId: "host-1",
@@ -135,6 +162,30 @@ func TestMySQLServer_EmitsCommonDatabaseMetrics(t *testing.T) {
 			t.Fatal("NULL replication state must not be reported as lag zero")
 		}
 	}
+}
+
+func TestMySQLServer_UsesMariaDBLockView(t *testing.T) {
+	pool := &stubSQLPool{rowsBySQLSnippet: map[string]*stubSQLRow{
+		"SELECT VERSION()":                     {values: []any{"11.8.3-MariaDB"}},
+		"information_schema.INNODB_LOCK_WAITS": {values: []any{int64(2)}},
+	}}
+	cfg := &collectorv1.CheckConfig{
+		CheckType: "mysql.server", Params: map[string]string{"dsn": "u:p@tcp(db:3306)/app"},
+	}
+	check, err := newMySQLServerCheckWithFactory(cfg, stubSQLPoolFactory(pool, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := check.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, metric := range metrics {
+		if metric.MetricName == "mysql.locks_waiting" && metric.Value == 2 {
+			return
+		}
+	}
+	t.Fatal("MariaDB lock wait metric missing")
 }
 
 func TestMSSQLServer_EmitsNativeRateWithoutCounterMasquerade(t *testing.T) {

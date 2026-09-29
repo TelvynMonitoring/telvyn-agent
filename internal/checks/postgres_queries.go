@@ -43,6 +43,7 @@ type DatabaseQueryStat struct {
 }
 
 type DatabaseQueryStats struct {
+	Engine         string
 	InstallationID string
 	DatabaseID     string
 	DBServer       string

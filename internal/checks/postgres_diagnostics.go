@@ -22,6 +22,7 @@ const postgresDiagnosticsQueryTimeout = 5 * time.Second
 // Texto SQL não sai do host do cliente: até um sanitizer parcial poderia deixar
 // escapar literais PostgreSQL (por exemplo, dollar-quoted) ou PII.
 type DatabaseDiagnostics struct {
+	Engine                string                         `json:"-"`
 	InstallationID        string                         `json:"installation_id"`
 	DatabaseID            string                         `json:"database_id"`
 	DBServer              string                         `json:"db_server"`
@@ -111,6 +112,7 @@ type DatabaseWAL struct {
 }
 
 type DatabaseSession struct {
+	Identity        string  `json:"identity,omitempty"`
 	PID             int64   `json:"pid"`
 	User            string  `json:"user"`
 	Application     string  `json:"application"`
@@ -431,6 +433,7 @@ func postgresProgressQuery(caps postgresRelationCapabilities, operation string) 
 
 func (c *postgresDiagnostics) RunDiagnostics(ctx context.Context) (*DatabaseDiagnostics, error) {
 	out := &DatabaseDiagnostics{
+		Engine:         "postgres",
 		InstallationID: c.installationID, DatabaseID: c.databaseID,
 		DBServer: c.dbServer, DBName: c.dbName, BloatEnabled: c.bloatEnabled,
 		Capabilities: map[string]string{}, Sessions: []DatabaseSession{}, Blocking: []DatabaseBlocking{},

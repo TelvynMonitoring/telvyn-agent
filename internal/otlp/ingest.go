@@ -722,6 +722,7 @@ type DatabaseDiagnosticsWAL struct {
 }
 
 type DatabaseDiagnosticsSession struct {
+	Identity        string  `json:"identity,omitempty"`
 	PID             int64   `json:"pid"`
 	User            string  `json:"user"`
 	Application     string  `json:"application"`
