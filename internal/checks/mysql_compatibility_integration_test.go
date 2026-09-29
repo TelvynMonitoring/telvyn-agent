@@ -46,11 +46,13 @@ func TestMySQLCompatibility(t *testing.T) {
 	}
 	want := map[string]bool{
 		"mysql.total_connections":   false,
-		"mysql.cache_hit_ratio":     false,
 		"mysql.commits":             false,
 		"mysql.database_size_bytes": false,
 	}
 	for _, metric := range metrics {
+		if metric.MetricName == "mysql.cache_hit_ratio" && (metric.Value < 0 || metric.Value > 1) {
+			t.Errorf("cache hit ratio outside [0,1]: %v", metric.Value)
+		}
 		if _, exists := want[metric.MetricName]; exists {
 			want[metric.MetricName] = true
 		}

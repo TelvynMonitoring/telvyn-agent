@@ -162,6 +162,16 @@ func TestMySQLServer_EmitsCommonDatabaseMetrics(t *testing.T) {
 			t.Fatal("NULL replication state must not be reported as lag zero")
 		}
 	}
+	pool.rowsBySQLSnippet["Innodb_buffer_pool_reads'"] = &stubSQLRow{values: []any{"Innodb_buffer_pool_reads", "1001"}}
+	metrics, err = check.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run with inconsistent cache counters failed: %v", err)
+	}
+	for _, metric := range metrics {
+		if metric.MetricName == "mysql.cache_hit_ratio" {
+			t.Fatal("inconsistent cache counters must not produce a negative hit ratio")
+		}
+	}
 }
 
 func TestMySQLServer_UsesMariaDBLockView(t *testing.T) {
