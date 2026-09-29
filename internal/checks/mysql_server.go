@@ -209,7 +209,7 @@ func (c *mysqlServer) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
 	}
 	reads, readsOK := queryStatus(sqlMySQLBufferPoolReads)
 	requests, requestsOK := queryStatus(sqlMySQLBufferPoolRequests)
-	if readsOK && requestsOK && requests > 0 {
+	if readsOK && requestsOK && requests > 0 && reads <= requests {
 		out = append(out, c.metric(now, "mysql.cache_hit_ratio", 1-float64(reads)/float64(requests)))
 	}
 	if value, ok := queryInt64(sqlMySQLSlowQueries); ok {
