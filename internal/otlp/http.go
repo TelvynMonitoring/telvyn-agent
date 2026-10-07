@@ -249,8 +249,8 @@ type otlpResourceFields struct {
 type otlpKeyValue struct {
 	Key   string `json:"key"`
 	Value struct {
-		StringValue *string `json:"stringValue"`
-		IntValue    *string `json:"intValue"` // int64 vira string no OTLP/JSON
+		StringValue *string      `json:"stringValue"`
+		IntValue    *json.Number `json:"intValue"` // SDKs emit both quoted and numeric integers.
 	} `json:"value"`
 }
 type otlpSpanFields struct {
@@ -417,7 +417,7 @@ func kvToMap(kvs []otlpKeyValue) map[string]string {
 		if kv.Value.StringValue != nil {
 			m[kv.Key] = *kv.Value.StringValue
 		} else if kv.Value.IntValue != nil {
-			m[kv.Key] = *kv.Value.IntValue
+			m[kv.Key] = kv.Value.IntValue.String()
 		}
 	}
 	return m

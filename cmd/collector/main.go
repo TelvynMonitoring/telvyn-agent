@@ -261,6 +261,11 @@ func (s ebpfStatsSink) Push(spans []*collectorv1.Span) {
 
 func runIngestMode(ingestURL string) {
 	log := newLogger(getenvOr("COLLECTOR_LOG_LEVEL", "info"))
+	apmSampleRate, err := parseAPMSampleRate(os.Getenv("ISPWATCH_APM_SAMPLE_RATE"))
+	if err != nil {
+		log.Error("ingest mode: ISPWATCH_APM_SAMPLE_RATE must be between 0 and 1", "err", err)
+		os.Exit(1)
+	}
 	token := strings.TrimSpace(os.Getenv("ISPWATCH_INGEST_TOKEN"))
 	if token == "" {
 		log.Error("ingest mode: ISPWATCH_INGEST_TOKEN ausente")
@@ -619,9 +624,9 @@ func runIngestMode(ingestURL string) {
 		}
 	})
 	// Sampler: guarda todo erro + todo trace lento (>2s) +
-	// uma amostra de 10% dos normais; o resto NÃO é encaminhado em detalhe. As
+	// a taxa configurada dos normais; o resto NÃO é encaminhado em detalhe. As
 	// stats acima já contam 100%, então os números seguem exatos.
-	apmSampler := sampler.New(0.10, 2*time.Second)
+	apmSampler := sampler.New(apmSampleRate, 2*time.Second)
 	rec.SetTraceSampler(apmSampler.KeepRaw)
 	if !databaseAgent {
 		go func() {
@@ -1473,6 +1478,20 @@ func getenvOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func parseAPMSampleRate(raw string) (float64, error) {
+	if strings.TrimSpace(raw) == "" {
+		return 0.10, nil
+	}
+	rate, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return 0, err
+	}
+	if !(rate >= 0 && rate <= 1) {
+		return 0, fmt.Errorf("rate %q is outside [0,1]", raw)
+	}
+	return rate, nil
 }
 
 func mustEnv(key string) string {
