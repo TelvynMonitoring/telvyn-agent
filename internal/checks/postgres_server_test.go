@@ -56,6 +56,12 @@ type stubPgxPool struct {
 func (p *stubPgxPool) Ping(ctx context.Context) error { return p.pingErr }
 func (p *stubPgxPool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	p.queries = append(p.queries, sql)
+	if sql == sqlPostgresExtendedStats || sql == sqlPostgresObjectStats {
+		if row, ok := p.rowsBySQLPrefix[sql]; ok {
+			return row
+		}
+		return &stubRow{err: errors.New("extended statistics not configured in fixture")}
+	}
 	var matchedPrefix string
 	var matchedRow *stubRow
 	for prefix, row := range p.rowsBySQLPrefix {

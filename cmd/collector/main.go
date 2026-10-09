@@ -22,8 +22,11 @@ import (
 
 	"github.com/ispwatch/collector/internal/apm/concentrator"
 	"github.com/ispwatch/collector/internal/apm/obfuscate"
+	"github.com/ispwatch/collector/internal/apm/primarytags"
+	"github.com/ispwatch/collector/internal/apm/processing"
 	"github.com/ispwatch/collector/internal/apm/sampler"
 	"github.com/ispwatch/collector/internal/apm/statsfwd"
+	"github.com/ispwatch/collector/internal/apm/usage"
 	"github.com/ispwatch/collector/internal/checks"
 	"github.com/ispwatch/collector/internal/clusteragent"
 	"github.com/ispwatch/collector/internal/collectorobs"
@@ -242,7 +245,11 @@ func main() {
 // span cru: o caminho legado fazia isso sem sampling e inundava noc_span; os
 // golden signals já contam 100% do tráfego, então a lente de serviço acende pra
 // apps não-instrumentadas sem custo de armazenamento de rastro.
-type ebpfStatsSink struct{ conc *concentrator.Concentrator }
+type ebpfStatsSink struct {
+	conc          *concentrator.Concentrator
+	host, cluster string
+	hostTags      map[string]string
+}
 
 func (s ebpfStatsSink) Push(spans []*collectorv1.Span) {
 	for _, sp := range spans {
@@ -255,12 +262,31 @@ func (s ebpfStatsSink) Push(spans []*collectorv1.Span) {
 			sp.Attributes = map[string]string{}
 		}
 		sp.Attributes[concentrator.SourceAttr] = "ebpf"
+		if s.host != "" {
+			sp.Attributes[concentrator.PrimaryTagPrefix+"host"] = s.host
+		}
+		if s.cluster != "" {
+			sp.Attributes[concentrator.PrimaryTagPrefix+"kube_cluster_name"] = s.cluster
+		}
+		for _, key := range s.conc.PrimaryTagKeys() {
+			if strings.HasPrefix(key, "host.tag.") {
+				value := s.hostTags[strings.TrimPrefix(key, "host.tag.")]
+				if value != "" {
+					sp.Attributes[concentrator.PrimaryTagPrefix+key] = value
+				}
+			}
+		}
 		s.conc.Add(sp)
 	}
 }
 
 func runIngestMode(ingestURL string) {
 	log := newLogger(getenvOr("COLLECTOR_LOG_LEVEL", "info"))
+	apmSampleRate, err := parseAPMSampleRate(os.Getenv("ISPWATCH_APM_SAMPLE_RATE"))
+	if err != nil {
+		log.Error("ingest mode: ISPWATCH_APM_SAMPLE_RATE must be between 0 and 1", "err", err)
+		os.Exit(1)
+	}
 	token := strings.TrimSpace(os.Getenv("ISPWATCH_INGEST_TOKEN"))
 	if token == "" {
 		log.Error("ingest mode: ISPWATCH_INGEST_TOKEN ausente")
@@ -559,6 +585,13 @@ func runIngestMode(ingestURL string) {
 	httpAddr := otlp.ParsePortOrDefault(getenvOr("ISPWATCH_OTLP_HTTP_PORT", ""))
 	corsOrigins := otlp.ParseCORSOrigins(getenvOr("ISPWATCH_OTLP_HTTP_CORS_ORIGINS", "*"))
 	rec := otlp.NewHTTPReceiver(httpAddr, nil, log, otlp.DefaultMaxBodyBytes, corsOrigins)
+	rec.SetVerifiedPrimaryIdentity(hostID, cluster)
+	hostTags, err := primarytags.ParseHostTags(os.Getenv("ISPWATCH_HOST_TAGS"))
+	if err != nil {
+		log.Error("invalid ISPWATCH_HOST_TAGS configuration", "err", err)
+		os.Exit(1)
+	}
+	rec.SetVerifiedHostTags(hostTags)
 	rec.SetForwardRaw(func(signal, ct string, body []byte) error {
 		return exporter.PostRaw(ctx, signal, ct, body)
 	})
@@ -612,6 +645,20 @@ func runIngestMode(ingestURL string) {
 	// perde; só passa a existir a métrica agregada.
 	apmConc := concentrator.New(log)
 	apmStats := statsfwd.New(nil, ingestURL, token, Version, log)
+	apmUsage, usageErr := usage.New()
+	if usageErr != nil {
+		log.Warn("APM ingestion usage unavailable", "err", usageErr)
+	} else {
+		rec.SetTraceUsageObserver(apmUsage.Observe)
+	}
+	flushUsage := func(flushContext context.Context) error {
+		if apmUsage == nil {
+			return nil
+		}
+		return apmUsage.Flush(flushContext, func(sendContext context.Context, payload []byte) error {
+			return exporter.PostRaw(sendContext, "apm/usage", "application/json", payload)
+		})
+	}
 	rec.SetAPMTap(func(spans []*collectorv1.Span) {
 		for _, s := range spans {
 			obfuscate.Apply(s)
@@ -619,10 +666,12 @@ func runIngestMode(ingestURL string) {
 		}
 	})
 	// Sampler: guarda todo erro + todo trace lento (>2s) +
-	// uma amostra de 10% dos normais; o resto NÃO é encaminhado em detalhe. As
+	// a taxa configurada dos normais; o resto NÃO é encaminhado em detalhe. As
 	// stats acima já contam 100%, então os números seguem exatos.
-	apmSampler := sampler.New(0.10, 2*time.Second)
-	rec.SetTraceSampler(apmSampler.KeepRaw)
+	apmSampler := sampler.New(apmSampleRate, 2*time.Second)
+	apmProcessor := &processing.Processor{}
+	rec.SetTraceProcessor(apmProcessor.ProcessTraces)
+	rec.SetScopeTraceSampler(apmSampler.KeepForScope)
 	if !databaseAgent {
 		go func() {
 			t := time.NewTicker(concentrator.BucketDuration)
@@ -631,10 +680,16 @@ func runIngestMode(ingestURL string) {
 				select {
 				case <-ctx.Done():
 					_ = apmStats.Send(context.Background(), apmConc.Flush()) // best-effort no shutdown
+					shutdownUsageContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					_ = flushUsage(shutdownUsageContext)
+					cancel()
 					return
 				case <-t.C:
 					if err := apmStats.Send(ctx, apmConc.Flush()); err != nil {
 						log.Warn("apm stats flush failed", "err", err)
+					}
+					if err := flushUsage(ctx); err != nil {
+						log.Warn("APM usage flush failed; retaining bounded pending snapshots", "err", err)
 					}
 				}
 			}
@@ -655,7 +710,7 @@ func runIngestMode(ingestURL string) {
 	// mesmo padrão do caminho legado, onde os receivers sobem em goroutine ANTES
 	// do tracer. Best-effort: se o eBPF falhar, o agent segue normal.
 	if !databaseAgent && getenvOr("ISPWATCH_EBPF_TRACING", "0") == "1" {
-		go startEbpfTracer(ctx, log, ebpfStatsSink{conc: apmConc}, out, hostID, databaseMonitors)
+		go startEbpfTracer(ctx, log, ebpfStatsSink{conc: apmConc, host: hostID, cluster: cluster, hostTags: hostTags}, out, hostID, databaseMonitors)
 	}
 
 	// Coleta opcional de logs: taila /var/log/pods (CRI) e
@@ -666,6 +721,16 @@ func runIngestMode(ingestURL string) {
 		startIngestPodLogs(ctx, log, exporter, hostID)
 	} else {
 		log.Debug("pod logs desativados (set ISPWATCH_LOGS_ENABLED=1 pra habilitar)")
+	}
+
+	if !databaseAgent && getenvOr("ISPWATCH_SYSLOG_ENABLED", "0") == "1" {
+		logsExp := otlp.NewIngestLogsExporter(exporter, log)
+		go logsExp.Run(ctx)
+		go func() {
+			if err := logs.RunSyslog(ctx, getenvOr("ISPWATCH_SYSLOG_ADDR", "127.0.0.1:5514"), logsExp.Push); err != nil {
+				log.Warn("syslog receiver stopped", "err", err)
+			}
+		}()
 	}
 
 	// SNMP traps (toggle, B2): receptor UDP/162 que encaminha traps do device pro
@@ -682,7 +747,7 @@ func runIngestMode(ingestURL string) {
 	// que o usuário criou no painel, executando cada um no intervalo. O resultado
 	// vai pelo mesmo canal `out` (PostMetrics entrega). Reusa a máquina mTLS.
 	if getenvOr("ISPWATCH_CHECKS_ENABLED", "1") == "1" {
-		startIngestChecks(ctx, log, exporter, apmStats, token, ingestURL, hostID, databaseIdentity, out, databaseMonitors, databaseTerminalRemoval, startSelfMetrics)
+		startIngestChecks(ctx, log, exporter, apmStats, apmUsage, apmSampler, apmProcessor, apmConc, rec, token, ingestURL, hostID, databaseIdentity, out, databaseMonitors, databaseTerminalRemoval, startSelfMetrics)
 	} else {
 		log.Debug("checagens agendadas desativadas (set ISPWATCH_CHECKS_ENABLED=1 pra habilitar)")
 	}
@@ -795,7 +860,7 @@ func startSbomScan(ctx context.Context, log *slog.Logger, exporter *otlp.IngestE
 // (Bearer) pra obter collector_id+tenant, monta um checks.Runtime emitindo no
 // mesmo canal `out`, e roda o loop de config-pull com um client que injeta o
 // Bearer token. Reusa toda a máquina de checks/scheduler do modo mTLS.
-func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.IngestExporter, apmStats *statsfwd.Forwarder, token, ingestURL, hostID, databaseIdentity string, out chan<- []*collectorv1.Metric, databaseMonitors *ebpf.DatabaseMonitorRegistry, terminalRemoval func(int), onRegistered func()) {
+func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.IngestExporter, apmStats *statsfwd.Forwarder, apmUsage *usage.Aggregator, apmSampler *sampler.Sampler, apmProcessor *processing.Processor, apmConc *concentrator.Concentrator, receiver *otlp.HTTPReceiver, token, ingestURL, hostID, databaseIdentity string, out chan<- []*collectorv1.Metric, databaseMonitors *ebpf.DatabaseMonitorRegistry, terminalRemoval func(int), onRegistered func()) {
 	name := strings.TrimSpace(hostID)
 	if name == "" {
 		name, _ = os.Hostname()
@@ -849,7 +914,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 	checks.SetTopologyPusher(exporter)
 	runtime.SetWorkerPools(5, 10)
 	runtime.SetJitter(1000)
-	runtime.SetTagger(checks.NewTagger(10000, log)) // era config.DefaultTaggerBudget
+	runtime.SetTagger(checks.NewTagger(configuredTaggerBudget(getenvOr("ISPWATCH_TAGGER_BUDGET_PER_HOST", "")), log))
 	runtime.SetQueryStatsPusher(func(postCtx context.Context, stats checks.DatabaseQueryStats) error {
 		queries := make([]otlp.DatabaseQueryStat, 0, len(stats.Queries))
 		for _, q := range stats.Queries {
@@ -868,7 +933,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			})
 		}
 		return exporter.PostDatabaseQueryStats(postCtx, otlp.DatabaseQueryStatsPayload{
-			InstallationID: stats.InstallationID, DatabaseID: stats.DatabaseID,
+			DatabaseSignalEnvelope: otlp.DatabaseSignalEnvelope{Engine: stats.Engine},
+			InstallationID:         stats.InstallationID, DatabaseID: stats.DatabaseID,
 			DBServer: stats.DBServer, DBName: stats.DBName,
 			WindowSeconds: stats.WindowSeconds, Queries: queries, Samples: samples,
 		})
@@ -954,7 +1020,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			enums = append(enums, otlp.DatabaseCatalogEnum{SchemaName: item.SchemaName, TypeName: item.TypeName, Values: item.Values})
 		}
 		return exporter.PostDatabaseCatalog(postCtx, otlp.DatabaseCatalogPayload{
-			InstallationID: catalog.InstallationID, DatabaseID: catalog.DatabaseID,
+			DatabaseSignalEnvelope: otlp.DatabaseSignalEnvelope{Engine: catalog.Engine},
+			InstallationID:         catalog.InstallationID, DatabaseID: catalog.DatabaseID,
 			DBServer: catalog.DBServer, DBName: catalog.DBName,
 			ServerVersion: catalog.ServerVersion, DatabaseSizeBytes: catalog.DatabaseSizeBytes,
 			Fingerprint: catalog.Fingerprint, Truncated: catalog.Truncated,
@@ -967,7 +1034,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 		sessions := make([]otlp.DatabaseDiagnosticsSession, 0, len(diagnostics.Sessions))
 		for _, session := range diagnostics.Sessions {
 			sessions = append(sessions, otlp.DatabaseDiagnosticsSession{
-				PID: session.PID, User: session.User, Application: session.Application,
+				Identity: session.Identity,
+				PID:      session.PID, User: session.User, Application: session.Application,
 				Client: session.Client, State: session.State, WaitType: session.WaitType,
 				WaitEvent: session.WaitEvent, QueryStart: session.QueryStart, DurationSeconds: session.DurationSeconds,
 			})
@@ -1046,7 +1114,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			}
 		}
 		if err := exporter.PostDatabaseDiagnostics(postCtx, otlp.DatabaseDiagnosticsPayload{
-			InstallationID: diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
+			DatabaseSignalEnvelope: otlp.DatabaseSignalEnvelope{Engine: diagnostics.Engine},
+			InstallationID:         diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
 			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName,
 			BloatEnabled: diagnostics.BloatEnabled, Capabilities: diagnostics.Capabilities,
 			Sessions: sessions, Blocking: blocking, Waits: waits, Bloat: bloat,
@@ -1068,7 +1137,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 		}
 		return exporter.PostDatabaseCapabilities(postCtx, otlp.DatabaseCapabilitiesPayload{
 			InstallationID: diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
-			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName,
+			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName, ServerVersion: diagnostics.ServerVersion,
 			Capabilities: capabilities, Errors: diagnostics.Errors,
 		})
 	})
@@ -1127,13 +1196,23 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			}
 			go func() {
 				if err := configpull.Run(ctx, configpull.Config{
-					Endpoint:         base,
-					CollectorID:      collectorID,
-					TenantID:         tenantID,
-					PollInterval:     time.Duration(pollSecs) * time.Second,
-					HTTPClient:       bearerClient,
-					Logger:           log,
-					UpdateMarkerPath: updateMarker,
+					Endpoint:               base,
+					CollectorID:            collectorID,
+					TenantID:               tenantID,
+					PollInterval:           time.Duration(pollSecs) * time.Second,
+					HTTPClient:             bearerClient,
+					Logger:                 log,
+					UpdateMarkerPath:       updateMarker,
+					ApplyAPMSampling:       apmSampler.Apply,
+					ApplyAPMSamplingPolicy: apmSampler.ApplyPolicy,
+					ApplyAPMProcessing:     apmProcessor.Update,
+					ApplyAPMPrimaryTags: func(keys []string) error {
+						if err := receiver.ApplyPrimaryTags(keys); err != nil {
+							return err
+						}
+						return apmConc.ApplyPrimaryTags(keys)
+					},
+					APMPrimaryTagSources: receiver.PrimaryTagSources,
 					PolicyChanged: func(modules []string) {
 						exporter.SetEnabledModules(modules)
 						apmEnabled := false
@@ -1144,6 +1223,9 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 							}
 						}
 						apmStats.SetEnabled(apmEnabled)
+						if apmUsage != nil {
+							apmUsage.SetEnabled(apmEnabled)
+						}
 					},
 					PostgresTargets:   databaseMonitors,
 					OnTerminalRemoval: terminalRemoval,
@@ -1471,6 +1553,20 @@ func getenvOr(key, def string) string {
 	return def
 }
 
+func parseAPMSampleRate(raw string) (float64, error) {
+	if strings.TrimSpace(raw) == "" {
+		return 0.10, nil
+	}
+	rate, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return 0, err
+	}
+	if !(rate >= 0 && rate <= 1) {
+		return 0, fmt.Errorf("rate %q is outside [0,1]", raw)
+	}
+	return rate, nil
+}
+
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
@@ -1525,6 +1621,9 @@ func startEbpfTracer(ctx context.Context, log *slog.Logger, sink ebpf.SpanSink, 
 		FallbackHostname: fallback,
 		DatabaseMonitors: databaseMonitors,
 		Log:              log,
+	}
+	if stats, ok := sink.(ebpfStatsSink); ok {
+		cfg.PrimaryTagKeys = stats.conc.PrimaryTagKeys
 	}
 
 	// Tenta hookup do PodResolver via kubelet local. Sem ele, spans saem

@@ -480,6 +480,17 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		case <-time.After(delay):
 		}
 	}
+	if scheduled, ok := c.(interface{ InitialRunAt() time.Time }); ok {
+		if delay := time.Until(scheduled.InitialRunAt()); delay > 0 {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+			}
+		}
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -598,6 +609,11 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		}
 		timedOut := runErr == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded)
 		if err != nil {
+			// SNMP returns only collection diagnostics on failure; keep its error
+			// and circuit breaker while exposing reachability and packet counts.
+			if _, snmp := c.(*snmpGenericCheck); snmp && len(metrics) > 0 {
+				r.emit(metrics)
+			}
 			if failure, ok := any(c).(ExplainFailureProvider); ok {
 				r.pushExplain(c, failure.ExplainFailure(err))
 			}

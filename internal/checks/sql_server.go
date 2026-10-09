@@ -20,9 +20,17 @@ type sqlDatabaseRow interface {
 	Scan(...any) error
 }
 
+type sqlDatabaseRows interface {
+	Next() bool
+	Scan(...any) error
+	Err() error
+	Close() error
+}
+
 type sqlDatabasePool interface {
 	Ping(context.Context) error
 	QueryRow(context.Context, string, ...any) sqlDatabaseRow
+	Query(context.Context, string, ...any) (sqlDatabaseRows, error)
 	Close() error
 }
 
@@ -38,6 +46,10 @@ func (p *realSQLDatabasePool) Ping(ctx context.Context) error {
 
 func (p *realSQLDatabasePool) QueryRow(ctx context.Context, query string, args ...any) sqlDatabaseRow {
 	return p.db.QueryRowContext(ctx, query, args...)
+}
+
+func (p *realSQLDatabasePool) Query(ctx context.Context, query string, args ...any) (sqlDatabaseRows, error) {
+	return p.db.QueryContext(ctx, query, args...)
 }
 
 func (p *realSQLDatabasePool) Close() error {

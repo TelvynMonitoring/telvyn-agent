@@ -26,6 +26,7 @@ const (
 // DatabaseCatalog é um snapshot de metadados. O fingerprint permite ao
 // backend reconhecer que a estrutura não mudou sem comparar cada item.
 type DatabaseCatalog struct {
+	Engine             string                     `json:"-"`
 	InstallationID     string                     `json:"installation_id"`
 	DatabaseID         string                     `json:"database_id"`
 	DBServer           string                     `json:"db_server"`

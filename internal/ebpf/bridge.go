@@ -20,12 +20,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"inet.af/netaddr"
 
 	"github.com/ispwatch/collector/internal/apm/concentrator"
+	"github.com/ispwatch/collector/internal/apm/primarytags"
 	"github.com/ispwatch/collector/internal/ebpf/l7"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
@@ -164,7 +166,8 @@ type InboundServerResolver interface {
 
 // BridgeConfig agrupa parâmetros do bridge.
 type BridgeConfig struct {
-	ServiceName string // fallback service.name quando PodResolver não responde
+	PrimaryTagKeys func() []string
+	ServiceName    string // fallback service.name quando PodResolver não responde
 	// FallbackHostname identifica este nó em bare-metal. Quando o
 	// PodResolver não resolve client nem server (kubelet ausente ou nem
 	// uma das pontas é pod K8s), o span ganha ServiceName + Pod =
@@ -184,7 +187,7 @@ type BridgeConfig struct {
 	// InboundServerResolver resolves the local endpoint for an accepted server
 	// connection. Nil means database workload identity is unavailable.
 	InboundServerResolver InboundServerResolver
-	Log               *slog.Logger
+	Log                   *slog.Logger
 }
 
 // RunBridge consome events e empurra spans para sink. Bloqueia até ctx
@@ -540,6 +543,42 @@ func buildSpan(ev Event, parsers *parsersByConn, conns *connTracker, cfg BridgeC
 		span.Attributes["protocol.method"] = r.Method.String()
 	}
 
+	// Stats dimensions come from collector inventory, never decoded application payloads.
+	if metadata, ok := cfg.PodResolver.(interface {
+		NodeForPod(namespace, pod string) (string, bool)
+	}); ok {
+		namespace, pod := span.Namespace, span.Pod
+		if span.Kind == 3 && clientPod != "" {
+			namespace, pod = clientNs, clientPod
+		}
+		if node, verified := metadata.NodeForPod(namespace, pod); verified {
+			if namespace != "" {
+				span.Attributes["telvyn.verified_primary.kube_namespace"] = namespace
+			}
+			if node != "" {
+				span.Attributes["telvyn.verified_primary.kube_node"] = node
+			}
+		}
+	}
+	if cfg.PrimaryTagKeys != nil {
+		if metadata, ok := cfg.PodResolver.(interface {
+			LabelsForPod(string, string) map[string]string
+		}); ok {
+			namespace, pod := span.Namespace, span.Pod
+			if span.Kind == 3 && clientPod != "" {
+				namespace, pod = clientNs, clientPod
+			}
+			labels := metadata.LabelsForPod(namespace, pod)
+			for _, key := range cfg.PrimaryTagKeys() {
+				if strings.HasPrefix(key, "kube_label.") {
+					value := labels[strings.TrimPrefix(key, "kube_label.")]
+					if value != "" && primarytags.ValidValue(value) {
+						span.Attributes["telvyn.verified_primary."+key] = value
+					}
+				}
+			}
+		}
+	}
 	return span
 }
 

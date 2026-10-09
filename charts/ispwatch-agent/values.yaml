@@ -12,6 +12,8 @@ ingest:
 # Cluster name — vira tag em todas as métricas emitidas + hostname do
 # noc_host (cluster/node). Customize por instalação.
 clusterName: "default"
+# Operator host metadata; only selected APM primary tags emit values.
+hostTags: {}
 
 image:
   repository: ghcr.io/telvynmonitoring/telvyn-agent

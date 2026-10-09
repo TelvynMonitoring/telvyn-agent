@@ -32,13 +32,19 @@ rules:
   #   services; events continuam alimentando a timeline.
   # - apps/batch resources: inventário de workloads e kube-state.
   - apiGroups: [""]
-    resources: ["events", "pods", "namespaces", "nodes", "services"]
+    resources: ["events", "pods", "namespaces", "nodes", "services", "endpoints", "persistentvolumes", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

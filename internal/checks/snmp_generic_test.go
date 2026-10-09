@@ -9,8 +9,8 @@ import (
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
 	"github.com/ispwatch/collector/internal/snmp"
+	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 
 // stubRunner implementa snmpGenericRunner em memoria — substitui o
@@ -51,7 +51,8 @@ func (s *stubRunner) CollectDeviceMetadata(ctx context.Context, profile *snmp.Pr
 	return map[string]string{}
 }
 
-func (s *stubRunner) Close() error { s.closed = true; return nil }
+func (s *stubRunner) Close() error     { s.closed = true; return nil }
+func (s *stubRunner) Requests() uint64 { return 4 }
 
 func newStubSnmpClientFactory(r *stubRunner, err error) snmpClientFactory {
 	return func(p snmp.Params) (snmpGenericRunner, error) {
@@ -115,8 +116,8 @@ func TestSnmpGeneric_Factory_AutoProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if runner.getCalls != 1 {
-		t.Errorf("getCalls=%d want 1", runner.getCalls)
+	if runner.getCalls != 2 {
+		t.Errorf("getCalls=%d want 2 (profile + reachability)", runner.getCalls)
 	}
 	if len(metrics) == 0 {
 		t.Fatal("Run sem metrics")
@@ -125,12 +126,12 @@ func TestSnmpGeneric_Factory_AutoProfile(t *testing.T) {
 		t.Errorf("auto-detect resolveu profile=%q want linux-net-snmp", metrics[0].Tags["profile"])
 	}
 
-	// Segunda Run nao deve chamar GetSysObjectID de novo (cacheado).
+	// Segunda Run mantém o perfil cacheado, mas verifica disponibilidade.
 	if _, err := check.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if runner.getCalls != 1 {
-		t.Errorf("getCalls=%d want 1 (cache deveria evitar refetch)", runner.getCalls)
+	if runner.getCalls != 3 {
+		t.Errorf("getCalls=%d want 3 (one fresh reachability probe)", runner.getCalls)
 	}
 }
 
@@ -220,6 +221,108 @@ func TestSnmpGeneric_Run_AutoDetectError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "auto-detect") {
 		t.Errorf("erro=%q nao menciona auto-detect", err.Error())
+	}
+}
+
+func TestSnmpExecutionVersionAndFamilyCoverage(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		runner := &stubRunner{sysOID: "1.3.6.1.4.1.8072", collect: func(context.Context, *snmp.Profile, string, map[string]string) ([]*collectorv1.Metric, error) {
+			if failed {
+				return nil, errors.New("OID failure")
+			}
+			return []*collectorv1.Metric{{MetricName: "snmp.sys_uptime", Value: 100}}, nil
+		}}
+		check, err := newSnmpGenericCheckWithFactory(baseCfg(map[string]string{"target": "127.0.0.1:1161", "profile": "linux-net-snmp", "community": "public", "_config_version": "42"}), newStubSnmpClientFactory(runner, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		metrics, runErr := check.Run(context.Background())
+		if (runErr != nil) != failed {
+			t.Fatal(runErr)
+		}
+		values := map[string]float64{}
+		for _, metric := range metrics {
+			values[metric.MetricName] = metric.Value
+			if strings.HasPrefix(metric.MetricName, "snmp.collector.config_") && metric.Tags["config_version"] != "42" {
+				t.Fatal(metric.Tags)
+			}
+		}
+		if values["snmp.collector.config_version_executed"] != 42 {
+			t.Fatal(values)
+		}
+		if failed {
+			if values["snmp.collector.config_execution_success"] != 0 {
+				t.Fatal(values)
+			}
+		} else {
+			if values["snmp.collector.config_execution_success"] != 1 || values["snmp.collector.profile_metric_expected"] <= values["snmp.collector.profile_metric_observed"] {
+				t.Fatal(values)
+			}
+		}
+	}
+}
+
+func TestSnmpDiagnosticsDistinguishReachabilityFromProfileFailure(t *testing.T) {
+	for _, online := range []bool{true, false} {
+		runner := &stubRunner{sysOID: "1.3.6.1.4.1.8072", collect: func(context.Context, *snmp.Profile, string, map[string]string) ([]*collectorv1.Metric, error) {
+			return nil, errors.New("no profile samples")
+		}}
+		if !online {
+			runner.sysErr = errors.New("timeout")
+		}
+		check, err := newSnmpGenericCheckWithFactory(baseCfg(map[string]string{"target": "127.0.0.1:1161", "profile": "linux-net-snmp", "community": "public"}), newStubSnmpClientFactory(runner, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		metrics, err := check.Run(context.Background())
+		if err == nil {
+			t.Fatal("collection error must remain an error")
+		}
+		values := map[string]float64{}
+		for _, metric := range metrics {
+			values[metric.MetricName] = metric.Value
+		}
+		up := 0.0
+		if online {
+			up = 1
+		}
+		if values["snmp.device.reachable"] != up || values["snmp.device.unreachable"] != 1-up || values["snmp.collector.up"] != 0 || values["snmp.collector.requests"] != 4 || values["snmp.collector.submitted_metrics"] != 0 {
+			t.Fatal(values)
+		}
+	}
+}
+
+func TestSnmpFailureDiagnosticsReachRuntimeWithoutMaskingError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := &stubRunner{sysErr: errors.New("timeout"), collect: func(context.Context, *snmp.Profile, string, map[string]string) ([]*collectorv1.Metric, error) {
+		return nil, errors.New("timeout")
+	}}
+	cfg := baseCfg(map[string]string{"target": "127.0.0.1:1161", "profile": "linux-net-snmp", "community": "public"})
+	cfg.Enabled = true
+	registry := NewRegistry()
+	registry.Register("snmp.generic", func(config *collectorv1.CheckConfig) (Check, error) {
+		return newSnmpGenericCheckWithFactory(config, newStubSnmpClientFactory(runner, nil))
+	})
+	runtime, output := makeRuntime(ctx, registry)
+	runtime.Reload([]*collectorv1.CheckConfig{cfg})
+	defer runtime.Reload(nil)
+	timeout := time.After(3 * time.Second)
+	var diagnostic, failure bool
+	for !diagnostic || !failure {
+		select {
+		case batch := <-output:
+			for _, metric := range batch {
+				if metric.MetricName == "snmp.device.unreachable" && metric.Value == 1 {
+					diagnostic = true
+				}
+				if metric.MetricName == "ispwatch.check.errors" {
+					failure = true
+				}
+			}
+		case <-timeout:
+			t.Fatalf("diagnostic=%v error=%v", diagnostic, failure)
+		}
 	}
 }
 

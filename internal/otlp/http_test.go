@@ -341,7 +341,7 @@ func TestHTTPPayloadTooLarge(t *testing.T) {
 	}
 }
 
-func TestHTTPMetricsAndLogsAcceptedButDiscarded(t *testing.T) {
+func TestHTTPMetricsRequireForwarderAndLogsLegacyAcceptance(t *testing.T) {
 	base, sink, cleanup := startReceiver(t, 0, nil)
 	defer cleanup()
 
@@ -352,8 +352,12 @@ func TestHTTPMetricsAndLogsAcceptedButDiscarded(t *testing.T) {
 			t.Fatalf("post %s: %v", path, err)
 		}
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("%s: expected 200, got %d", path, resp.StatusCode)
+		expected := http.StatusOK
+		if path == "/v1/metrics" {
+			expected = http.StatusServiceUnavailable
+		}
+		if resp.StatusCode != expected {
+			t.Errorf("%s: expected %d, got %d", path, expected, resp.StatusCode)
 		}
 	}
 	// Sink não deve ter recebido nada — só traces caem nele.
@@ -423,10 +427,10 @@ func TestParseCORSOrigins(t *testing.T) {
 
 func TestParsePortOrDefault(t *testing.T) {
 	cases := map[string]string{
-		"":              DefaultHTTPListenAddr,
-		"4318":          "0.0.0.0:4318",
-		"0.0.0.0:9999":  "0.0.0.0:9999",
-		"127.0.0.1:80":  "127.0.0.1:80",
+		"":             DefaultHTTPListenAddr,
+		"4318":         "0.0.0.0:4318",
+		"0.0.0.0:9999": "0.0.0.0:9999",
+		"127.0.0.1:80": "127.0.0.1:80",
 	}
 	for in, want := range cases {
 		if got := ParsePortOrDefault(in); got != want {
