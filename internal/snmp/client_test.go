@@ -23,6 +23,18 @@ type fakeDriver struct {
 	deadlineCalls int
 }
 
+func TestClientRequestsCountsTransmittedPackets(t *testing.T) {
+	client, err := NewClient(Params{Target: "127.0.0.1", Community: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.snmp.OnSent(client.snmp)
+	client.snmp.OnSent(client.snmp)
+	if client.Requests() != 2 {
+		t.Fatal(client.Requests())
+	}
+}
+
 func (f *fakeDriver) Connect() error {
 	if f.connectErr != nil {
 		return f.connectErr

@@ -35,6 +35,8 @@ func TestForwarder_SendMontaPayloadEHeaders(t *testing.T) {
 		DurationSumNano:     100,
 		HTTPStatusCode:      200,
 		DatabaseMonitorID:   "monitor-a",
+		ServiceVersion:      "v2",
+		PrimaryTags:         map[string]string{"host": "collector-host", "kube_namespace": "verified-ns"},
 	}}
 	if err := f.Send(context.Background(), groups); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -57,6 +59,15 @@ func TestForwarder_SendMontaPayloadEHeaders(t *testing.T) {
 		t.Fatalf("buckets/stats inesperados: %+v", payload.Buckets)
 	}
 	gs := payload.Buckets[0].Stats[0]
+	if gs.MaxDurationNano == nil || gs.GetMaxDurationNano() != 0 {
+		t.Fatal("exact zero maximum must preserve protobuf presence")
+	}
+	if gs.ServiceVersion != "v2" {
+		t.Fatalf("version not forwarded: %q", gs.ServiceVersion)
+	}
+	if gs.GetPrimaryTags()["host"] != "collector-host" || gs.GetPrimaryTags()["kube_namespace"] != "verified-ns" {
+		t.Fatal("primary dimensions not preserved through protobuf wire format")
+	}
 	if gs.Hits != 5 || gs.Errors != 1 || gs.Service != "svc" || gs.HttpStatusCode != 200 {
 		t.Errorf("grouped stats errado: %+v", gs)
 	}

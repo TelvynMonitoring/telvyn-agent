@@ -55,6 +55,8 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
+            - name: ISPWATCH_HOST_TAGS
+              value: {{ .Values.hostTags | default dict | toJson | quote }}
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
@@ -85,11 +87,11 @@ spec:
             - name: ISPWATCH_AGENT_KIND
               value: "k8s.node"
             - name: ISPWATCH_KUBELET_URL
-              value: "https://localhost:10250"
+              value: {{ .Values.ebpfTracing.kubeletURL | default "https://localhost:10250" | quote }}
             - name: ISPWATCH_KUBELET_TOKEN_FILE
               value: "/var/run/secrets/kubernetes.io/serviceaccount/token"
             - name: ISPWATCH_KUBELET_INSECURE
-              value: "1"
+              value: {{ .Values.ebpfTracing.kubeletInsecure | default "1" | quote }}
             - name: COLLECTOR_LOG_LEVEL
               value: {{ .Values.logLevel | default "info" | quote }}
             {{- if .Values.logs.enabled }}
@@ -104,12 +106,6 @@ spec:
             {{- if .Values.ebpfTracing.enabled }}
             - name: ISPWATCH_EBPF_TRACING
               value: "1"
-            - name: ISPWATCH_KUBELET_URL
-              value: {{ .Values.ebpfTracing.kubeletURL | default "https://localhost:10250" | quote }}
-            - name: ISPWATCH_KUBELET_TOKEN_FILE
-              value: "/var/run/secrets/kubernetes.io/serviceaccount/token"
-            - name: ISPWATCH_KUBELET_INSECURE
-              value: {{ .Values.ebpfTracing.kubeletInsecure | default "1" | quote }}
             {{- end }}
             {{- if .Values.profiling.enabled }}
             # Profiler contínuo de CPU (eBPF perf_event → flame graph por

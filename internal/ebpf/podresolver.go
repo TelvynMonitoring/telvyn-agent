@@ -58,6 +58,7 @@ type NamespacedName struct {
 // compatíveis de service/version/env — para carimbar log/metric com o
 // mesmo service dos traces. Vazio quando o pod não tem a label.
 type PodSvcMeta struct {
+	Labels  map[string]string
 	Service string
 	Version string
 	Env     string
@@ -207,6 +208,23 @@ func (r *PodResolverImpl) ServiceForPod(namespace, pod string) (service, version
 	return m.Service, m.Version, m.Env, true
 }
 
+// NodeForPod returns only kubelet inventory metadata for a resolved pod identity.
+func (r *PodResolverImpl) NodeForPod(namespace, pod string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, identity := range r.idToPod {
+		if identity.Namespace == namespace && identity.Pod == pod {
+			return identity.Node, true
+		}
+	}
+	for _, identity := range r.ipToPod {
+		if identity.Namespace == namespace && identity.Pod == pod {
+			return identity.Node, true
+		}
+	}
+	return "", false
+}
+
 func (r *PodResolverImpl) containerIDFor(pid uint32) string {
 	now := time.Now()
 	r.mu.RLock()
@@ -309,9 +327,10 @@ func (h *httpPodLister) List(ctx context.Context) (PodIndex, error) {
 		}
 		// Service tagging unificado: lê labels compatíveis do pod para carimbar
 		// o log com o mesmo service dos traces.
-		if svc := p.Metadata.Labels["tags.datadoghq.com/service"]; svc != "" {
+		{
 			byNsPod[p.Metadata.Namespace+"/"+p.Metadata.Name] = PodSvcMeta{
-				Service: svc,
+				Service: p.Metadata.Labels["tags.datadoghq.com/service"],
+				Labels:  p.Metadata.Labels,
 				Version: p.Metadata.Labels["tags.datadoghq.com/version"],
 				Env:     p.Metadata.Labels["tags.datadoghq.com/env"],
 			}
@@ -340,6 +359,31 @@ func (h *httpPodLister) List(ctx context.Context) (PodIndex, error) {
 		}
 	}
 	return PodIndex{ByContainerID: byID, ByPodIP: byIP, ByNsPod: byNsPod}, nil
+}
+
+func (r *PodResolverImpl) LabelsForPod(namespace, pod string) map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := map[string]string{}
+	for key, value := range r.nsPodToSvc[namespace+"/"+pod].Labels {
+		result[key] = value
+	}
+	return result
+}
+func (r *PodResolverImpl) PrimaryTagSources() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	seen := map[string]bool{}
+	for _, pod := range r.nsPodToSvc {
+		for key := range pod.Labels {
+			seen["kube_label."+key] = true
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for key := range seen {
+		result = append(result, key)
+	}
+	return result
 }
 
 // stripContainerIDPrefix converte "containerd://abc..." em "abc...".

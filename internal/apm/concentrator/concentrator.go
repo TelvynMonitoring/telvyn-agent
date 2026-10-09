@@ -10,7 +10,11 @@
 package concentrator
 
 import (
+	"encoding/json"
+	"fmt"
+	"github.com/ispwatch/collector/internal/apm/primarytags"
 	"log/slog"
+	"net"
 	"strconv"
 	"sync"
 	"time"
@@ -37,6 +41,10 @@ const SourceAttr = "telvyn.source"
 // generic database spans and collection probes.
 const DatabaseMonitorIDAttr = "telvyn.database_monitor_id"
 
+// PrimaryTagPrefix is reserved for metadata verified by the local receiver,
+// never attributes supplied by an SDK.
+const PrimaryTagPrefix = "telvyn.verified_primary."
+
 // GroupedStats é o snapshot de um grupo num bucket, pronto pro forwarder
 // converter em ApmGroupedStats (proto). Os sketches já vêm serializados.
 type GroupedStats struct {
@@ -50,31 +58,39 @@ type GroupedStats struct {
 	Hits                uint64
 	Errors              uint64
 	DurationSumNano     uint64
+	MaxDurationNano     uint64
 	TopLevel            bool
 	Source              string // "otlp" (instrumentado) | "ebpf" (zero-código)
 	DbSystem            string // protocolo de datastore detectado (eBPF): postgresql/redis/… ou ""
 	DatabaseMonitorID   string // monitor de banco que recebeu o workload eBPF; "" quando não atribuído
 	Namespace           string // namespace do pod (serviços eBPF); "" se desconhecido
+	Peer                string
+	ServiceVersion      string
+	PrimaryTags         map[string]string
 	OkSummary           []byte // DDSketch (nanos) das latências OK; nil se vazio
 	ErrorSummary        []byte // DDSketch (nanos) das latências de erro; nil se vazio
 }
 
 type bucketKey struct {
-	env        string
-	service    string
-	resource   string
-	operation  string
-	spanKind   int32
-	httpStatus int32
-	source     string
-	dbSystem   string
+	env               string
+	service           string
+	resource          string
+	operation         string
+	spanKind          int32
+	httpStatus        int32
+	source            string
+	dbSystem          string
 	databaseMonitorID string
+	peer              string
+	serviceVersion    string
+	primaryTags       string
 }
 
 type groupStats struct {
 	hits            uint64
 	errors          uint64
 	durationSumNano uint64
+	maxDurationNano uint64
 	topLevel        bool
 	// namespace do pod NÃO entra na bucketKey (é funcionalmente determinado pelo
 	// service → não inflaria cardinalidade, mas mantê-lo fora da chave evita
@@ -87,9 +103,35 @@ type groupStats struct {
 // Concentrator acumula stats de forma thread-safe. Add roda no hot path (Push);
 // Flush é chamado periodicamente pelo loop do trace-agent.
 type Concentrator struct {
-	mu      sync.Mutex
-	buckets map[int64]map[bucketKey]*groupStats
-	log     *slog.Logger
+	mu          sync.Mutex
+	buckets     map[int64]map[bucketKey]*groupStats
+	log         *slog.Logger
+	primaryKeys []string
+}
+
+func (c *Concentrator) ApplyPrimaryTags(keys []string) error {
+	if len(keys) > 2 {
+		return fmt.Errorf("at most two primary tags")
+	}
+	seen := map[string]bool{}
+	for _, key := range keys {
+		if seen[key] {
+			return fmt.Errorf("duplicate primary tag")
+		}
+		if !primarytags.ValidKey(key) {
+			return fmt.Errorf("unsupported primary tag")
+		}
+		seen[key] = true
+	}
+	c.mu.Lock()
+	c.primaryKeys = append([]string(nil), keys...)
+	c.mu.Unlock()
+	return nil
+}
+func (c *Concentrator) PrimaryTagKeys() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.primaryKeys...)
 }
 
 // New cria um concentrator vazio.
@@ -111,20 +153,40 @@ func (c *Concentrator) Add(s *collectorv1.Span) {
 	dur := s.EndUnixNano - s.StartUnixNano
 	bucketStart := s.StartUnixNano - (s.StartUnixNano % int64(BucketDuration))
 	k := bucketKey{
-		env:        s.Attributes["deployment.environment"],
-		service:    s.ServiceName,
-		resource:   resourceOf(s),
-		operation:  s.Name,
-		spanKind:   s.Kind,
-		httpStatus: httpStatusOf(s.Attributes),
-		source:     spanSource(s),
-		dbSystem:   s.Attributes["db.system"],
+		env:               s.Attributes["deployment.environment"],
+		service:           s.ServiceName,
+		resource:          resourceOf(s),
+		operation:         s.Name,
+		spanKind:          s.Kind,
+		httpStatus:        httpStatusOf(s.Attributes),
+		source:            spanSource(s),
+		dbSystem:          s.Attributes["db.system"],
 		databaseMonitorID: s.Attributes[DatabaseMonitorIDAttr],
+		peer:              peerOf(s),
+		serviceVersion:    s.Attributes["service.version"],
+	}
+	if k.env == "" {
+		k.env = s.Attributes["deployment.environment.name"]
+	}
+	namespace := s.Namespace
+	// Outbound eBPF spans retain the destination as query owner. Map statistics
+	// must attribute the call to the observed client instead of dropping a self-loop.
+	if k.source == "ebpf" && s.Kind == 3 && s.Attributes["client.pod"] != "" {
+		k.service = s.Attributes["client.pod"]
+		namespace = s.Attributes["client.namespace"]
 	}
 	isErr := s.StatusCode == 2 // OTLP ERROR
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	tags := map[string]string{}
+	for _, key := range c.primaryKeys {
+		if value := s.Attributes[PrimaryTagPrefix+key]; value != "" {
+			tags[key] = value
+		}
+	}
+	encoded, _ := json.Marshal(tags)
+	k.primaryTags = string(encoded)
 	groups := c.buckets[bucketStart]
 	if groups == nil {
 		groups = make(map[bucketKey]*groupStats)
@@ -136,16 +198,19 @@ func (c *Concentrator) Add(s *collectorv1.Span) {
 			okSketch:  newSketch(),
 			errSketch: newSketch(),
 			topLevel:  s.Kind == 2 || s.Kind == 5, // SERVER ou CONSUMER = span de entrada
-			namespace: s.Namespace,
+			namespace: namespace,
 		}
 		groups[k] = g
-	} else if g.namespace == "" && s.Namespace != "" {
+	} else if g.namespace == "" && namespace != "" {
 		// Preenche o namespace se o 1º span do grupo veio sem ele (é o mesmo
 		// service, logo o mesmo pod/namespace).
-		g.namespace = s.Namespace
+		g.namespace = namespace
 	}
 	g.hits++
 	g.durationSumNano += uint64(dur)
+	if uint64(dur) > g.maxDurationNano {
+		g.maxDurationNano = uint64(dur)
+	}
 	if isErr {
 		g.errors++
 		_ = g.errSketch.Add(float64(dur))
@@ -165,6 +230,8 @@ func (c *Concentrator) Flush() []GroupedStats {
 	var out []GroupedStats
 	for bucketStart, groups := range buckets {
 		for k, g := range groups {
+			var tags map[string]string
+			_ = json.Unmarshal([]byte(k.primaryTags), &tags)
 			out = append(out, GroupedStats{
 				BucketStartUnixNano: bucketStart,
 				Env:                 k.env,
@@ -176,11 +243,15 @@ func (c *Concentrator) Flush() []GroupedStats {
 				Hits:                g.hits,
 				Errors:              g.errors,
 				DurationSumNano:     g.durationSumNano,
+				MaxDurationNano:     g.maxDurationNano,
 				TopLevel:            g.topLevel,
 				Source:              k.source,
 				DbSystem:            k.dbSystem,
 				DatabaseMonitorID:   k.databaseMonitorID,
 				Namespace:           g.namespace,
+				Peer:                k.peer,
+				ServiceVersion:      k.serviceVersion,
+				PrimaryTags:         tags,
 				OkSummary:           encodeSketch(g.okSketch),
 				ErrorSummary:        encodeSketch(g.errSketch),
 			})
@@ -192,6 +263,38 @@ func (c *Concentrator) Flush() []GroupedStats {
 func newSketch() *ddsketch.DDSketch {
 	s, _ := ddsketch.NewDefaultDDSketch(relativeAccuracy)
 	return s
+}
+
+// Peer is a service or endpoint, never a URL path/query or SQL statement.
+func peerOf(s *collectorv1.Span) string {
+	if s.Kind != 3 && s.Kind != 4 {
+		return ""
+	}
+	for _, key := range []string{"server.pod", "peer.service"} {
+		if value := s.Attributes[key]; value != "" {
+			return value
+		}
+	}
+	var host string
+	for _, key := range []string{"server.address", "net.peer.name", "net.peer.ip"} {
+		if host = s.Attributes[key]; host != "" {
+			break
+		}
+	}
+	if host == "" {
+		return s.Attributes["db.system"]
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return ""
+	}
+	port := s.Attributes["server.port"]
+	if port == "" {
+		port = s.Attributes["net.peer.port"]
+	}
+	if port != "" && port != "0" {
+		return net.JoinHostPort(host, port)
+	}
+	return host
 }
 
 func encodeSketch(s *ddsketch.DDSketch) []byte {
@@ -206,6 +309,9 @@ func encodeSketch(s *ddsketch.DDSketch) []byte {
 // resourceOf deriva o resource de baixa cardinalidade. Pra HTTP usa method+route;
 // senão cai no nome da operação. (Normalização fina de path fica pro obfuscator.)
 func resourceOf(s *collectorv1.Span) string {
+	if resource := s.Attributes["resource.name"]; resource != "" {
+		return resource
+	}
 	method := s.Attributes["http.request.method"]
 	if method == "" {
 		method = s.Attributes["http.method"]

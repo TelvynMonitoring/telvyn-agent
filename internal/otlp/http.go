@@ -33,6 +33,7 @@
 package otlp
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/hex"
@@ -49,12 +50,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	metricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracedatapb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/ispwatch/collector/internal/apm/usage"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 
@@ -86,7 +89,12 @@ type HTTPReceiver struct {
 	// forwardRaw, quando setado (modo ingest certless), encaminha o corpo
 	// OTLP cru pro gateway com Bearer token em vez de empurrar pro sink gRPC.
 	// signal ∈ {"traces","metrics","logs"}.
-	forwardRaw func(signal, contentType string, body []byte) error
+	forwardRaw                    func(signal, contentType string, body []byte) error
+	traceProcessor                func(contentType string, body []byte) ([]byte, error)
+	verifiedHost, verifiedCluster string
+	primaryMu                     sync.RWMutex
+	primaryKeys                   []string
+	verifiedHostTags              map[string]string
 
 	// apmTap, quando setado, recebe uma CÓPIA parseada dos spans de traces no
 	// caminho forwardRaw — pro trace-agent resumir (stats) na borda SEM mexer
@@ -98,7 +106,10 @@ type HTTPReceiver struct {
 	// o detalhe cru vai ser ENCAMINHADO. Quando ativo, o caminho forwardRaw
 	// reempacota só os spans amostrados em vez de repassar o corpo cru. As
 	// stats (apmTap) seguem sendo contadas com 100% dos spans, antes do filtro.
-	traceSampler func(traceID string, statusCode int32, durationNano int64) bool
+	traceSampler        func(traceID string, statusCode int32, durationNano int64) bool
+	serviceTraceSampler func(traceID, service string, statusCode int32, durationNano int64) bool
+	scopeTraceSampler   func(traceID, service, env, resource string, statusCode, kind int32, durationNano int64) bool
+	traceUsageObserver  func(usage.Observation)
 
 	// resolver, quando setado, resolve o IP de origem da conexão OTLP em
 	// (namespace, pod) via o índice do kubelet — pra carimbar spans de apps
@@ -169,11 +180,87 @@ func (h *HTTPReceiver) SetAPMTap(fn func(spans []*collectorv1.Span)) {
 	h.apmTap = fn
 }
 
+// SetTraceProcessor applies the active policy before statistics and sampling.
+func (h *HTTPReceiver) SetTraceProcessor(fn func(contentType string, body []byte) ([]byte, error)) {
+	h.traceProcessor = fn
+}
+
 // SetTraceSampler ativa o sampling no encaminhamento: só os spans aprovados pela
 // função são reempacotados e enviados. As stats (apmTap) já foram contadas antes,
 // com 100% dos spans, então continuam exatas.
 func (h *HTTPReceiver) SetTraceSampler(fn func(traceID string, statusCode int32, durationNano int64) bool) {
 	h.traceSampler = fn
+	h.serviceTraceSampler = nil
+	h.scopeTraceSampler = nil
+}
+
+func (h *HTTPReceiver) SetServiceTraceSampler(fn func(traceID, service string, statusCode int32, durationNano int64) bool) {
+	h.scopeTraceSampler = nil
+	h.serviceTraceSampler = fn
+	if fn == nil {
+		h.traceSampler = nil
+		return
+	}
+	h.traceSampler = func(id string, status int32, duration int64) bool { return fn(id, "", status, duration) }
+}
+
+func (h *HTTPReceiver) sampleTrace(id, service string, status int32, duration int64) bool {
+	if h.serviceTraceSampler != nil {
+		return h.serviceTraceSampler(id, service, status, duration)
+	}
+	return h.traceSampler(id, status, duration)
+}
+
+func (h *HTTPReceiver) SetScopeTraceSampler(fn func(traceID, service, env, resource string, statusCode, kind int32, durationNano int64) bool) {
+	h.scopeTraceSampler = fn
+	if fn == nil {
+		h.traceSampler = nil
+		return
+	}
+	h.traceSampler = func(id string, status int32, duration int64) bool { return fn(id, "", "", "", status, 0, duration) }
+}
+
+func (h *HTTPReceiver) sampleTraceScope(id, service, env, resource string, status, kind int32, duration int64) bool {
+	if h.scopeTraceSampler != nil {
+		return h.scopeTraceSampler(id, service, env, resource, status, kind, duration)
+	}
+	return h.sampleTrace(id, service, status, duration)
+}
+
+func samplingScope(name string, attrs map[string]string) (env, resource string) {
+	env = attrs["deployment.environment"]
+	if env == "" {
+		env = attrs["deployment.environment.name"]
+	}
+	resource = attrs["resource.name"]
+	if resource == "" {
+		method := attrs["http.request.method"]
+		if method == "" {
+			method = attrs["http.method"]
+		}
+		if method != "" && attrs["http.route"] != "" {
+			resource = method + " " + attrs["http.route"]
+		} else {
+			resource = name
+		}
+	}
+	return
+}
+
+func (h *HTTPReceiver) SetTraceUsageObserver(fn func(usage.Observation)) { h.traceUsageObserver = fn }
+
+func traceUsageSpans(body []byte, contentType string) ([]*collectorv1.Span, bool) {
+	if contentType == "application/json" {
+		var spans []*collectorv1.Span
+		parser := &HTTPReceiver{apmTap: func(parsed []*collectorv1.Span) { spans = parsed }}
+		_, count, ok := parser.tapAndSampleJSON(body, "")
+		return spans, ok && count == len(spans)
+	}
+	request := &tracepb.ExportTraceServiceRequest{}
+	if err := unmarshalOTLP(body, contentType, request); err != nil {
+		return nil, false
+	}
+	return convertResourceSpans(request.ResourceSpans), true
 }
 
 // PodIPResolver resolve um IP de origem no pod (namespace, pod, workload, node).
@@ -190,17 +277,63 @@ func (h *HTTPReceiver) SetPodResolver(r PodIPResolver) { h.resolver = r }
 // filterSampledSpans remove dos ResourceSpans os spans NÃO aprovados pelo keep,
 // in-place. Retorna quantos sobraram.
 func filterSampledSpans(req *tracepb.ExportTraceServiceRequest, keep func(traceID string, statusCode int32, durationNano int64) bool) int {
-	total := 0
+	return filterServiceSampledSpans(req, func(id, _ string, status int32, duration int64) bool { return keep(id, status, duration) })
+}
+
+func filterServiceSampledSpans(req *tracepb.ExportTraceServiceRequest, keep func(traceID, service string, statusCode int32, durationNano int64) bool) int {
+	return filterScopeSampledSpans(req, func(id, service, _, _ string, status, _ int32, duration int64) bool {
+		return keep(id, service, status, duration)
+	})
+}
+
+func filterScopeSampledSpans(req *tracepb.ExportTraceServiceRequest, keep func(traceID, service, env, resource string, statusCode, kind int32, durationNano int64) bool) int {
+	// ponytail: batch-scoped decisions; cross-batch completeness requires bounded tail buffering.
+	decisions := make(map[string]bool)
 	for _, rs := range req.ResourceSpans {
+		service := ""
+		resourceAttrs := map[string]string{}
+		if rs.Resource != nil {
+			for _, attribute := range rs.Resource.Attributes {
+				resourceAttrs[attribute.Key] = attribute.Value.GetStringValue()
+				if attribute.Key == "service.name" {
+					service = attribute.Value.GetStringValue()
+				}
+			}
+		}
 		for _, ss := range rs.ScopeSpans {
-			kept := ss.Spans[:0]
 			for _, s := range ss.Spans {
 				var status int32
 				if s.Status != nil {
 					status = int32(s.Status.Code)
 				}
-				dur := int64(s.EndTimeUnixNano) - int64(s.StartTimeUnixNano)
-				if keep(hex.EncodeToString(s.TraceId), status, dur) {
+				id := hex.EncodeToString(s.TraceId)
+				spanService := service
+				if spanService == "" {
+					for _, attribute := range s.Attributes {
+						if attribute.Key == "service.name" {
+							spanService = attribute.Value.GetStringValue()
+						}
+					}
+				}
+				attrs := make(map[string]string, len(resourceAttrs)+len(s.Attributes))
+				for k, v := range resourceAttrs {
+					attrs[k] = v
+				}
+				for _, attr := range s.Attributes {
+					attrs[attr.Key] = attr.Value.GetStringValue()
+				}
+				env, resource := samplingScope(s.Name, attrs)
+				keepSpan := keep(id, spanService, env, resource, status, int32(s.Kind), int64(s.EndTimeUnixNano)-int64(s.StartTimeUnixNano))
+				decisions[id] = decisions[id] || keepSpan
+			}
+		}
+	}
+	total := 0
+	for _, rs := range req.ResourceSpans {
+		for _, ss := range rs.ScopeSpans {
+			kept := ss.Spans[:0]
+			for _, s := range ss.Spans {
+				if decisions[hex.EncodeToString(s.TraceId)] {
 					kept = append(kept, s)
 					total++
 				}
@@ -249,8 +382,8 @@ type otlpResourceFields struct {
 type otlpKeyValue struct {
 	Key   string `json:"key"`
 	Value struct {
-		StringValue *string `json:"stringValue"`
-		IntValue    *string `json:"intValue"` // int64 vira string no OTLP/JSON
+		StringValue *string      `json:"stringValue"`
+		IntValue    *json.Number `json:"intValue"` // SDKs emit both quoted and numeric integers.
 	} `json:"value"`
 }
 type otlpSpanFields struct {
@@ -310,6 +443,42 @@ func (h *HTTPReceiver) tapAndSampleJSON(body []byte, clientIP string) (outBody [
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return nil, 0, false
 	}
+	// Bound by the already-limited request body; decisions span resources/scopes.
+	decisions := make(map[string]bool)
+	if h.traceSampler != nil {
+		for _, rs := range doc.ResourceSpans {
+			var resource otlpResourceFields
+			_ = json.Unmarshal(rs.Resource, &resource)
+			resourceAttrs := kvToMap(resource.Attributes)
+			service := resourceAttrs["service.name"]
+			for _, ss := range rs.ScopeSpans {
+				for _, raw := range ss.Spans {
+					var f otlpSpanFields
+					if json.Unmarshal(raw, &f) != nil {
+						continue
+					}
+					var status int32
+					if f.Status != nil {
+						status = int32(f.Status.Code)
+					}
+					id := strings.ToLower(f.TraceID)
+					spanService := service
+					if spanService == "" {
+						spanService = kvToMap(f.Attributes)["service.name"]
+					}
+					attrs := kvToMap(f.Attributes)
+					for key, value := range resourceAttrs {
+						if _, exists := attrs[key]; !exists {
+							attrs[key] = value
+						}
+					}
+					env, resource := samplingScope(f.Name, attrs)
+					keepSpan := h.sampleTraceScope(id, spanService, env, resource, status, int32(f.Kind), atoiNano(f.EndTimeUnixNano)-atoiNano(f.StartTimeUnixNano))
+					decisions[id] = decisions[id] || keepSpan
+				}
+			}
+		}
+	}
 	// Resolve o pod emissor pelo IP de origem UMA vez (todos os resourceSpans do
 	// request vêm da mesma conexão = mesmo pod). Só preenche o que faltar.
 	var rNs, rPod, rWorkload, rNode string
@@ -318,16 +487,26 @@ func (h *HTTPReceiver) tapAndSampleJSON(body []byte, clientIP string) (outBody [
 		rNs, rPod, rWorkload, rNode, rok = h.resolver.ResolveIPMeta(clientIP)
 	}
 	injected := false
+	verified := h.primaryMetadata(clientIP)
 	var allSpans []*collectorv1.Span
 	for ri := range doc.ResourceSpans {
 		rs := &doc.ResourceSpans[ri]
+		if raw, changed := stampJSONPrimary(rs.Resource, verified); changed {
+			rs.Resource = raw
+			injected = true
+		}
+		resourceAttrs := map[string]string{}
 		var service, env, namespace, pod, wlAttr, nodeAttr string
 		if len(rs.Resource) > 0 {
 			var rf otlpResourceFields
 			if json.Unmarshal(rs.Resource, &rf) == nil {
 				attrs := kvToMap(rf.Attributes)
+				resourceAttrs = attrs
 				service = attrs["service.name"]
 				env = attrs["deployment.environment"]
+				if env == "" {
+					env = attrs["deployment.environment.name"]
+				}
 				namespace = attrs["k8s.namespace.name"]
 				pod = attrs["k8s.pod.name"]
 				wlAttr = attrs["k8s.deployment.name"]
@@ -365,16 +544,24 @@ func (h *HTTPReceiver) tapAndSampleJSON(body []byte, clientIP string) (outBody [
 			ss := &rs.ScopeSpans[si]
 			keptSpans := ss.Spans[:0]
 			for _, raw := range ss.Spans {
+				if clean, changed := stampJSONPrimary(raw, nil); changed {
+					raw = clean
+					injected = true
+				}
 				var f otlpSpanFields
 				parsed := json.Unmarshal(raw, &f) == nil
 				var statusCode int32
-				var dur int64
 				if parsed {
 					if f.Status != nil {
 						statusCode = int32(f.Status.Code)
 					}
-					dur = atoiNano(f.EndTimeUnixNano) - atoiNano(f.StartTimeUnixNano)
 					if h.apmTap != nil {
+						attributes := mergeEnv(kvToMap(f.Attributes), env)
+						for key, value := range resourceAttrs {
+							if _, exists := attributes[key]; !exists || strings.HasPrefix(key, verifiedPrimaryPrefix) {
+								attributes[key] = value
+							}
+						}
 						allSpans = append(allSpans, &collectorv1.Span{
 							TraceId:       f.TraceID,
 							ServiceName:   service,
@@ -385,12 +572,12 @@ func (h *HTTPReceiver) tapAndSampleJSON(body []byte, clientIP string) (outBody [
 							StatusCode:    statusCode,
 							Namespace:     namespace,
 							Pod:           pod,
-							Attributes:    mergeEnv(kvToMap(f.Attributes), env),
+							Attributes:    attributes,
 						})
 					}
 				}
 				// Sem sampler → mantém tudo. Parse falhou → mantém (fail-safe).
-				if h.traceSampler == nil || !parsed || h.traceSampler(f.TraceID, statusCode, dur) {
+				if h.traceSampler == nil || !parsed || decisions[strings.ToLower(f.TraceID)] {
 					keptSpans = append(keptSpans, raw)
 					kept++
 				}
@@ -417,7 +604,7 @@ func kvToMap(kvs []otlpKeyValue) map[string]string {
 		if kv.Value.StringValue != nil {
 			m[kv.Key] = *kv.Value.StringValue
 		} else if kv.Value.IntValue != nil {
-			m[kv.Key] = *kv.Value.IntValue
+			m[kv.Key] = kv.Value.IntValue.String()
 		}
 	}
 	return m
@@ -586,6 +773,7 @@ func (h *HTTPReceiver) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/traces", h.handleTraces)
 	mux.HandleFunc("/v1/metrics", h.handleMetrics)
+	mux.HandleFunc("/v1/profile", h.handleProfile)
 	mux.HandleFunc("/v1/logs", h.handleLogs)
 	// Healthcheck simples — útil pro Helm chart probar antes de marcar pod
 	// como ready. Sem CORS porque é uso interno.
@@ -647,6 +835,26 @@ func (h *HTTPReceiver) corsOriginsForLog() string {
 
 func (h *HTTPReceiver) handleTraces(w http.ResponseWriter, r *http.Request) {
 	h.serveOTLP(w, r, "/v1/traces", func(body []byte, ct string, clientIP string) (int, error) {
+		observation := usage.Observation{ReceivedBytes: int64(len(body))}
+		if h.traceUsageObserver != nil && h.forwardRaw != nil {
+			var ok bool
+			observation.Received, ok = traceUsageSpans(body, ct)
+			observation.ParseFailed = !ok
+			defer func() { h.traceUsageObserver(observation) }()
+		}
+		if h.traceProcessor != nil {
+			processed, err := h.traceProcessor(ct, body)
+			if err != nil {
+				observation.ProcessingRejected = true
+				return http.StatusBadRequest, fmt.Errorf("trace processing rejected input")
+			}
+			if h.traceUsageObserver != nil && h.forwardRaw != nil && !bytes.Equal(body, processed) {
+				var ok bool
+				observation.Received, ok = traceUsageSpans(processed, ct)
+				observation.ParseFailed = !ok
+			}
+			body = processed
+		}
 		if h.forwardRaw != nil {
 			outBody := body
 			// Trace-agent: resume com 100% dos spans e amostra o que é
@@ -671,7 +879,8 @@ func (h *HTTPReceiver) handleTraces(w http.ResponseWriter, r *http.Request) {
 					if perr := unmarshalOTLP(body, ct, req); perr == nil {
 						// Carimba pod/namespace pelo IP de origem ANTES do tap (pra
 						// stats por pod) e da serialização (pra o backend gravar).
-						injected := h.enrichResourceAttrsProto(req, clientIP)
+						injected := h.stampPrimaryProto(req, clientIP)
+						injected = h.enrichResourceAttrsProto(req, clientIP) || injected
 						if h.apmTap != nil {
 							if spans := convertResourceSpans(req.ResourceSpans); len(spans) > 0 {
 								h.apmTap(spans)
@@ -679,7 +888,7 @@ func (h *HTTPReceiver) handleTraces(w http.ResponseWriter, r *http.Request) {
 						}
 						sampled := false
 						if h.traceSampler != nil {
-							if filterSampledSpans(req, h.traceSampler) == 0 {
+							if filterScopeSampledSpans(req, h.sampleTraceScope) == 0 {
 								h.tracesAccepted.Add(1)
 								writeOTLPOK(w, ct)
 								return http.StatusOK, nil
@@ -697,7 +906,14 @@ func (h *HTTPReceiver) handleTraces(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if err := h.forwardRaw("traces", ct, outBody); err != nil {
+				observation.ForwardFailed = true
 				return http.StatusBadGateway, fmt.Errorf("forward traces: %w", err)
+			}
+			if h.traceUsageObserver != nil {
+				var ok bool
+				observation.Retained, ok = traceUsageSpans(outBody, ct)
+				observation.ParseFailed = observation.ParseFailed || !ok
+				observation.ForwardedBytes = int64(len(outBody))
 			}
 			h.tracesAccepted.Add(1)
 			writeOTLPOK(w, ct)
@@ -725,11 +941,38 @@ func (h *HTTPReceiver) handleTraces(w http.ResponseWriter, r *http.Request) {
 // retry e poluam o agent log. Quando o backend ganhar essas pipelines, troca
 // a função de descarte por convertAndPush análogo ao de traces.
 func (h *HTTPReceiver) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	h.serveOTLP(w, r, "/v1/metrics", func(body []byte, ct string, _ string) (int, error) {
-		if h.forwardRaw != nil {
-			if err := h.forwardRaw("metrics", ct, body); err != nil {
-				return http.StatusBadGateway, fmt.Errorf("forward metrics: %w", err)
+	h.serveOTLP(w, r, "/v1/metrics", func(body []byte, ct string, clientIP string) (int, error) {
+		if h.forwardRaw == nil {
+			return http.StatusServiceUnavailable, errors.New("metrics forwarding unavailable")
+		}
+		var request metricspb.ExportMetricsServiceRequest
+		var err error
+		if ct == "application/json" {
+			err = protojson.Unmarshal(body, &request)
+		} else if ct == "application/x-protobuf" {
+			err = proto.Unmarshal(body, &request)
+		} else {
+			return http.StatusUnsupportedMediaType, errors.New("unsupported metrics content type")
+		}
+		if err != nil {
+			return http.StatusBadRequest, fmt.Errorf("invalid OTLP metrics: %w", err)
+		}
+		// The certless backend metrics intake supports OTLP JSON, not protobuf.
+		if ct == "application/x-protobuf" {
+			h.stampMetricsPrimary(&request, clientIP)
+			body, err = protojson.Marshal(&request)
+			if err != nil {
+				return http.StatusInternalServerError, fmt.Errorf("encode OTLP metrics: %w", err)
 			}
+			ct = "application/json"
+		} else {
+			body, err = h.stampMetricsJSON(body, clientIP)
+			if err != nil {
+				return http.StatusBadRequest, fmt.Errorf("stamp OTLP metrics: %w", err)
+			}
+		}
+		if err := h.forwardRaw("metrics", ct, body); err != nil {
+			return http.StatusBadGateway, fmt.Errorf("forward metrics: %w", err)
 		}
 		h.metricsAccepted.Add(1)
 		writeOTLPOK(w, ct)

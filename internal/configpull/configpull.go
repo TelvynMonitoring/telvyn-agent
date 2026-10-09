@@ -20,16 +20,19 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/ispwatch/collector/internal/apm/sampler"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/ispwatch/collector/internal/apm/processing"
 	"github.com/ispwatch/collector/internal/snmp"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
@@ -56,10 +59,15 @@ type PostgresTargetRegistry interface {
 
 // Config controla o cliente.
 type Config struct {
-	Endpoint     string        // base URL do servidor (ex: https://quarkus:8444)
-	CollectorID  string        // UUID do collector (vai como query param + cert OU)
-	TenantID     string        // pra logging + query param + cert CN
-	PollInterval time.Duration // entre pulls (default 10s)
+	ApplyAPMPrimaryTags    func([]string) error
+	APMPrimaryTagSources   func() []string
+	ApplyAPMProcessing     func(processing.Policy) error
+	ApplyAPMSampling       func(float64, time.Duration) error
+	ApplyAPMSamplingPolicy func(sampler.Policy) error
+	Endpoint               string        // base URL do servidor (ex: https://quarkus:8444)
+	CollectorID            string        // UUID do collector (vai como query param + cert OU)
+	TenantID               string        // pra logging + query param + cert CN
+	PollInterval           time.Duration // entre pulls (default 10s)
 
 	// Phase 5b — material mTLS. Quando ClientCert/ClientKey estão setados e
 	// HTTPClient é nil, o pacote constrói um *http.Client com tls.Config
@@ -141,9 +149,15 @@ func Run(ctx context.Context, cfg Config, applier Applier) error {
 }
 
 type pullResponse struct {
-	Version        int64         `json:"version"`
-	AddedOrUpdated []pulledCheck `json:"added_or_updated"`
-	DeletedIds     []string      `json:"deleted_ids"`
+	APMProcessing  *processingEnvelope `json:"apm_processing"`
+	APMPrimaryTags *struct {
+		Version int64    `json:"version"`
+		Keys    []string `json:"keys"`
+	} `json:"apm_primary_tags"`
+	APMSampling    *samplingPolicy `json:"apm_sampling"`
+	Version        int64           `json:"version"`
+	AddedOrUpdated []pulledCheck   `json:"added_or_updated"`
+	DeletedIds     []string        `json:"deleted_ids"`
 	// NDM Fase 2 — conjunto COMPLETO de perfis SNMP custom do tenant. O backend
 	// só manda no caminho não-short-circuit; o agente faz replace atômico do
 	// overlay dinâmico. Ausente nas versões antigas do backend (json zero = nil).
@@ -155,6 +169,20 @@ type pullResponse struct {
 	ShouldUpdate   bool             `json:"should_update"`
 	EnabledModules []string         `json:"enabled_modules"`
 	SnmpTests      []pulledSnmpTest `json:"snmp_tests"`
+}
+
+type samplingPolicy struct {
+	BudgetRevision        string  `json:"budget_revision"`
+	Mode                  string  `json:"mode"`
+	TargetTracesPerSecond float64 `json:"target_traces_per_second"`
+	Version               int64   `json:"version"`
+	BaseRate              float64 `json:"base_rate"`
+	SlowThresholdMs       int64   `json:"slow_threshold_ms"`
+}
+
+type processingEnvelope struct {
+	Revision string            `json:"revision"`
+	Policy   processing.Policy `json:"policy"`
 }
 
 // pulledProfile é um perfil SNMP custom entregue pelo config-pull.
@@ -211,6 +239,27 @@ func pullOnce(
 	applier Applier,
 	log *slog.Logger,
 ) error {
+	if cfg.APMPrimaryTagSources != nil {
+		keys := cfg.APMPrimaryTagSources()
+		if len(keys) > 256 {
+			return fmt.Errorf("too many primary metadata sources")
+		}
+		body, _ := json.Marshal(map[string]any{"keys": keys})
+		reportURL := fmt.Sprintf("%s/api/collector/v1/config/apm-primary-tags-sources?tenant_id=%s&collector_id=%s", strings.TrimRight(cfg.Endpoint, "/"), url.QueryEscape(cfg.TenantID), url.QueryEscape(cfg.CollectorID))
+		report, err := http.NewRequestWithContext(ctx, http.MethodPost, reportURL, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		report.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(report)
+		if err != nil {
+			return err
+		}
+		response.Body.Close()
+		if response.StatusCode >= 400 && response.StatusCode != 404 {
+			return fmt.Errorf("metadata source report returned %d", response.StatusCode)
+		}
+	}
 	since := sinceVer.Load()
 	u := fmt.Sprintf("%s/api/collector/v1/config?tenant_id=%s&collector_id=%s&since=%d",
 		cfg.Endpoint,
@@ -250,6 +299,91 @@ func pullOnce(
 	if cfg.PolicyChanged != nil && r.EnabledModules != nil {
 		cfg.PolicyChanged(r.EnabledModules)
 	}
+	if r.APMSampling != nil && (cfg.ApplyAPMSampling != nil || cfg.ApplyAPMSamplingPolicy != nil) {
+		p := r.APMSampling
+		if p.Version < 1 || p.SlowThresholdMs < 0 || p.SlowThresholdMs > 600000 {
+			return fmt.Errorf("invalid sampling policy")
+		}
+		if p.Mode == "" {
+			p.Mode = "static"
+		}
+		if cfg.ApplyAPMSamplingPolicy != nil {
+			if err := cfg.ApplyAPMSamplingPolicy(sampler.Policy{Mode: p.Mode, BaseRate: p.BaseRate, SlowThresholdMs: p.SlowThresholdMs, TargetTracesPerSecond: p.TargetTracesPerSecond, BudgetRevision: p.BudgetRevision}); err != nil {
+				return err
+			}
+		} else {
+			if p.Mode != "static" {
+				return fmt.Errorf("adaptive sampling requires policy-capable agent")
+			}
+			if err := cfg.ApplyAPMSampling(p.BaseRate, time.Duration(p.SlowThresholdMs)*time.Millisecond); err != nil {
+				return err
+			}
+		}
+		payload, _ := json.Marshal(map[string]interface{}{"version": p.Version, "mode": p.Mode, "target_traces_per_second": p.TargetTracesPerSecond, "budget_revision": p.BudgetRevision})
+		ackURL := fmt.Sprintf("%s/api/collector/v1/config/apm-sampling-applied?tenant_id=%s&collector_id=%s", strings.TrimRight(cfg.Endpoint, "/"), url.QueryEscape(cfg.TenantID), url.QueryEscape(cfg.CollectorID))
+		ack, err := http.NewRequestWithContext(ctx, http.MethodPost, ackURL, bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		ack.Header.Set("Content-Type", "application/json")
+		ackResp, err := client.Do(ack)
+		if err != nil {
+			return err
+		}
+		ackResp.Body.Close()
+		if ackResp.StatusCode >= 400 {
+			return fmt.Errorf("sampling applied ACK returned %d", ackResp.StatusCode)
+		}
+	}
+	if r.APMProcessing != nil && cfg.ApplyAPMProcessing != nil {
+		p := r.APMProcessing
+		if len(p.Revision) != 64 || strings.Trim(p.Revision, "0123456789abcdef") != "" {
+			return fmt.Errorf("invalid processing revision")
+		}
+		if err := cfg.ApplyAPMProcessing(p.Policy); err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(map[string]string{"revision": p.Revision})
+		ackURL := fmt.Sprintf("%s/api/collector/v1/config/apm-processing-applied?tenant_id=%s&collector_id=%s", strings.TrimRight(cfg.Endpoint, "/"), url.QueryEscape(cfg.TenantID), url.QueryEscape(cfg.CollectorID))
+		ack, err := http.NewRequestWithContext(ctx, http.MethodPost, ackURL, bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		ack.Header.Set("Content-Type", "application/json")
+		ackResp, err := client.Do(ack)
+		if err != nil {
+			return err
+		}
+		ackResp.Body.Close()
+		if ackResp.StatusCode >= 400 {
+			return fmt.Errorf("processing applied ACK returned %d", ackResp.StatusCode)
+		}
+	}
+
+	if r.APMPrimaryTags != nil && cfg.ApplyAPMPrimaryTags != nil {
+		p := r.APMPrimaryTags
+		if p.Version < 1 {
+			return fmt.Errorf("invalid primary tags version")
+		}
+		if err := cfg.ApplyAPMPrimaryTags(p.Keys); err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(map[string]int64{"version": p.Version})
+		ackURL := fmt.Sprintf("%s/api/collector/v1/config/apm-primary-tags-applied?tenant_id=%s&collector_id=%s", strings.TrimRight(cfg.Endpoint, "/"), url.QueryEscape(cfg.TenantID), url.QueryEscape(cfg.CollectorID))
+		ack, err := http.NewRequestWithContext(ctx, http.MethodPost, ackURL, bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		ack.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(ack)
+		if err != nil {
+			return err
+		}
+		response.Body.Close()
+		if response.StatusCode >= 400 {
+			return fmt.Errorf("primary tags applied ACK returned %d", response.StatusCode)
+		}
+	}
 
 	// F2b — atualização remota solicitada. O servidor faz serve-once, então isto
 	// vem true UMA vez. O agente (sem privilégio) só escreve o marcador; quem
@@ -288,6 +422,10 @@ func pullOnce(
 		}
 		// params + static_tags JSONB → map<string,string>
 		cb.Params = jsonObjectToStringMap(p.Params)
+		if cb.Params == nil {
+			cb.Params = map[string]string{}
+		}
+		cb.Params["_config_version"] = fmt.Sprintf("%d", p.ConfigVersion)
 		cb.StaticTags = jsonObjectToStringMap(p.StaticTags)
 		// Injeta target pros checks remotos (snmp.*, icmp.*) — preferindo
 		// external_id (IP real) sobre hostname. Esse fallback também existia

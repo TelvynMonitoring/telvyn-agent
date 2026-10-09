@@ -97,7 +97,8 @@ type Client struct {
 	// inspecionar Version, Community, MsgFlags etc.
 	snmp *gosnmp.GoSNMP
 
-	driver snmpDriver
+	driver   snmpDriver
+	requests uint64
 
 	closed bool
 }
@@ -171,13 +172,15 @@ func NewClient(p Params) (*Client, error) {
 		return nil, fmt.Errorf("snmp: versao desconhecida %q (validas: v2c, v3)", p.Version)
 	}
 
-	return &Client{
+	client := &Client{
 		target:  target,
 		host:    host,
 		timeout: timeout,
 		snmp:    gs,
 		driver:  &gosnmpAdapter{s: gs},
-	}, nil
+	}
+	gs.OnSent = func(*gosnmp.GoSNMP) { client.requests++ }
+	return client, nil
 }
 
 // newClientWithDriver e usado apenas pelos testes do pacote — permite
@@ -201,6 +204,9 @@ func (c *Client) Target() string { return c.target }
 // Host retorna apenas o host (sem porta). E o que vira HostId nas metricas
 // para que dashboards agreguem por equipamento, nao por tupla de transport.
 func (c *Client) Host() string { return c.host }
+
+// Requests counts actual transmitted packets, including retries.
+func (c *Client) Requests() uint64 { return c.requests }
 
 // Connect abre o socket UDP. Idempotente — chamadas repetidas sao no-ops
 // se a conexao ja esta viva.

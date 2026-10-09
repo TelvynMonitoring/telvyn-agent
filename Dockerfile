@@ -34,7 +34,8 @@ RUN protoc --proto_path=proto/v1 \
 # Static build (CGO_ENABLED=0) so we can run on distroless/scratch.
 # -trimpath strips local paths from the binary; -s -w shrinks size; -X stamps
 # the Version variable consumed by main.go for the startup log.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath \
       -ldflags "-s -w -X main.Version=${VERSION}" \
       -o /out/collector \

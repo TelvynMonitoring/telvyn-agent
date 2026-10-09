@@ -3,11 +3,13 @@
 package clock
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"math"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -28,12 +30,21 @@ var defaultServers = []string{
 // the unprivileged SNTP exchange. It never changes the host clock, executes a
 // subprocess, or requires CAP_SYS_TIME.
 func OffsetSeconds(ctx context.Context) (float64, bool) {
+	var offsets []float64
 	for _, server := range ntpServers(os.Getenv("ISPWATCH_NTP_SERVERS")) {
 		if offset, ok := query(ctx, server); ok {
-			return offset, true
+			offsets = append(offsets, offset)
 		}
 	}
-	return 0, false
+	if len(offsets) == 0 {
+		return 0, false
+	}
+	sort.Float64s(offsets)
+	mid := len(offsets) / 2
+	if len(offsets)%2 == 0 {
+		return (offsets[mid-1] + offsets[mid]) / 2, true
+	}
+	return offsets[mid], true
 }
 
 func ntpServers(raw string) []string {
@@ -80,6 +91,7 @@ func query(ctx context.Context, server string) (float64, bool) {
 	packet[0] = 0x23
 	t1 := time.Now()
 	putTimestamp(packet[40:48], t1)
+	origin := append([]byte(nil), packet[40:48]...)
 	if _, err := conn.Write(packet); err != nil {
 		return 0, false
 	}
@@ -90,7 +102,7 @@ func query(ctx context.Context, server string) (float64, bool) {
 		return 0, false
 	}
 	// Mode 4 is server response; stratum 0 is a Kiss-o'-Death packet.
-	if packet[0]&0x7 != 4 || packet[1] == 0 {
+	if packet[0]&0x7 != 4 || packet[0]>>6 == 3 || packet[1] == 0 || packet[1] >= 16 || !bytes.Equal(packet[24:32], origin) {
 		return 0, false
 	}
 
