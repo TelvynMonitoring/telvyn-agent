@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.35] - 2026-10-10
+## [0.4.36] - 2026-10-10
 
 - Ship the Proxmox HTTPS collector in official images and Linux archives, with
   package integrity verification, local endpoint approval and bounded execution.
@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unless the integration is explicitly enabled.
 - Align the discovery regression check with the existing `mikrotik-router`
   profile name. Version 0.4.34 was blocked by validation before artifact publication.
+- Run the package builder on the build host when cross-compiling ARM64 archives;
+  the 0.4.35 archive pipeline was blocked before publication.
 
 ## Earlier additions
 
