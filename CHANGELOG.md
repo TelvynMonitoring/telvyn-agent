@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.34] - 2026-10-10
+## [0.4.35] - 2026-10-10
 
 - Ship the Proxmox HTTPS collector in official images and Linux archives, with
   package integrity verification, local endpoint approval and bounded execution.
@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract. Configure the target and read-only credentials in Servers in the portal.
 - Add opt-in Helm settings for Proxmox; existing installations remain unchanged
   unless the integration is explicitly enabled.
+- Align the discovery regression check with the existing `mikrotik-router`
+  profile name. Version 0.4.34 was blocked by validation before artifact publication.
 
 ## Earlier additions
 
