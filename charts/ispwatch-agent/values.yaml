@@ -12,6 +12,12 @@ ingest:
 # Cluster name — vira tag em todas as métricas emitidas + hostname do
 # noc_host (cluster/node). Customize por instalação.
 clusterName: "default"
+
+# Read-only Proxmox collection configured from Servers in the portal.
+# The bundled Python process is trusted code, not an OS sandbox.
+proxmox:
+  enabled: false
+  allowedEndpoints: ""
 # Operator host metadata; only selected APM primary tags emit values.
 hostTags: {}
 

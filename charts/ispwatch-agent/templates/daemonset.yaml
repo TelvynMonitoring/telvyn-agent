@@ -94,6 +94,12 @@ spec:
               value: {{ .Values.ebpfTracing.kubeletInsecure | default "1" | quote }}
             - name: COLLECTOR_LOG_LEVEL
               value: {{ .Values.logLevel | default "info" | quote }}
+            {{- if .Values.proxmox.enabled }}
+            - name: TELVYN_EXTERNAL_EXECUTION_MODE
+              value: approved-unisolated
+            - name: TELVYN_EXTERNAL_APPROVED_ENDPOINTS
+              value: {{ required "proxmox.allowedEndpoints must contain the approved HTTPS endpoint" .Values.proxmox.allowedEndpoints | quote }}
+            {{- end }}
             {{- if .Values.logs.enabled }}
             # Coleta de logs: taila /var/log/pods (CRI) → OTLP JSON + Bearer.
             - name: ISPWATCH_LOGS_ENABLED

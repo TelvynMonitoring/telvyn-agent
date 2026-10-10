@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ispwatch/collector/internal/inventory"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
@@ -105,6 +106,7 @@ type Runtime struct {
 	// instanceDiscoveryPusher informa os bancos lógicos acessíveis de uma
 	// instância. O backend usa o snapshot para materializar os checks filhos.
 	instanceDiscoveryPusher InstanceDiscoveryPusher
+	externalInventoryPusher func(context.Context, inventory.Snapshot) error
 }
 
 // StatusReporter recebe o estado de um check quando ele MUDA (passou a falhar,
@@ -608,6 +610,15 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			return
 		}
 		timedOut := runErr == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded)
+		if provider, ok := c.(interface{ InventoryReport() *inventory.Snapshot }); ok {
+			if report := provider.InventoryReport(); report != nil {
+				if err != nil || timedOut {
+					report.Complete = false
+					report.Resources = []inventory.Resource{}
+				}
+				r.pushExternalInventory(ctx, *report)
+			}
+		}
 		if err != nil {
 			// SNMP returns only collection diagnostics on failure; keep its error
 			// and circuit breaker while exposing reachability and packet counts.
@@ -844,9 +855,27 @@ func (r *Runtime) SetStatusReporter(f StatusReporter) {
 	r.mu.Unlock()
 }
 
-// SetExecutionReporter instala o consumidor dos eventos de cada execução.
-// Além da observabilidade agregada, o collector pode usá-los para manter o
-// último check do host atualizado mesmo quando o estado não muda.
+func (r *Runtime) SetExternalInventoryPusher(f func(context.Context, inventory.Snapshot) error) {
+	r.mu.Lock()
+	r.externalInventoryPusher = f
+	r.mu.Unlock()
+}
+
+func (r *Runtime) pushExternalInventory(ctx context.Context, report inventory.Snapshot) {
+	r.mu.Lock()
+	push := r.externalInventoryPusher
+	r.mu.Unlock()
+	if push == nil || ctx.Err() != nil {
+		return
+	}
+	postCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := push(postCtx, report); err != nil {
+		r.log.Warn("external inventory delivery failed", "check_id", report.CheckID)
+	}
+}
+
+// SetExecutionReporter installs the consumer of each check's execution status.
 func (r *Runtime) SetExecutionReporter(f ExecutionReporter) {
 	r.mu.Lock()
 	r.executionReporter = f
