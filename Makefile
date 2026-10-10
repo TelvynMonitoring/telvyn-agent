@@ -98,6 +98,7 @@ release-ci:
 	cp packaging/install.sh $(DIST_DIR)/
 	cp LICENSE THIRD_PARTY_NOTICES.md $(DIST_DIR)/
 	cp packaging/SECURITY-NOTE.md $(DIST_DIR)/
+	go run ./cmd/package-proxmox -out $(DIST_DIR)/integrations -arch $(GOARCH)
 	cd dist && tar -czf $(DIST_NAME).tar.gz $(DIST_NAME)
 	cd dist && sha256sum $(DIST_NAME).tar.gz > $(DIST_NAME).tar.gz.sha256
 	@echo "==> Built: dist/$(DIST_NAME).tar.gz"

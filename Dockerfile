@@ -41,6 +41,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
       -o /out/collector \
       ./cmd/collector
 
+RUN go run ./cmd/package-proxmox -out /out/integrations -arch ${TARGETARCH:-amd64}
+
 # ---------- Stage 2: runtime ----------
 # Alpine (not distroless) so the entrypoint shell can expand env vars into
 # CLI flags — keeps the Go binary simple (flag-only, no env-aware config)
@@ -52,7 +54,7 @@ LABEL org.opencontainers.image.description="On-prem agent that connects via mTLS
 LABEL org.opencontainers.image.source="https://github.com/ispwatch/collector"
 LABEL org.opencontainers.image.licenses="proprietary"
 
-RUN apk add --no-cache ca-certificates tini \
+RUN apk add --no-cache ca-certificates tini python3 \
  && addgroup -S ispwatch \
  && adduser -S -G ispwatch -u 10001 ispwatch
 
@@ -85,6 +87,10 @@ RUN apk add --no-cache --virtual .trivy-build wget tar \
  && apk del .trivy-build
 
 COPY --from=build /out/collector /usr/local/bin/collector
+COPY --from=build /out/integrations /opt/telvyn/integrations
+ENV TELVYN_EXTERNAL_PACKAGE_DIR=/opt/telvyn/integrations/packages \
+    TELVYN_EXTERNAL_TRUST_DIR=/opt/telvyn/integrations/trust \
+    TELVYN_EXTERNAL_PYTHON=/usr/bin/python3
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 # O repositório pode ser checkoutado com CRLF no Windows; o shebang precisa
 # terminar em LF para o tini executar o script dentro do Alpine.

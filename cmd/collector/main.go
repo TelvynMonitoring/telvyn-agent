@@ -874,6 +874,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 	base = strings.TrimRight(strings.TrimSuffix(base, "/api/ingest/v1"), "/")
 
 	runtime := checks.New(ctx, log, checks.Default, out)
+	runtime.SetExternalInventoryPusher(exporter.PostExternalInventory)
 	operational := collectorobs.New()
 	runtime.SetExecutionReporter(func(report checks.ExecutionReport) {
 		operational.Observe(report.OK, report.TimedOut, report.Duration, report.At)
