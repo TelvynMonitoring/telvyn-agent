@@ -157,6 +157,14 @@ func TestIcmpPing_Run_Loopback(t *testing.T) {
 		if _, ok := expected[m.MetricName]; ok {
 			expected[m.MetricName] = true
 		}
+		// RTT vem do tracker monotônico (icmp_rtt.go): em loopback tem que ser
+		// positivo e pequeno — nunca negativo nem segundos de salto de relógio.
+		if m.MetricName == "icmp.rtt_avg_ms" && (m.Value <= 0 || m.Value >= 1000) {
+			t.Errorf("icmp.rtt_avg_ms=%v fora de (0, 1000) em loopback", m.Value)
+		}
+		if m.MetricName == "icmp.loss_pct" && m.Value != 0 {
+			t.Errorf("icmp.loss_pct=%v want 0 em loopback", m.Value)
+		}
 	}
 	for name, present := range expected {
 		if !present {

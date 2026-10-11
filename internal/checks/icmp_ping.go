@@ -148,6 +148,10 @@ func (c *icmpPingCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error) 
 	// que muitos kernels não trazem default.
 	pinger.SetPrivileged(true)
 
+	// RTT do pro-bing usa relógio de parede e herda saltos de NTP; ver icmp_rtt.go.
+	rtt := newRTTTracker()
+	rtt.attach(pinger)
+
 	done := make(chan error, 1)
 	go func() {
 		done <- pinger.Run()
@@ -167,12 +171,13 @@ func (c *icmpPingCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error) 
 	}
 
 	stats := pinger.Statistics()
+	rtts := rtt.summary()
 	now := timestamppb.Now()
 
-	rttAvgMs := durationToMs(stats.AvgRtt)
-	rttMinMs := durationToMs(stats.MinRtt)
-	rttMaxMs := durationToMs(stats.MaxRtt)
-	rttStdDevMs := durationToMs(stats.StdDevRtt)
+	rttAvgMs := durationToMs(rtts.avg)
+	rttMinMs := durationToMs(rtts.min)
+	rttMaxMs := durationToMs(rtts.max)
+	rttStdDevMs := durationToMs(rtts.stdDev)
 	// V0: jitter = StdDevRtt como proxy. RFC 3550 inter-arrival jitter via
 	// pinger.OnRecv samples é refinamento futuro quando ops pedir.
 	jitterMs := rttStdDevMs
