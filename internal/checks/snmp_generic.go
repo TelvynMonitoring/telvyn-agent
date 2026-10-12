@@ -23,12 +23,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ispwatch/collector/internal/snmp"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // DeviceMetadataPusher emite a identidade do device (metadata.device) pro gateway.
@@ -56,10 +59,13 @@ type snmpGenericRunner interface {
 	Collect(ctx context.Context, profile *snmp.Profile, hostID string, staticTags map[string]string) ([]*collectorv1.Metric, error)
 	CollectDeviceMetadata(ctx context.Context, profile *snmp.Profile) map[string]string
 	Close() error
+	Requests() uint64
 }
 
 // realRunner conecta o snmp.Client real a snmpGenericRunner.
 type realRunner struct{ c *snmp.Client }
+
+func (r *realRunner) Requests() uint64 { return r.c.Requests() }
 
 func (r *realRunner) GetSysObjectID(ctx context.Context) (string, error) {
 	pdus, err := r.c.Get(ctx, []string{"1.3.6.1.2.1.1.2.0"})
@@ -108,11 +114,13 @@ type snmpGenericCheck struct {
 	profileID       string // "auto" ou nome explicito
 	clientFn        snmpClientFactory
 	disabledMetrics map[string]bool // métricas desabilitadas pelo usuário (per-host)
+	configVersion   int64
 
 	mu             sync.Mutex
 	resolved       *snmp.Profile // populado lazy quando profileID="auto"
 	resolveAttempt bool          // ja tentamos auto-detect (sucesso ou fallback)
 	lastMetaEmit   time.Time     // throttle do emit de metadata.device (15min)
+	lastRun        time.Time
 }
 
 // newSnmpGenericCheck e a Factory registrada em init() para "snmp.generic".
@@ -178,6 +186,7 @@ func newSnmpGenericCheckWithFactory(cfg *collectorv1.CheckConfig, factory snmpCl
 		profileID:       profileID,
 		clientFn:        factory,
 		disabledMetrics: disabled,
+		configVersion:   func() int64 { value, _ := strconv.ParseInt(params["_config_version"], 10, 64); return value }(),
 	}, nil
 }
 
@@ -192,22 +201,62 @@ func (c *snmpGenericCheck) Tags() map[string]string { return c.staticTags }
 // Cliente UDP e construido (e fechado) por execucao — mantemos o Client
 // curto no escopo para nao reter socket entre intervals (intervals de
 // 30s+ sao longos comparados ao custo de open/close UDP).
-func (c *snmpGenericCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
+func (c *snmpGenericCheck) Run(ctx context.Context) (metrics []*collectorv1.Metric, runErr error) {
+	started := time.Now()
 	runner, err := c.clientFn(c.params)
 	if err != nil {
 		return nil, err
 	}
 	defer runner.Close()
+	oid, probeErr := runner.GetSysObjectID(ctx)
+	reachable := probeErr == nil && oid != ""
+	defer func() {
+		if ctx.Err() == context.Canceled {
+			return
+		}
+		up := 0.0
+		if reachable {
+			up = 1
+		}
+		collected := 0.0
+		if runErr == nil {
+			collected = 1
+		}
+		values := map[string]float64{
+			"snmp.device.reachable": up, "snmp.device.unreachable": 1 - up,
+			"snmp.collector.up":      collected,
+			"snmp.devices_monitored": 1, "snmp.collector.check_duration_seconds": time.Since(started).Seconds(),
+			"snmp.collector.requests": float64(runner.Requests()), "snmp.collector.submitted_metrics": float64(len(metrics)),
+		}
+		if c.configVersion > 0 {
+			values["snmp.collector.config_version_executed"] = float64(c.configVersion)
+			values["snmp.collector.config_execution_success"] = collected
+		}
+		if !c.lastRun.IsZero() {
+			values["snmp.collector.check_interval_seconds"] = started.Sub(c.lastRun).Seconds()
+		}
+		c.lastRun = started
+		for name, value := range values {
+			tags := maps.Clone(c.staticTags)
+			if strings.HasPrefix(name, "snmp.collector.config_") {
+				if tags == nil {
+					tags = map[string]string{}
+				}
+				tags["config_version"] = strconv.FormatInt(c.configVersion, 10)
+			}
+			metrics = append(metrics, &collectorv1.Metric{MetricName: name, Value: value, HostId: c.hostID, Source: "snmp", Time: timestamppb.Now(), Tags: tags})
+		}
+	}()
 
 	profile, err := c.resolveProfile(ctx, runner)
 	if err != nil {
 		return nil, err
 	}
-
-	metrics, err := runner.Collect(ctx, profile, c.hostID, c.staticTags)
+	metrics, err = runner.Collect(ctx, profile, c.hostID, c.staticTags)
 	if err != nil {
 		return nil, err
 	}
+	reachable = reachable || len(metrics) > 0
 
 	// Filter out disabled metrics (per-host toggle from noc_host_disabled_metrics).
 	if len(c.disabledMetrics) > 0 && len(metrics) > 0 {
@@ -218,6 +267,25 @@ func (c *snmpGenericCheck) Run(ctx context.Context) ([]*collectorv1.Metric, erro
 			}
 		}
 		metrics = filtered
+	}
+	expected := profile.MetricFamilies()
+	for name := range c.disabledMetrics {
+		delete(expected, name)
+	}
+	observed := map[string]bool{}
+	for _, metric := range metrics {
+		if expected[metric.MetricName] {
+			observed[metric.MetricName] = true
+		}
+	}
+	for name, value := range map[string]float64{"snmp.collector.profile_metric_expected": float64(len(expected)), "snmp.collector.profile_metric_observed": float64(len(observed))} {
+		tags := maps.Clone(c.staticTags)
+		if tags == nil {
+			tags = map[string]string{}
+		}
+		tags["snmp_profile"] = profile.Name
+		tags["config_version"] = strconv.FormatInt(c.configVersion, 10)
+		metrics = append(metrics, &collectorv1.Metric{MetricName: name, Value: value, HostId: c.hostID, Source: "snmp", Time: timestamppb.Now(), Tags: tags})
 	}
 
 	// Side-channel: emite a identidade do device (metadata.device) pro gateway,

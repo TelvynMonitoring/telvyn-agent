@@ -26,3 +26,4 @@ def result(metrics=None, inventory=None, status="ok", coverage=None, error=None)
         "protocol_version": 1, "metrics": metrics or [], "inventory": inventory or [],
         "status": status, "coverage": coverage or {}, "error": error,
     }
+

@@ -178,6 +178,14 @@ func (a *Agent) pushInventory(ctx context.Context) {
 		return
 	}
 	a.log.Info("inventário Kubernetes enviado", "count", len(resources))
+	if a.cfg.KubeState {
+		metrics := a.inventoryMetrics(resources)
+		if len(metrics) > 0 {
+			if err := a.ingest.PostMetrics(ctx, metrics); err != nil {
+				a.log.Warn("métricas operacionais Kubernetes falharam", "err", err)
+			}
+		}
+	}
 }
 
 type resourceList struct {
@@ -251,16 +259,114 @@ func inventoryResource(kind string, raw []byte) (map[string]any, error) {
 		"conditions":       []any{},
 		"deleted":          false,
 	}
+	// Only operational fields: never forward environment, secrets or full manifests.
+	details := map[string]any{"created_at": stringField(metadata, "creationTimestamp")}
 	if status, ok := obj["status"].(map[string]any); ok {
+		if kind == "Node" {
+			if addresses, ok := status["addresses"].([]any); ok {
+				details["addresses"] = addresses
+			}
+			if images, ok := status["images"].([]any); ok {
+				details["images"] = images
+			}
+		}
+		// API integer status fields use omitempty: absent means zero on an
+		// observed status object, not an unavailable collection.
+		defaults := map[string][]string{
+			"Deployment": {"replicas", "readyReplicas", "availableReplicas", "updatedReplicas", "unavailableReplicas"},
+			"ReplicaSet": {"replicas", "readyReplicas", "fullyLabeledReplicas"},
+			"DaemonSet":  {"currentNumberScheduled", "desiredNumberScheduled", "numberReady", "numberAvailable", "numberUnavailable", "numberMisscheduled", "updatedNumberScheduled"},
+			"Job":        {"active", "succeeded", "failed"},
+		}
+		for _, key := range defaults[kind] {
+			details[key] = float64(0)
+		}
 		resource["phase"] = stringField(status, "phase")
 		resource["status"] = stringField(status, "reason")
 		if conditions, ok := status["conditions"].([]any); ok {
 			resource["conditions"] = conditions
 		}
+		for _, key := range []string{"podIP", "hostIP", "qosClass", "capacity", "allocatable", "nodeInfo", "replicas", "readyReplicas", "availableReplicas", "updatedReplicas", "unavailableReplicas", "fullyLabeledReplicas", "currentNumberScheduled", "desiredNumberScheduled", "numberReady", "numberAvailable", "numberUnavailable", "numberMisscheduled", "updatedNumberScheduled", "succeeded", "failed", "active", "startTime", "completionTime"} {
+			if value, exists := status[key]; exists {
+				details[key] = value
+			}
+		}
+		for _, family := range []string{"containerStatuses", "initContainerStatuses"} {
+			if states, ok := status[family].([]any); ok {
+				containers := []any{}
+				for _, item := range states {
+					if state, ok := item.(map[string]any); ok {
+						entry := map[string]any{}
+						for _, key := range []string{"name", "image", "imageID", "containerID", "ready", "restartCount", "state", "lastState", "started"} {
+							if value, exists := state[key]; exists {
+								entry[key] = value
+							}
+						}
+						containers = append(containers, entry)
+					}
+				}
+				key := "container_statuses"
+				if family == "initContainerStatuses" {
+					key = "init_container_statuses"
+				}
+				details[key] = containers
+			}
+		}
 	}
 	if spec, ok := obj["spec"].(map[string]any); ok {
+		if kind == "Service" {
+			for _, key := range []string{"clusterIP", "clusterIPs", "externalIPs", "sessionAffinity", "selector", "ports", "externalName"} {
+				if value, exists := spec[key]; exists {
+					details[key] = value
+				}
+			}
+			if status, ok := obj["status"].(map[string]any); ok {
+				if value, exists := status["loadBalancer"]; exists {
+					details["loadBalancer"] = value
+				}
+			}
+		}
+		if kind == "Deployment" {
+			details["paused"] = false
+		}
+		if kind == "Node" {
+			details["unschedulable"] = false
+		}
+		if volumes, ok := spec["volumes"].([]any); ok {
+			var claims []any
+			for _, item := range volumes {
+				volume, _ := item.(map[string]any)
+				if claim, ok := volume["persistentVolumeClaim"].(map[string]any); ok {
+					claims = append(claims, map[string]any{"volume": volume["name"], "claim": claim["claimName"], "read_only": claim["readOnly"]})
+				}
+			}
+			details["pvc_volumes"] = claims
+		}
 		resource["node_name"] = stringField(spec, "nodeName")
+		if value, exists := spec["replicas"]; exists {
+			details["desired_replicas"] = value
+		}
+		for _, key := range []string{"paused", "strategy", "type", "unschedulable", "tolerations", "priorityClassName"} {
+			if value, exists := spec[key]; exists {
+				details[key] = value
+			}
+		}
+		if template, ok := spec["template"].(map[string]any); ok {
+			if podSpec, ok := template["spec"].(map[string]any); ok {
+				spec = podSpec
+			}
+		}
+		if containers, ok := spec["containers"].([]any); ok {
+			entries := []any{}
+			for _, item := range containers {
+				if container, ok := item.(map[string]any); ok {
+					entries = append(entries, map[string]any{"name": container["name"], "image": container["image"], "resources": container["resources"]})
+				}
+			}
+			details["containers"] = entries
+		}
 	}
+	resource["details"] = details
 	if owners, ok := metadata["ownerReferences"].([]any); ok {
 		for _, owner := range owners {
 			if ref, ok := owner.(map[string]any); ok {
@@ -293,7 +399,7 @@ func mapField(m map[string]any, key string) map[string]any {
 // prefixo k8s. → o backend renomeia namespace→kube_namespace e o ponto vira
 // underscore no VM (k8s.namespace.pod_count → k8s_namespace_pod_count).
 func (a *Agent) pushKubeState(ctx context.Context) {
-	var metrics []*collectorv1.Metric
+	metrics := a.collectStateExtras(ctx)
 	if m, err := a.collectPodPhases(ctx); err != nil {
 		a.log.Warn("kube-state pods falhou", "err", err)
 	} else {
@@ -411,7 +517,7 @@ const maxListPages = 10
 // apiGetPaged faz GET paginado (continue token) num recurso do API server,
 // chamando decodePage por página (que devolve o próximo continue token). Cap
 // defensivo de páginas pra não varrer um cluster gigante num v1 sem watch.
-func (a *Agent) apiGetPaged(ctx context.Context, path string, decodePage func(body []byte) (cont string, err error)) error {
+func (a *Agent) apiGetPaged(ctx context.Context, path string, decodePage func(body []byte) (cont string, err error), accept ...string) error {
 	base := strings.TrimRight(a.cfg.APIServerURL, "/") + path
 	cont := ""
 	for page := 0; page < maxListPages; page++ {
@@ -419,7 +525,7 @@ func (a *Agent) apiGetPaged(ctx context.Context, path string, decodePage func(bo
 		if cont != "" {
 			url += "&continue=" + cont
 		}
-		body, err := a.apiGet(ctx, url)
+		body, err := a.apiGet(ctx, url, accept...)
 		if err != nil {
 			return err
 		}
@@ -437,7 +543,7 @@ func (a *Agent) apiGetPaged(ctx context.Context, path string, decodePage func(bo
 
 // apiGet faz um GET autenticado (SA token relido) no API server e devolve o
 // corpo (cap 32MB). Erro em status != 200.
-func (a *Agent) apiGet(ctx context.Context, rawURL string) ([]byte, error) {
+func (a *Agent) apiGet(ctx context.Context, rawURL string, accept ...string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
@@ -446,6 +552,14 @@ func (a *Agent) apiGet(ctx context.Context, rawURL string) ([]byte, error) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	req.Header.Set("Accept", "application/json")
+	if len(accept) > 0 {
+		req.Header.Set("Accept", accept[0])
+		if strings.Contains(accept[0], "as=Table") {
+			query := req.URL.Query()
+			query.Set("includeObject", "Metadata")
+			req.URL.RawQuery = query.Encode()
+		}
+	}
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return nil, err

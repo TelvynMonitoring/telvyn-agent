@@ -5,7 +5,7 @@ import "encoding/json"
 
 const MaxResources = 1000
 const MaxBodyBytes = 512 << 10
-const ConfigVersionParam = "__core_config_version"
+const ConfigVersionParam = "_config_version"
 
 type Resource struct {
 	ResourceID string `json:"resource_id"`

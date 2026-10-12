@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shirou/gopsutil/v4/disk"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/shirou/gopsutil/v4/disk"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -169,9 +169,36 @@ func TestLinuxSystem_EmitsLoadFamilies(t *testing.T) {
 		// Windows does not have load averages — skip rather than fail.
 		t.Skip("load.1 not present — platform may not support load averages")
 	}
-	for _, name := range []string{"load.1", "load.5", "load.15"} {
+	for _, name := range []string{"load.1", "load.5", "load.15", "load.norm.1", "load.norm.5", "load.norm.15", "system.uptime"} {
 		if !hasMetricName(metrics, name) {
 			t.Errorf("missing metric %q; got: %v", name, allMetricNames(metrics))
+		}
+	}
+	cores, ok := metricValue(metrics, "cpu.logical")
+	if !ok || cores <= 0 {
+		t.Fatal("missing logical CPU count")
+	}
+	for _, period := range []string{"1", "5", "15"} {
+		raw, _ := metricValue(metrics, "load."+period)
+		normalized, _ := metricValue(metrics, "load.norm."+period)
+		if normalized != raw/cores {
+			t.Fatalf("load.norm.%s = %v; want %v", period, normalized, raw/cores)
+		}
+	}
+}
+
+func TestLinuxSystemFileHandles(t *testing.T) {
+	c := &linuxSystemCheck{hostID: "node"}
+	metrics := c.fileHandleMetrics(timestamppb.Now(), "100\t20\t1000\n")
+	for name, want := range map[string]float64{"allocated": 100, "allocated_unused": 20, "used": 80, "max": 1000, "in_use": .08} {
+		got, ok := metricValue(metrics, "system.fs.file_handles."+name)
+		if !ok || got != want {
+			t.Fatalf("%s = %v, present=%v; want %v", name, got, ok, want)
+		}
+	}
+	for _, raw := range []string{"", "1 2", "x 0 1", "1 2 100", "1 0 0", "-1 0 100"} {
+		if got := c.fileHandleMetrics(timestamppb.Now(), raw); len(got) != 0 {
+			t.Fatalf("invalid file-nr %q emitted %v", raw, got)
 		}
 	}
 }
@@ -239,7 +266,7 @@ func TestLinuxSystem_DiskIOLatencyUsesCounterDeltas(t *testing.T) {
 	// The first counter observation is only a baseline, never a synthetic
 	// zero-latency point.
 	first := c.diskIOLatencyMetrics(now, map[string]disk.IOCountersStat{
-		"/dev/sda1": {ReadCount: 100, WriteCount: 40, ReadTime: 400, WriteTime: 80, ReadBytes: 1000, WriteBytes: 2000},
+		"/dev/sda1": {ReadCount: 100, WriteCount: 40, ReadTime: 400, WriteTime: 80, ReadBytes: 1000, WriteBytes: 2000, MergedReadCount: 10, MergedWriteCount: 20, IoTime: 100, WeightedIO: 200},
 	})
 	if len(first) != 0 {
 		t.Fatalf("first disk I/O sample emitted %d metric(s), want none", len(first))
@@ -247,10 +274,22 @@ func TestLinuxSystem_DiskIOLatencyUsesCounterDeltas(t *testing.T) {
 
 	metrics := c.diskIOLatencyMetrics(timestamppb.New(now.AsTime().Add(10*time.Second)), map[string]disk.IOCountersStat{
 		// 10 reads + 20 writes and 120ms + 60ms elapsed I/O time = 6ms/op.
-		"/dev/sda1": {ReadCount: 110, WriteCount: 60, ReadTime: 520, WriteTime: 140, ReadBytes: 3000, WriteBytes: 6000},
+		"/dev/sda1": {ReadCount: 110, WriteCount: 60, ReadTime: 520, WriteTime: 140, ReadBytes: 3000, WriteBytes: 6000, MergedReadCount: 15, MergedWriteCount: 30, IoTime: 200, WeightedIO: 2200},
 	})
-	if len(metrics) != 5 {
-		t.Fatalf("got %d disk I/O metric(s), want 5", len(metrics))
+	if len(metrics) != 13 {
+		t.Fatalf("got %d disk I/O metric(s), want 13", len(metrics))
+	}
+	expected := map[string]float64{"disk.read_merged_operations_per_second": 0.5, "disk.write_merged_operations_per_second": 1, "disk.io_utilization_pct": 1, "disk.io_queue_size": 0.2, "disk.read_latency_ms": 12, "disk.write_latency_ms": 3, "disk.io_request_size_bytes": 200, "disk.io_service_time_ms": 100.0 / 30}
+	for _, metric := range metrics {
+		if value, ok := expected[metric.MetricName]; ok {
+			if math.Abs(metric.Value-value) > 0.0001 {
+				t.Errorf("%s = %v, want %v", metric.MetricName, metric.Value, value)
+			}
+			delete(expected, metric.MetricName)
+		}
+	}
+	if len(expected) != 0 {
+		t.Fatalf("missing I/O metrics: %v", expected)
 	}
 	var got *collectorv1.Metric
 	for _, metric := range metrics {
@@ -282,8 +321,8 @@ func TestLinuxSystem_DiskIOLatencySkipsNoIOAndCounterReset(t *testing.T) {
 	noIO := c.diskIOLatencyMetrics(timestamppb.New(now.AsTime().Add(time.Second)), map[string]disk.IOCountersStat{
 		"/dev/sda": {ReadCount: 100, WriteCount: 50, ReadTime: 200, WriteTime: 100, ReadBytes: 1000, WriteBytes: 1000},
 	})
-	if len(noIO) != 4 {
-		t.Fatalf("zero I/O delta emitted %d metric(s), want 4 zero-rate metrics", len(noIO))
+	if len(noIO) != 8 {
+		t.Fatalf("zero I/O delta emitted %d metric(s), want 8 zero-rate/utilization metrics", len(noIO))
 	}
 
 	reset := c.diskIOLatencyMetrics(timestamppb.New(now.AsTime().Add(2*time.Second)), map[string]disk.IOCountersStat{
@@ -298,8 +337,8 @@ func TestLinuxSystem_DiskIOLatencySkipsNoIOAndCounterReset(t *testing.T) {
 	afterReset := c.diskIOLatencyMetrics(timestamppb.New(now.AsTime().Add(3*time.Second)), map[string]disk.IOCountersStat{
 		"/dev/sda": {ReadCount: 3, WriteCount: 2, ReadTime: 7, WriteTime: 3, ReadBytes: 40, WriteBytes: 30},
 	})
-	if len(afterReset) != 5 {
-		t.Fatalf("post-reset monotonic sample emitted %d metric(s), want 5", len(afterReset))
+	if len(afterReset) != 13 {
+		t.Fatalf("post-reset monotonic sample emitted %d metric(s), want 13", len(afterReset))
 	}
 	var latency float64
 	for _, metric := range afterReset {

@@ -422,6 +422,26 @@ func (p *Profile) autoDetectEnabled() bool {
 // nao-numerica) viram skip silencioso. So retorna erro se TODOS os OIDs
 // scalares falharem ou se nenhuma metrica conseguir ser emitida (sinaliza
 // problema de rede/credencial, nao mismatch de perfil).
+// MetricFamilies describes numeric metric coverage, not metadata/tag OIDs or every table row.
+func (p *Profile) MetricFamilies() map[string]bool {
+	names := map[string]bool{}
+	for _, metric := range p.Metrics {
+		if metric.Symbol != nil {
+			names[canonMetricName(metric.Symbol.OID, metric.Symbol.Name)] = true
+		}
+		for _, symbol := range metric.Symbols {
+			names[canonMetricName(symbol.OID, symbol.Name)] = true
+		}
+	}
+	for _, rule := range p.DiscoveryRules {
+		for _, item := range rule.Items {
+			names[item.Name] = true
+		}
+	}
+	delete(names, "")
+	return names
+}
+
 func (p *Profile) Collect(ctx context.Context, c *Client, hostID string, staticTags map[string]string) ([]*collectorv1.Metric, error) {
 	if p == nil {
 		return nil, errors.New("snmp: Profile nil")
@@ -948,6 +968,27 @@ func getScalar(ctx context.Context, c *Client, oid string) (float64, bool) {
 	if !strings.HasSuffix(oid, ".0") {
 		if v, ok := getScalarOnce(ctx, c, oid+".0"); ok {
 			return v, true
+		}
+	}
+	// RouterOS can expose CPU temperature only in mtxrGaugeTable.
+	// Match the sensor name and unit, never a fixed row index. Preserve the
+	// legacy Temperature unit (deci-Celsius) consumed by the metrics catalog.
+	if strings.TrimSuffix(strings.TrimPrefix(oid, "."), ".0") == "1.3.6.1.4.1.14988.1.1.3.6" {
+		const root = "1.3.6.1.4.1.14988.1.1.3.100"
+		rows, err := WalkTable(ctx, c, root)
+		if err == nil {
+			for _, row := range rows {
+				name, _ := findRowPDU(row, root+".1.2")
+				unit, _ := findRowPDU(row, root+".1.4")
+				unitValue, unitOK := PduFloat(unit)
+				if pduString(name) != "cpu-temperature" || !unitOK || unitValue != 1 {
+					continue
+				}
+				value, _ := findRowPDU(row, root+".1.3")
+				if v, ok := PduFloat(value); ok {
+					return v * 10, true
+				}
+			}
 		}
 	}
 	return 0, false

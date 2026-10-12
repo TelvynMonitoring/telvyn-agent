@@ -74,3 +74,4 @@ func TestExternalInventoryWireContract(t *testing.T) {
 		t.Fatal("invalid report reached HTTP")
 	}
 }
+

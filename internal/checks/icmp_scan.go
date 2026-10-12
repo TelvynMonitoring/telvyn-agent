@@ -154,12 +154,15 @@ func (c *icmpScanCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error) 
 			pinger.Count = c.count
 			pinger.Timeout = c.perHost
 			pinger.Interval = 50 * time.Millisecond
+			// RTT do pro-bing usa relógio de parede e herda saltos de NTP; ver icmp_rtt.go.
+			rtt := newRTTTracker()
+			rtt.attach(pinger)
 			if err := pinger.RunWithContext(ctx); err != nil {
 				return
 			}
 			stats := pinger.Statistics()
 			if stats.PacketsRecv > 0 {
-				results <- alive{ip: target, rttMs: float64(stats.AvgRtt.Microseconds()) / 1000.0}
+				results <- alive{ip: target, rttMs: float64(rtt.summary().avg.Microseconds()) / 1000.0}
 			}
 		}(ip)
 	}

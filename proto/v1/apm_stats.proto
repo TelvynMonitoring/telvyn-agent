@@ -42,4 +42,8 @@ message ApmGroupedStats {
   string db_system = 14;      // protocolo de datastore detectado pelo eBPF (postgresql/redis/…); "" se não-DB.
   string namespace = 15;      // namespace do pod (serviços eBPF) → tela trata como pod K8s real. "" se desconhecido.
   string database_monitor_id = 16; // id imutável do monitor PostgreSQL; vazio quando o span não é workload atribuído.
+  string peer = 17; // destino client, separado antes do sampling.
+  string service_version = 18; // versão reportada pela aplicação; vazio = desconhecida.
+  optional uint64 max_duration_nano = 19; // exact maximum before sampling; absent for older agents.
+  map<string, string> primary_tags = 20; // configured dimensions from verified collector metadata only.
 }

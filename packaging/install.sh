@@ -39,6 +39,12 @@ ISPWATCH_DATABASE_ENGINE="${ISPWATCH_DATABASE_ENGINE:-postgres}"
 # EnvironmentFile. Para o profile database o instalador encontra o serviço
 # local; o operador nunca precisa informar um identificador.
 ISPWATCH_UPGRADE="${ISPWATCH_UPGRADE:-false}"
+if [[ "${TELVYN_EXTERNAL_EXECUTION_MODE:-}" == "approved-unisolated" ]]; then
+    if [[ ! -x "${TELVYN_EXTERNAL_PYTHON:-/usr/bin/python3}" || -z "${TELVYN_EXTERNAL_APPROVED_ENDPOINTS:-}" ]]; then
+        echo "ERROR: Proxmox requires Python 3 and TELVYN_EXTERNAL_APPROVED_ENDPOINTS before installation." >&2
+        exit 1
+    fi
+fi
 GITHUB_REPO="${ISPWATCH_GITHUB_REPO:-TelvynMonitoring/telvyn-agent}"
 # ISPWATCH_DOWNLOAD_BASE permite redirecionar para mirror/dev local sem
 # editar o script (usado pelos smoke tests e por VMs de dev).
@@ -314,6 +320,12 @@ if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && ! -f "$EXTRACTED_DIR/telvyn-age
     exit 1
 fi
 install -m 0755 -o root -g root "$EXTRACTED_DIR/ispwatch-agent" "$BINARY_PATH"
+if [[ -d "$EXTRACTED_DIR/integrations" ]]; then
+    install -d -m 0755 /opt/telvyn/integrations
+    cp -R "$EXTRACTED_DIR/integrations/." /opt/telvyn/integrations/
+    chown -R root:root /opt/telvyn/integrations
+    chmod -R go-w /opt/telvyn/integrations
+fi
 if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
     install -m 0644 -o root -g root "$EXTRACTED_DIR/telvyn-agent.service" "$UNIT_PATH"
     install -m 0644 -o root -g root "$EXTRACTED_DIR/telvyn-agent-update.service" "$DATABASE_UPDATE_UNIT_PATH"
@@ -513,7 +525,7 @@ umask 077
 INSTALLER_VARS=" ISPWATCH_AGENT_VERSION ISPWATCH_GITHUB_REPO ISPWATCH_DOWNLOAD_BASE ISPWATCH_INSTALL_ONLY ISPWATCH_HOSTNAME ISPWATCH_ENROLL_TOKEN ISPWATCH_SITE ISPWATCH_DOCKER_INTEGRATION ISPWATCH_INGEST_URL ISPWATCH_INGEST_TOKEN ISPWATCH_AGENT_KIND ISPWATCH_AGENT_PROFILE ISPWATCH_DATABASE_INSTALLATION_ID ISPWATCH_DATABASE_ENROLLMENT_ID ISPWATCH_DATABASE_ENGINE ISPWATCH_DATABASE_REVOKED_MARKER_PATH ISPWATCH_UPGRADE ISPWATCH_INSTALL_SCRIPT_URL ISPWATCH_NODE_NAME ISPWATCH_STATE_DIR ISPWATCH_LOGS_CURSOR_PATH "
 for name in $(compgen -v); do
     case "$name" in
-        ISPWATCH_*|COLLECTOR_LOG_LEVEL) ;;
+        ISPWATCH_*|COLLECTOR_LOG_LEVEL|TELVYN_EXTERNAL_*) ;;
         *) continue ;;
     esac
     case "$INSTALLER_VARS" in *" $name "*) continue ;; esac

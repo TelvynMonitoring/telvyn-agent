@@ -118,3 +118,4 @@ func TestExternalInventorySchedulerSendsWithoutMetrics(t *testing.T) {
 		}
 	}
 }
+

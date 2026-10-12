@@ -167,7 +167,7 @@ func TestScanSNMP_ProfileSuggestionMikrotik(t *testing.T) {
 		return &fakeProbe{
 			target: p.Target,
 			getFn: func(string) ([]gosnmp.SnmpPDU, error) {
-				// sysObjectID Mikrotik — prefix 1.3.6.1.4.1.14988.1 deve casar mikrotik-routeros.
+				// sysObjectID Mikrotik — prefix 1.3.6.1.4.1.14988.1 deve casar mikrotik-router.
 				return []gosnmp.SnmpPDU{{Value: "1.3.6.1.4.1.14988.1"}}, nil
 			},
 		}, nil
@@ -185,8 +185,8 @@ func TestScanSNMP_ProfileSuggestionMikrotik(t *testing.T) {
 	if len(cands) != 1 {
 		t.Fatalf("expected 1 candidate, got %d", len(cands))
 	}
-	if cands[0].ProfileSuggestion != "mikrotik-routeros" {
-		t.Fatalf("expected ProfileSuggestion=mikrotik-routeros, got %q", cands[0].ProfileSuggestion)
+	if cands[0].ProfileSuggestion != "mikrotik-router" {
+		t.Fatalf("expected ProfileSuggestion=mikrotik-router, got %q", cands[0].ProfileSuggestion)
 	}
 	if cands[0].SysObjectID == "" {
 		t.Fatalf("SysObjectID empty")

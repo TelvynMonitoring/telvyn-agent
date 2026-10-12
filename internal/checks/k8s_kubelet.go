@@ -46,12 +46,16 @@
 package checks
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
+	"maps"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -59,6 +63,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/ispwatch/collector/internal/quarkus"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 
@@ -89,22 +94,41 @@ type kubeletSummary struct {
 			UsedBytes     *uint64 `json:"usedBytes"`
 			CapacityBytes *uint64 `json:"capacityBytes"`
 		} `json:"fs"`
+		Runtime *struct {
+			ImageFs *kubeletFsStats `json:"imageFs"`
+		} `json:"runtime,omitempty"`
+		SystemContainers []struct {
+			Name string `json:"name"`
+			CPU  struct {
+				UsageNanoCores *uint64 `json:"usageNanoCores"`
+			} `json:"cpu"`
+			Memory struct {
+				RSSBytes   *uint64 `json:"rssBytes"`
+				UsageBytes *uint64 `json:"usageBytes"`
+			} `json:"memory"`
+		} `json:"systemContainers"`
 	} `json:"node"`
 	Pods []kubeletPodSummary `json:"pods"`
 }
 
 type kubeletFsStats struct {
-	UsedBytes     *uint64 `json:"usedBytes"`
-	CapacityBytes *uint64 `json:"capacityBytes"`
-	InodesUsed    *uint64 `json:"inodesUsed"`
+	UsedBytes      *uint64 `json:"usedBytes"`
+	CapacityBytes  *uint64 `json:"capacityBytes"`
+	InodesUsed     *uint64 `json:"inodesUsed"`
+	AvailableBytes *uint64 `json:"availableBytes"`
+	Inodes         *uint64 `json:"inodes"`
+	InodesFree     *uint64 `json:"inodesFree"`
 }
 
 type kubeletVolumeStats struct {
-	Name          string  `json:"name"`
-	UsedBytes     *uint64 `json:"usedBytes"`
-	CapacityBytes *uint64 `json:"capacityBytes"`
-	InodesUsed    *uint64 `json:"inodesUsed"`
-	PVCRef        *struct {
+	Name           string  `json:"name"`
+	UsedBytes      *uint64 `json:"usedBytes"`
+	CapacityBytes  *uint64 `json:"capacityBytes"`
+	InodesUsed     *uint64 `json:"inodesUsed"`
+	AvailableBytes *uint64 `json:"availableBytes"`
+	Inodes         *uint64 `json:"inodes"`
+	InodesFree     *uint64 `json:"inodesFree"`
+	PVCRef         *struct {
 		Name      string `json:"name"`
 		Namespace string `json:"namespace"`
 	} `json:"pvcRef,omitempty"`
@@ -114,6 +138,7 @@ type kubeletPodSummary struct {
 	PodRef struct {
 		Name      string `json:"name"`
 		Namespace string `json:"namespace"`
+		UID       string `json:"uid"`
 	} `json:"podRef"`
 	CPU struct {
 		UsageNanoCores *uint64 `json:"usageNanoCores"`
@@ -124,16 +149,20 @@ type kubeletPodSummary struct {
 	// Rede do pod (sandbox netns). No summary do kubelet vem populado no
 	// TOPO (rxBytes/txBytes), diferente do node — que só traz por interface.
 	Network *struct {
+		Name    string  `json:"name"`
 		RxBytes *uint64 `json:"rxBytes"`
 		TxBytes *uint64 `json:"txBytes"`
 	} `json:"network,omitempty"`
 	Containers []struct {
-		Name string `json:"name"`
-		CPU  struct {
-			UsageNanoCores *uint64 `json:"usageNanoCores"`
+		Name      string `json:"name"`
+		StartTime string `json:"startTime"`
+		CPU       struct {
+			UsageNanoCores       *uint64 `json:"usageNanoCores"`
+			UsageCoreNanoSeconds *uint64 `json:"usageCoreNanoSeconds"`
 		} `json:"cpu"`
 		Memory struct {
 			WorkingSetBytes *uint64 `json:"workingSetBytes"`
+			RSSBytes        *uint64 `json:"rssBytes"`
 		} `json:"memory"`
 		Rootfs *kubeletFsStats `json:"rootfs,omitempty"`
 		Logs   *kubeletFsStats `json:"logs,omitempty"`
@@ -221,11 +250,26 @@ func (h *httpKubeletFetcher) Summary(ctx context.Context) (*kubeletSummary, erro
 }
 
 type k8sKubeletCheck struct {
-	id         string
-	hostID     string
-	interval   time.Duration
-	staticTags map[string]string
-	fetcher    kubeletFetcher
+	containerCPU map[string]kubeletCPUSample
+	cgroupRoot   string
+	id           string
+	hostID       string
+	interval     time.Duration
+	staticTags   map[string]string
+	fetcher      kubeletFetcher
+}
+
+type kubeletCPUSample struct {
+	value uint64
+	time  time.Time
+}
+
+func kubeletContainerCPURate(previous, current kubeletCPUSample) (float64, bool) {
+	elapsed := current.time.Sub(previous.time).Seconds()
+	if previous.time.IsZero() || elapsed <= 0 || current.value < previous.value {
+		return 0, false
+	}
+	return float64(current.value-previous.value) / elapsed, true
 }
 
 func newK8sKubeletCheck(cfg *collectorv1.CheckConfig) (Check, error) {
@@ -285,6 +329,8 @@ func (c *k8sKubeletCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error
 	}
 
 	now := timestamppb.Now()
+	cpuObservedAt := time.Now()
+	nextContainerCPU := make(map[string]kubeletCPUSample)
 	out := make([]*collectorv1.Metric, 0, 64)
 
 	nodeName := sum.Node.NodeName
@@ -302,6 +348,25 @@ func (c *k8sKubeletCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error
 	addNode("k8s.node.network_tx_bytes", sum.Node.Network.TxBytes)
 	addNode("k8s.node.fs_used_bytes", sum.Node.Fs.UsedBytes)
 	addNode("k8s.node.fs_capacity_bytes", sum.Node.Fs.CapacityBytes)
+	addFsUsage := func(name string, used, capacity *uint64) {
+		if used != nil && capacity != nil && *capacity > 0 {
+			out = append(out, c.metric(now, name, float64(*used)/float64(*capacity), nodeTags))
+		}
+	}
+	addFsUsage("k8s.node.fs_usage_fraction", sum.Node.Fs.UsedBytes, sum.Node.Fs.CapacityBytes)
+	if sum.Node.Runtime != nil && sum.Node.Runtime.ImageFs != nil {
+		addNode("k8s.node.image_fs_used_bytes", sum.Node.Runtime.ImageFs.UsedBytes)
+		addNode("k8s.node.image_fs_capacity_bytes", sum.Node.Runtime.ImageFs.CapacityBytes)
+		addFsUsage("k8s.node.image_fs_usage_fraction", sum.Node.Runtime.ImageFs.UsedBytes, sum.Node.Runtime.ImageFs.CapacityBytes)
+	}
+	for _, system := range sum.Node.SystemContainers {
+		if system.Name != "kubelet" && system.Name != "runtime" {
+			continue
+		}
+		addNode("k8s."+system.Name+".cpu_usage_nanocores", system.CPU.UsageNanoCores)
+		addNode("k8s."+system.Name+".memory_rss_bytes", system.Memory.RSSBytes)
+		addNode("k8s."+system.Name+".memory_usage_bytes", system.Memory.UsageBytes)
+	}
 
 	// pod count breakdown
 	podCount := 0
@@ -326,13 +391,17 @@ func (c *k8sKubeletCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error
 		// Tráfego de rede do pod (counters cumulativos rx/tx do netns) — o
 		// backend aplica rate() pra virar bytes/s na lente de serviço.
 		if p.Network != nil {
+			networkTags := maps.Clone(podTags)
+			if p.Network.Name != "" {
+				networkTags["interface"] = p.Network.Name
+			}
 			if p.Network.RxBytes != nil {
 				out = append(out, c.metric(now, "k8s.pod.network_rx_bytes",
-					float64(*p.Network.RxBytes), podTags))
+					float64(*p.Network.RxBytes), networkTags))
 			}
 			if p.Network.TxBytes != nil {
 				out = append(out, c.metric(now, "k8s.pod.network_tx_bytes",
-					float64(*p.Network.TxBytes), podTags))
+					float64(*p.Network.TxBytes), networkTags))
 			}
 		}
 		// Pod ephemeral storage (somatório de rootfs + logs + emptyDir local).
@@ -372,6 +441,11 @@ func (c *k8sKubeletCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error
 				out = append(out, c.metric(now, "k8s.volume.inodes_used",
 					float64(*vol.InodesUsed), volTags))
 			}
+			for name, value := range map[string]*uint64{"available_bytes": vol.AvailableBytes, "inodes": vol.Inodes, "inodes_free": vol.InodesFree} {
+				if value != nil {
+					out = append(out, c.metric(now, "k8s.volume."+name, float64(*value), volTags))
+				}
+			}
 		}
 		for _, ct := range p.Containers {
 			if ct.Name == "" {
@@ -383,13 +457,23 @@ func (c *k8sKubeletCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error
 				"pod":       p.PodRef.Name,
 				"container": ct.Name,
 			}
-			if ct.CPU.UsageNanoCores != nil {
+			if ct.CPU.UsageCoreNanoSeconds != nil {
+				key := strings.Join([]string{nodeName, p.PodRef.Namespace, p.PodRef.Name, p.PodRef.UID, ct.Name, ct.StartTime}, "|")
+				current := kubeletCPUSample{value: *ct.CPU.UsageCoreNanoSeconds, time: cpuObservedAt}
+				if value, valid := kubeletContainerCPURate(c.containerCPU[key], current); valid {
+					out = append(out, c.metric(now, "k8s.container.cpu_usage_nanocores", value, ctTags))
+				}
+				nextContainerCPU[key] = current
+			} else if ct.CPU.UsageNanoCores != nil {
 				out = append(out, c.metric(now, "k8s.container.cpu_usage_nanocores",
 					float64(*ct.CPU.UsageNanoCores), ctTags))
 			}
 			if ct.Memory.WorkingSetBytes != nil {
 				out = append(out, c.metric(now, "k8s.container.memory_working_set_bytes",
 					float64(*ct.Memory.WorkingSetBytes), ctTags))
+			}
+			if ct.Memory.RSSBytes != nil {
+				out = append(out, c.metric(now, "k8s.container.memory_rss_bytes", float64(*ct.Memory.RSSBytes), ctTags))
 			}
 			if ct.Rootfs != nil {
 				if ct.Rootfs.UsedBytes != nil {
@@ -407,9 +491,151 @@ func (c *k8sKubeletCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error
 			}
 		}
 	}
+	c.containerCPU = nextContainerCPU
 	out = append(out, c.metric(now, "k8s.node.pods_total", float64(podCount), nodeTags))
+	if socket := strings.TrimSpace(os.Getenv("ISPWATCH_CRI_SOCKET")); socket != "" {
+		images, err := c.runtimeImages(ctx, socket, nodeName)
+		if err != nil {
+			slog.Warn("inventário CRI indisponível", "error", err)
+			out = append(out, c.metric(now, "k8s.node.runtime_inventory_up", 0, nodeTags))
+		} else {
+			out = append(out, images...)
+			out = append(out, c.metric(now, "k8s.node.runtime_inventory_up", 1, nodeTags))
+		}
+	}
+	if fetcher, ok := c.fetcher.(*httpKubeletFetcher); ok {
+		additional, err := c.cadvisor(ctx, fetcher, nodeName)
+		if err != nil {
+			slog.Warn("kubelet cAdvisor indisponível; Summary preservado", "error", err)
+			out = append(out, c.metric(now, "k8s.node.cadvisor_up", 0, nodeTags))
+		} else {
+			out = append(out, additional...)
+			out = append(out, c.metric(now, "k8s.node.cadvisor_up", 1, nodeTags))
+		}
+		for path, coverage := range map[string]string{"/metrics": "kubelet_metrics_up", "/metrics/probes": "probes_up", "/metrics/slis": "slis_up"} {
+			body, err := fetcher.prometheusBody(ctx, path)
+			if err != nil {
+				slog.Warn("kubelet endpoint indisponível", "endpoint", path, "error", err)
+				out = append(out, c.metric(now, "k8s.node."+coverage, 0, nodeTags))
+				continue
+			}
+			additional, err := c.parseOperational(strings.NewReader(string(body)), nodeName)
+			if err != nil {
+				out = append(out, c.metric(now, "k8s.node."+coverage, 0, nodeTags))
+				continue
+			}
+			out = append(out, additional...)
+			out = append(out, c.metric(now, "k8s.node."+coverage, 1, nodeTags))
+		}
+	}
 
 	return out, nil
+}
+
+// cAdvisor supplies signals absent from Summary. Never emit Summary's CPU/WSS/RSS twice.
+func (c *k8sKubeletCheck) cadvisor(ctx context.Context, fetcher *httpKubeletFetcher, node string) ([]*collectorv1.Metric, error) {
+	body, err := fetcher.prometheusBody(ctx, "/metrics/cadvisor")
+	if err != nil {
+		return nil, err
+	}
+	return c.parseCadvisor(strings.NewReader(string(body)), node)
+}
+
+func (c *k8sKubeletCheck) parseCadvisor(body io.Reader, node string) ([]*collectorv1.Metric, error) {
+	names := map[string]string{
+		"container_cpu_cfs_periods_total":                  "cpu_cfs_periods_total",
+		"container_cpu_cfs_throttled_periods_total":        "cpu_cfs_throttled_periods_total",
+		"container_cpu_cfs_throttled_seconds_total":        "cpu_cfs_throttled_seconds_total",
+		"container_cpu_user_seconds_total":                 "cpu_user_seconds_total",
+		"container_cpu_system_seconds_total":               "cpu_system_seconds_total",
+		"container_fs_reads_bytes_total":                   "fs_reads_bytes_total",
+		"container_fs_writes_bytes_total":                  "fs_writes_bytes_total",
+		"container_fs_reads_total":                         "fs_reads_total",
+		"container_fs_writes_total":                        "fs_writes_total",
+		"container_memory_usage_bytes":                     "memory_usage_bytes",
+		"container_memory_cache":                           "memory_cache_bytes",
+		"container_memory_swap":                            "memory_swap_bytes",
+		"container_oom_events_total":                       "memory_oom_events_total",
+		"container_file_descriptors":                       "open_file_descriptors",
+		"container_threads":                                "threads",
+		"container_threads_max":                            "threads_limit",
+		"container_start_time_seconds":                     "start_time_seconds",
+		"container_cpu_load_average_10s":                   "cpu_load_10s_avg",
+		"container_spec_memory_limit_bytes":                "memory_runtime_limit_bytes",
+		"container_spec_memory_swap_limit_bytes":           "memory_swap_limit_bytes",
+		"container_network_receive_errors_total":           "network_rx_errors_total",
+		"container_network_receive_packets_total":          "network_rx_packets_total",
+		"container_network_transmit_packets_total":         "network_tx_packets_total",
+		"container_network_transmit_errors_total":          "network_tx_errors_total",
+		"container_network_receive_packets_dropped_total":  "network_rx_dropped_total",
+		"container_network_transmit_packets_dropped_total": "network_tx_dropped_total",
+	}
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 65536), 4<<20)
+	var out []*collectorv1.Metric
+	type memorySample struct {
+		tags   map[string]string
+		values map[string]float64
+	}
+	memory := map[string]*memorySample{}
+	cgroups := map[string]bool{}
+	now := timestamppb.Now()
+	for scanner.Scan() {
+		name, labels, value, valid := quarkus.ParseLine(scanner.Text())
+		suffix, supported := names[name]
+		if !valid || !supported || math.IsNaN(value) || math.IsInf(value, 0) || labels["pod"] == "" || labels["namespace"] == "" {
+			continue
+		}
+		tags := map[string]string{"node": node, "namespace": labels["namespace"], "pod": labels["pod"]}
+		scope := "container"
+		if labels["container"] == "POD" || labels["container"] == "" {
+			if !strings.HasPrefix(suffix, "network_") {
+				continue
+			}
+			scope = "pod"
+		} else {
+			tags["container"] = labels["container"]
+			if id := labels["id"]; !cgroups[id] {
+				cgroups[id] = true
+				for suffix, value := range c.containerCgroupMemory(id) {
+					item := c.metric(now, "k8s.container."+suffix, value, tags)
+					item.Source = "k8s.cgroup"
+					out = append(out, item)
+				}
+			}
+		}
+		for _, key := range []string{"interface", "device"} {
+			if labels[key] != "" {
+				tags[key] = labels[key]
+			}
+		}
+		item := c.metric(now, "k8s."+scope+"."+suffix, value, tags)
+		item.Source = "k8s.cadvisor"
+		out = append(out, item)
+		if scope == "container" && suffix == "start_time_seconds" && value > 0 && value <= float64(now.Seconds) {
+			uptime := c.metric(now, "k8s.container.uptime_seconds", float64(now.Seconds)+float64(now.Nanos)/1e9-value, tags)
+			uptime.Source = "k8s.cadvisor"
+			out = append(out, uptime)
+		}
+		if scope == "container" && strings.HasPrefix(suffix, "memory_") {
+			key := tags["namespace"] + "/" + tags["pod"] + "/" + tags["container"]
+			if memory[key] == nil {
+				memory[key] = &memorySample{tags: tags, values: map[string]float64{}}
+			}
+			memory[key].values[suffix] = value
+		}
+	}
+	for _, sample := range memory {
+		for _, pair := range []struct{ usage, limit, metric string }{{"memory_usage_bytes", "memory_runtime_limit_bytes", "memory_usage_fraction"}, {"memory_swap_bytes", "memory_swap_limit_bytes", "memory_swap_usage_fraction"}} {
+			usage, exists := sample.values[pair.usage]
+			if limit := sample.values[pair.limit]; exists && limit > 0 {
+				item := c.metric(now, "k8s.container."+pair.metric, usage/limit, sample.tags)
+				item.Source = "k8s.cadvisor"
+				out = append(out, item)
+			}
+		}
+	}
+	return out, scanner.Err()
 }
 
 func (c *k8sKubeletCheck) metric(t *timestamppb.Timestamp, name string, val float64, extraTags map[string]string) *collectorv1.Metric {

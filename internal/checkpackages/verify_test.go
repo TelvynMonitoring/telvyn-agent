@@ -73,3 +73,4 @@ func TestVerifySignedPackageTwiceAndRejectAlterations(t *testing.T) {
 		t.Fatalf("altered runner accepted: %v", err)
 	}
 }
+

@@ -437,3 +437,4 @@ def collect(instance_id, params, static_tags, client=None):
         coverage["result_truncated"] = True
         coverage["inventory_complete"] = False
     return result(metrics[:500], inventory[:1000], status, coverage, error)
+

@@ -42,29 +42,29 @@ import (
 )
 
 const (
-	defaultInterval       = 30 * time.Second
-	defaultScrapePath     = "/q/metrics"
-	defaultScrapePort     = 8080
-	defaultKubeletURL     = "https://localhost:10250"
+	defaultInterval         = 30 * time.Second
+	defaultScrapePath       = "/q/metrics"
+	defaultScrapePort       = 8080
+	defaultKubeletURL       = "https://localhost:10250"
 	defaultKubeletTokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-	defaultKubeletCAFile  = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-	scrapeTimeout         = 5 * time.Second
+	defaultKubeletCAFile    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+	scrapeTimeout           = 5 * time.Second
 )
 
 // Scraper roda um loop polling no backend pra descobrir quais pods
 // instrumentar e scrape /q/metrics de cada um.
 type Scraper struct {
-	backend      string // ex: https://quarkus:8444 (mTLS) ou http://backend:8080 (ingest)
-	tenantID     string
-	collectorID  string
-	clientCert   string
-	clientKey    string
-	trustBundle  string
-	token        string // Bearer (modo ingest/certless)
-	certless     bool   // true → busca a lista via Bearer no gateway de ingest
-	out          chan<- []*collectorv1.Metric
-	log          *slog.Logger
-	interval     time.Duration
+	backend     string // ex: https://quarkus:8444 (mTLS) ou http://backend:8080 (ingest)
+	tenantID    string
+	collectorID string
+	clientCert  string
+	clientKey   string
+	trustBundle string
+	token       string // Bearer (modo ingest/certless)
+	certless    bool   // true → busca a lista via Bearer no gateway de ingest
+	out         chan<- []*collectorv1.Metric
+	log         *slog.Logger
+	interval    time.Duration
 }
 
 func New(backend, tenantID, collectorID string,
@@ -425,15 +425,25 @@ func parsePrometheus(r io.Reader, namespace, pod string) []*collectorv1.Metric {
 
 // parseLine: "name{k="v",k2="v2"} 1.234" → name, {k:v, k2:v2}, 1.234.
 // Suporta variant sem labels: "name 1.234".
-func parseLine(line string) (name string, labels map[string]string, value float64, ok bool) {
-	// Split em (name+labels) e value pela última whitespace.
-	spaceIdx := strings.LastIndexAny(line, " \t")
+func ParseLine(line string) (name string, labels map[string]string, value float64, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", nil, 0, false
+	}
+	// The optional Prometheus timestamp follows the value; it is not a sample.
+	spaceIdx := strings.IndexAny(line, " \t")
+	if end := strings.LastIndexByte(line, '}'); end >= 0 {
+		spaceIdx = end + 1
+	}
 	if spaceIdx < 0 {
 		return "", nil, 0, false
 	}
 	head := line[:spaceIdx]
-	val := strings.TrimSpace(line[spaceIdx+1:])
-	v, err := strconv.ParseFloat(val, 64)
+	fields := strings.Fields(line[spaceIdx:])
+	if len(fields) == 0 {
+		return "", nil, 0, false
+	}
+	v, err := strconv.ParseFloat(fields[0], 64)
 	if err != nil {
 		return "", nil, 0, false
 	}
@@ -458,13 +468,18 @@ func parseLine(line string) (name string, labels map[string]string, value float6
 		}
 		k := strings.TrimSpace(pair[:eq])
 		v := strings.TrimSpace(pair[eq+1:])
-		v = strings.Trim(v, "\"")
+		v, err = strconv.Unquote(v)
+		if err != nil {
+			return "", nil, 0, false
+		}
 		if k != "" {
 			labels[k] = v
 		}
 	}
 	return strings.TrimSpace(name), labels, v, true
 }
+
+func parseLine(line string) (string, map[string]string, float64, bool) { return ParseLine(line) }
 
 // splitLabelPairs respeita aspas — não usa split simples por vírgula
 // porque valores podem conter vírgula.
@@ -474,6 +489,10 @@ func splitLabelPairs(s string) []string {
 	start := 0
 	for i := 0; i < len(s); i++ {
 		c := s[i]
+		if c == '\\' && inQuotes {
+			i++
+			continue
+		}
 		if c == '"' {
 			inQuotes = !inQuotes
 			continue

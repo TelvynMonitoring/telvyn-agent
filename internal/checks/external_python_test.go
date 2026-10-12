@@ -169,3 +169,4 @@ func TestExternalInvalidJSONAndRequiredValue(t *testing.T) {
 		t.Fatalf("real zero rejected: %v %+v", err, metrics)
 	}
 }
+

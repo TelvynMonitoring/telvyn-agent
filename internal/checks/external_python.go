@@ -60,6 +60,15 @@ func newExternalPythonCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 	root := os.Getenv("TELVYN_EXTERNAL_PACKAGE_DIR")
 	trust := os.Getenv("TELVYN_EXTERNAL_TRUST_DIR")
 	python := os.Getenv("TELVYN_EXTERNAL_PYTHON")
+	if root == "" {
+		root = "/opt/telvyn/integrations/packages"
+	}
+	if trust == "" {
+		trust = "/opt/telvyn/integrations/trust"
+	}
+	if python == "" {
+		python = "/usr/bin/python3"
+	}
 	if os.Getenv("TELVYN_EXTERNAL_EXECUTION_MODE") != "approved-unisolated" {
 		return nil, errors.New("external.python: required isolation mode unsupported; local admin opt-in required")
 	}

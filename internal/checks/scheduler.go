@@ -20,9 +20,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ispwatch/collector/internal/inventory"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/ispwatch/collector/internal/inventory"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 
@@ -620,6 +620,11 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			}
 		}
 		if err != nil {
+			// SNMP returns only collection diagnostics on failure; keep its error
+			// and circuit breaker while exposing reachability and packet counts.
+			if _, snmp := c.(*snmpGenericCheck); snmp && len(metrics) > 0 {
+				r.emit(metrics)
+			}
 			if failure, ok := any(c).(ExplainFailureProvider); ok {
 				r.pushExplain(c, failure.ExplainFailure(err))
 			}
@@ -865,16 +870,12 @@ func (r *Runtime) pushExternalInventory(ctx context.Context, report inventory.Sn
 	}
 	postCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	// Synchronous per check: bounded lifetime, no unbounded goroutines or old snapshot queue.
-	// A failed delivery is retried with a freshly collected snapshot on the next run.
 	if err := push(postCtx, report); err != nil {
 		r.log.Warn("external inventory delivery failed", "check_id", report.CheckID)
 	}
 }
 
-// SetExecutionReporter instala o consumidor dos eventos de cada execução.
-// Além da observabilidade agregada, o collector pode usá-los para manter o
-// último check do host atualizado mesmo quando o estado não muda.
+// SetExecutionReporter installs the consumer of each check's execution status.
 func (r *Runtime) SetExecutionReporter(f ExecutionReporter) {
 	r.mu.Lock()
 	r.executionReporter = f

@@ -6,6 +6,7 @@ import (
 	"context"
 	"math"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,6 +44,56 @@ func TestQueryMeasuresUnprivilegedSNTPOffset(t *testing.T) {
 	<-serverDone
 	if math.Abs(offset-expectedOffset.Seconds()) > 0.03 {
 		t.Fatalf("offset = %.3fs, want about %.3fs", offset, expectedOffset.Seconds())
+	}
+}
+
+func testServer(t *testing.T, offset time.Duration, alter func([]byte)) string {
+	t.Helper()
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	go func() {
+		request := make([]byte, ntpPacketSize)
+		_, client, err := conn.ReadFromUDP(request)
+		if err != nil {
+			return
+		}
+		response := make([]byte, ntpPacketSize)
+		response[0], response[1] = 0x24, 1
+		copy(response[24:32], request[40:48])
+		putTimestamp(response[32:40], time.Now().Add(offset))
+		putTimestamp(response[40:48], time.Now().Add(offset))
+		if alter != nil {
+			alter(response)
+		}
+		conn.WriteToUDP(response, client)
+	}()
+	return conn.LocalAddr().String()
+}
+
+func TestOffsetSecondsUsesMedian(t *testing.T) {
+	servers := []string{testServer(t, 100*time.Millisecond, nil), testServer(t, 300*time.Millisecond, nil), testServer(t, 200*time.Millisecond, nil)}
+	t.Setenv("ISPWATCH_NTP_SERVERS", strings.Join(servers, ","))
+	offset, ok := OffsetSeconds(context.Background())
+	if !ok || math.Abs(offset-.2) > .03 {
+		t.Fatalf("median offset=%v, ok=%v", offset, ok)
+	}
+}
+
+func TestQueryRejectsInvalidServerResponses(t *testing.T) {
+	for name, alter := range map[string]func([]byte){
+		"unsynchronized":    func(p []byte) { p[0] |= 0xc0 },
+		"bad stratum":       func(p []byte) { p[1] = 16 },
+		"unrelated request": func(p []byte) { p[24] ^= 1 },
+		"kiss of death":     func(p []byte) { p[1] = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, ok := query(context.Background(), testServer(t, 0, alter)); ok {
+				t.Fatal("accepted invalid NTP response")
+			}
+		})
 	}
 }
 

@@ -31,6 +31,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,15 +41,20 @@ import (
 )
 
 type httpGetCheck struct {
-	id          string
-	interval    time.Duration
-	hostID      string
-	target      string
-	method      string
-	timeout     time.Duration
-	sourceIface string
-	sourceIP    string
-	staticTags  map[string]string
+	id             string
+	interval       time.Duration
+	hostID         string
+	target         string
+	method         string
+	timeout        time.Duration
+	sourceIface    string
+	sourceIP       string
+	staticTags     map[string]string
+	expectedStatus int
+	bodyContains   string
+	headerName     string
+	headerValue    string
+	maxResponseMs  int
 }
 
 func newHTTPGetCheck(cfg *collectorv1.CheckConfig) (Check, error) {
@@ -64,6 +70,21 @@ func newHTTPGetCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 	method := strings.ToUpper(strings.TrimSpace(params["method"]))
 	if method == "" {
 		method = "GET"
+	}
+	expectedStatus, err := optionalHTTPInt(params["expected_status"], 100, 599)
+	if err != nil {
+		return nil, err
+	}
+	maxResponseMs, err := optionalHTTPInt(params["max_response_ms"], 1, 300000)
+	if err != nil {
+		return nil, err
+	}
+	if len(params["body_contains"]) > 4096 || len(params["expected_header_value"]) > 4096 {
+		return nil, fmt.Errorf("http.get: assertion exceeds 4096 bytes")
+	}
+	headerName := strings.TrimSpace(params["expected_header_name"])
+	if strings.ContainsAny(headerName, "\r\n:") || len(headerName) > 256 || (headerName == "" && params["expected_header_value"] != "") {
+		return nil, fmt.Errorf("http.get: invalid assertion header")
 	}
 
 	interval := cfg.GetInterval().AsDuration()
@@ -82,15 +103,20 @@ func newHTTPGetCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 	}
 
 	return &httpGetCheck{
-		id:          id,
-		interval:    interval,
-		hostID:      cfg.GetHostId(),
-		target:      target,
-		method:      method,
-		timeout:     parseTimeoutMs(params, 5000),
-		sourceIface: params["source_iface"],
-		sourceIP:    params["source_ip"],
-		staticTags:  tags,
+		id:             id,
+		interval:       interval,
+		hostID:         cfg.GetHostId(),
+		target:         target,
+		method:         method,
+		timeout:        parseTimeoutMs(params, 5000),
+		sourceIface:    params["source_iface"],
+		sourceIP:       params["source_ip"],
+		staticTags:     tags,
+		expectedStatus: expectedStatus,
+		bodyContains:   params["body_contains"],
+		headerName:     headerName,
+		headerValue:    params["expected_header_value"],
+		maxResponseMs:  maxResponseMs,
 	}, nil
 }
 
@@ -173,13 +199,32 @@ func (c *httpGetCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
 	// Le body inteiro pra contabilizar size + total. Limita a 1MB pra nao
 	// queimar memoria com endpoints inesperadamente grandes.
 	const maxBody = 1 << 20
-	n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody))
+	var n int64
+	var body []byte
+	var bodyErr error
+	if c.bodyContains != "" {
+		body, bodyErr = io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
+		n = int64(len(body))
+	} else {
+		n, bodyErr = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody+1))
+	}
 	totalMs := float64(time.Since(start)) / float64(time.Millisecond)
 
 	status := resp.StatusCode
 	successFlag := 0.0
 	if status >= 200 && status < 400 {
 		successFlag = 1.0
+	}
+	if c.expectedStatus != 0 {
+		successFlag = 0
+		if status == c.expectedStatus {
+			successFlag = 1
+		}
+	}
+	if bodyErr != nil || (c.bodyContains != "" && (n > maxBody || !strings.Contains(string(body), c.bodyContains))) ||
+		(c.headerName != "" && (len(resp.Header.Values(c.headerName)) == 0 || resp.Header.Get(c.headerName) != c.headerValue)) ||
+		(c.maxResponseMs != 0 && totalMs > float64(c.maxResponseMs)) {
+		successFlag = 0
 	}
 
 	now := timestamppb.Now()
@@ -193,6 +238,17 @@ func (c *httpGetCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
 		c.metric(now, "http.total_ms", totalMs),
 		c.metric(now, "http.size_bytes", float64(n)),
 	}, nil
+}
+
+func optionalHTTPInt(value string, min, max int) (int, error) {
+	if strings.TrimSpace(value) == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < min || n > max {
+		return 0, fmt.Errorf("http.get: invalid numeric assertion")
+	}
+	return n, nil
 }
 
 func (c *httpGetCheck) metric(t *timestamppb.Timestamp, name string, value float64) *collectorv1.Metric {

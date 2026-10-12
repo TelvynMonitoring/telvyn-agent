@@ -173,7 +173,7 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return true
 	} // backend anterior ao contrato de entitlement
 	switch signal {
-	case "traces", "apm/stats", "profile":
+	case "traces", "apm/stats", "apm/usage", "profile":
 		return modules["APM"]
 	case "logs":
 		return modules["LOGS"]
@@ -266,6 +266,7 @@ func (e *IngestExporter) PostRaw(ctx context.Context, signal, contentType string
 		}
 		return fmt.Errorf("ingest %s: %w", signal, &sendbuf.StatusError{Code: resp.StatusCode})
 	}
+	clock.ObserveIntakeDate(resp.Header.Get("Date"), time.Now())
 	return nil
 }
 
@@ -339,7 +340,7 @@ func (e *IngestExporter) PostMetrics(ctx context.Context, metrics []*collectorv1
 		}},
 	}
 	// Gateway OTLP do Telvyn é JSON-only (igual /traces) — manda protojson.
-	body, err := protojson.Marshal(reqMsg)
+	bodies, err := nativeMetricBodies(reqMsg)
 	if err != nil {
 		return err
 	}
@@ -348,12 +349,52 @@ func (e *IngestExporter) PostMetrics(ctx context.Context, metrics []*collectorv1
 	// continua no bbolt e é reenviado no próximo boot. Os pontos têm timestamp,
 	// portanto chegar atrasado no VM não altera a série. 401/429 continuam sendo
 	// descartados com aviso claro via sendbuf.
-	if err := e.metricsPending.Offer(body, nil); err != nil {
-		return fmt.Errorf("queue metrics: %w", err)
+	var sendError error
+	for _, body := range bodies {
+		if err := e.metricsPending.Offer(body, nil); err != nil {
+			return fmt.Errorf("queue metrics: %w", err)
+		}
+		// Do not fill the bounded outbox with a whole large snapshot while the
+		// gateway is healthy. Persist and flush each chunk before offering next.
+		if sendError == nil {
+			sendError = e.metricsPending.Flush(ctx, func(fctx context.Context, b []byte) error {
+				return e.PostRaw(fctx, "metrics", "application/json", b)
+			})
+		}
 	}
-	return e.metricsPending.Flush(ctx, func(fctx context.Context, b []byte) error {
-		return e.PostRaw(fctx, "metrics", "application/json", b)
-	})
+	return sendError
+}
+
+// Bound native batches by count and serialized bytes, below the gateway's
+// 16 MiB limit and HTTP defaults. Each body keeps the same resource identity.
+func nativeMetricBodies(request *metricscolpb.ExportMetricsServiceRequest) ([][]byte, error) {
+	const maxPoints = 1000
+	const maxBytes = 1024 * 1024
+	metrics := request.ResourceMetrics[0].ScopeMetrics[0].Metrics
+	var bodies [][]byte
+	var split func([]*metricspb.Metric) error
+	split = func(part []*metricspb.Metric) error {
+		request.ResourceMetrics[0].ScopeMetrics[0].Metrics = part
+		body, err := protojson.Marshal(request)
+		if err != nil {
+			return err
+		}
+		if len(part) <= maxPoints && len(body) <= maxBytes {
+			bodies = append(bodies, body)
+			return nil
+		}
+		if len(part) == 1 {
+			return fmt.Errorf("native metric exceeds %d byte request limit", maxBytes)
+		}
+		middle := len(part) / 2
+		if err := split(part[:middle]); err != nil {
+			return err
+		}
+		return split(part[middle:])
+	}
+	err := split(metrics)
+	request.ResourceMetrics[0].ScopeMetrics[0].Metrics = metrics
+	return bodies, err
 }
 
 // PostSnmpTrap encaminha um SNMP trap já parseado pro backend (noc_device_event).

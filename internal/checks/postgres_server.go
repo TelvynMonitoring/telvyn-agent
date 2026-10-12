@@ -162,6 +162,7 @@ const (
 	sqlLocksWaiting = `SELECT count(*)::BIGINT FROM pg_locks WHERE NOT granted`
 
 	sqlDatabaseSize = `SELECT pg_database_size(current_database())::BIGINT`
+	sqlWalDirectorySize = `SELECT COALESCE(sum(size), 0)::BIGINT FROM pg_ls_waldir()`
 
 	// Contadores por database. O backend calcula o aumento na janela e nunca
 	// apresenta o valor acumulado desde o último reset como consumo recente.
@@ -328,6 +329,9 @@ func (c *postgresServer) Run(ctx context.Context) ([]*collectorv1.Metric, error)
 	if v, ok := queryInt64(sqlDatabaseSize); ok {
 		out = append(out, c.metric(now, "postgres.database_size_bytes", float64(v)))
 	}
+	if v, ok := queryInt64(sqlWalDirectorySize); ok {
+		out = append(out, c.metric(now, "postgres.wal_size_bytes", float64(v)))
+	}
 	if v, ok := queryInt64(sqlTempBytes); ok {
 		out = append(out, c.metric(now, "postgres.temp_bytes", float64(v)))
 	}
@@ -348,6 +352,8 @@ func (c *postgresServer) Run(ctx context.Context) ([]*collectorv1.Metric, error)
 	if v, ok := queryFloat64(sqlUptimeSeconds); ok {
 		out = append(out, c.metric(now, "postgres.uptime_seconds", v))
 	}
+	out = append(out, c.extendedMetrics(ctx, now)...)
+	out = append(out, c.objectMetrics(ctx, now)...)
 
 	if err := ctx.Err(); err != nil {
 		return out, err
