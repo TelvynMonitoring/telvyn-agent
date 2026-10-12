@@ -33,6 +33,7 @@ func TestDatabaseSignalsCarryVersionedEnvelope(t *testing.T) {
 		DatabaseID:     "22222222-2222-2222-2222-222222222222",
 		DBServer:       "postgres.internal",
 		DBName:         "billing",
+		ServerVersion:  "12.22",
 		Capabilities: []DatabaseCapability{{
 			Name: "replication", Status: "available",
 		}},
@@ -45,6 +46,9 @@ func TestDatabaseSignalsCarryVersionedEnvelope(t *testing.T) {
 	}
 	if got.Engine != "postgres" || got.CollectedAt == "" {
 		t.Fatalf("missing engine/time: %+v", got.DatabaseSignalEnvelope)
+	}
+	if got.ServerVersion != "12.22" {
+		t.Fatalf("missing negotiated server version: %+v", got)
 	}
 }
 
