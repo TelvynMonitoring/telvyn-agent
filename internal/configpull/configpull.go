@@ -30,6 +30,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/ispwatch/collector/internal/inventory"
 	"github.com/ispwatch/collector/internal/snmp"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
@@ -288,6 +289,13 @@ func pullOnce(
 		}
 		// params + static_tags JSONB → map<string,string>
 		cb.Params = jsonObjectToStringMap(p.Params)
+		if p.CheckType == "external.python" {
+			if cb.Params == nil {
+				cb.Params = map[string]string{}
+			}
+			// Only the authoritative outer config version reaches the inventory transport.
+			cb.Params[inventory.ConfigVersionParam] = fmt.Sprint(p.ConfigVersion)
+		}
 		cb.StaticTags = jsonObjectToStringMap(p.StaticTags)
 		// Injeta target pros checks remotos (snmp.*, icmp.*) — preferindo
 		// external_id (IP real) sobre hostname. Esse fallback também existia

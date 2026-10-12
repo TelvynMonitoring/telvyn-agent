@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ispwatch/collector/internal/inventory"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
@@ -31,15 +32,8 @@ var externalLabels = map[string]bool{
 	"node": true, "cluster": true, "datastore": true, "power_state": true,
 }
 
-// ExternalInventory is validated but deliberately not sent to the backend.
-type ExternalInventory struct {
-	ResourceID string `json:"resource_id"`
-	Type       string `json:"type"`
-	Name       string `json:"name"`
-	State      string `json:"state"`
-	ParentID   string `json:"parent_id"`
-	ObservedAt string `json:"observed_at"`
-}
+// ExternalInventory is validated before a separate inventory report is sent.
+type ExternalInventory = inventory.Resource
 
 type externalMetric struct {
 	Name       string            `json:"name"`
@@ -88,8 +82,10 @@ func mapExternalResponse(raw []byte, instanceID, hostID, check string, coreTags 
 			return nil, nil, nil, "", errors.New("external.python: invalid coverage")
 		}
 	}
+	seen := make(map[string]bool, len(response.Inventory))
 	for _, item := range response.Inventory {
 		if !externalResourceID.MatchString(item.ResourceID) || !externalLabel.MatchString(item.Type) ||
+			seen[item.ResourceID] || item.ParentID == item.ResourceID ||
 			!validText(item.Name, 256) || !validText(item.State, 64) ||
 			(item.ParentID != "" && !externalResourceID.MatchString(item.ParentID)) {
 			return nil, nil, nil, "", errors.New("external.python: invalid inventory")
@@ -97,6 +93,7 @@ func mapExternalResponse(raw []byte, instanceID, hostID, check string, coreTags 
 		if _, err := externalTime(item.ObservedAt); err != nil {
 			return nil, nil, nil, "", errors.New("external.python: invalid inventory timestamp")
 		}
+		seen[item.ResourceID] = true
 	}
 	metrics := make([]*collectorv1.Metric, 0, len(response.Metrics))
 	skippedCounts := 0

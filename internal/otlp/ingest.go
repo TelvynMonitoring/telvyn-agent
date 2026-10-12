@@ -187,7 +187,7 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return modules["KUBERNETES"]
 	case "k8s/resources":
 		return modules["KUBERNETES"]
-	case "host/services":
+	case "host/services", "proxmox/inventory":
 		return modules["INFRAESTRUTURA"]
 	case "db/query-stats":
 		return modules["BANCOS_DADOS"]

@@ -22,6 +22,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/ispwatch/collector/internal/inventory"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 
@@ -105,6 +106,7 @@ type Runtime struct {
 	// instanceDiscoveryPusher informa os bancos lógicos acessíveis de uma
 	// instância. O backend usa o snapshot para materializar os checks filhos.
 	instanceDiscoveryPusher InstanceDiscoveryPusher
+	externalInventoryPusher func(context.Context, inventory.Snapshot) error
 }
 
 // StatusReporter recebe o estado de um check quando ele MUDA (passou a falhar,
@@ -608,6 +610,15 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			return
 		}
 		timedOut := runErr == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded)
+		if provider, ok := c.(interface{ InventoryReport() *inventory.Snapshot }); ok {
+			if report := provider.InventoryReport(); report != nil {
+				if err != nil || timedOut {
+					report.Complete = false
+					report.Resources = []inventory.Resource{}
+				}
+				r.pushExternalInventory(ctx, *report)
+			}
+		}
 		if err != nil {
 			if failure, ok := any(c).(ExplainFailureProvider); ok {
 				r.pushExplain(c, failure.ExplainFailure(err))
@@ -837,6 +848,28 @@ func (r *Runtime) SetStatusReporter(f StatusReporter) {
 	r.mu.Lock()
 	r.statusReporter = f
 	r.mu.Unlock()
+}
+
+func (r *Runtime) SetExternalInventoryPusher(f func(context.Context, inventory.Snapshot) error) {
+	r.mu.Lock()
+	r.externalInventoryPusher = f
+	r.mu.Unlock()
+}
+
+func (r *Runtime) pushExternalInventory(ctx context.Context, report inventory.Snapshot) {
+	r.mu.Lock()
+	push := r.externalInventoryPusher
+	r.mu.Unlock()
+	if push == nil || ctx.Err() != nil {
+		return
+	}
+	postCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// Synchronous per check: bounded lifetime, no unbounded goroutines or old snapshot queue.
+	// A failed delivery is retried with a freshly collected snapshot on the next run.
+	if err := push(postCtx, report); err != nil {
+		r.log.Warn("external inventory delivery failed", "check_id", report.CheckID)
+	}
 }
 
 // SetExecutionReporter instala o consumidor dos eventos de cada execução.

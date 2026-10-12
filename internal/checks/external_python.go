@@ -11,11 +11,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ispwatch/collector/internal/checkpackages"
+	"github.com/ispwatch/collector/internal/inventory"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 
@@ -34,6 +36,8 @@ type externalPythonCheck struct {
 	inventory                                          []ExternalInventory
 	coverage                                           json.RawMessage
 	status                                             string
+	configVersion                                      int64
+	report                                             *inventory.Snapshot
 }
 
 type externalRequest struct {
@@ -51,6 +55,7 @@ func newExternalPythonCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 		return nil, errors.New("external.python: core host_id required")
 	}
 	params := cfg.GetParams()
+	configVersion, _ := strconv.ParseInt(params[inventory.ConfigVersionParam], 10, 64)
 	name, version, check := params["package"], params["version"], params["check"]
 	root := os.Getenv("TELVYN_EXTERNAL_PACKAGE_DIR")
 	trust := os.Getenv("TELVYN_EXTERNAL_TRUST_DIR")
@@ -75,7 +80,7 @@ func newExternalPythonCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 	requestParams := make(map[string]string, len(params))
 	for key, value := range params {
 		switch strings.ToLower(key) {
-		case "package", "version", "check":
+		case "package", "version", "check", inventory.ConfigVersionParam:
 			continue
 		case "package_dir", "trust_dir", "trusted_keys", "python", "python_exe", "isolation_mode", "execution_mode", "ingest_token", "tenant_id", "host_uuid", "host_id", "instance_id":
 			return nil, errors.New("external.python: reserved remote parameter")
@@ -115,6 +120,7 @@ func newExternalPythonCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 		packageVersion: version, checkName: check, packageDir: root,
 		trustDir: trust, python: resolvedPython, interval: interval,
 		params: requestParams, staticTags: staticTags,
+		configVersion: configVersion,
 	}, nil
 }
 
@@ -122,8 +128,7 @@ func (c *externalPythonCheck) ID() string              { return c.id }
 func (c *externalPythonCheck) Interval() time.Duration { return c.interval }
 func (c *externalPythonCheck) Tags() map[string]string { return c.staticTags }
 
-// InventorySnapshot is intentionally local: no generic inventory ingest contract
-// exists yet. A future adapter must explicitly persist the validated snapshot.
+// InventorySnapshot exposes validated local data; InventoryReport is the bounded wire payload.
 func (c *externalPythonCheck) InventorySnapshot() ([]ExternalInventory, json.RawMessage, string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -131,6 +136,11 @@ func (c *externalPythonCheck) InventorySnapshot() ([]ExternalInventory, json.Raw
 }
 
 func (c *externalPythonCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
+	started := time.Now().UTC().Format(time.RFC3339Nano)
+	c.mu.Lock()
+	c.inventory, c.coverage, c.status = nil, json.RawMessage(`{}`), "error"
+	c.report = c.makeInventoryReport(started) // A failed run is incomplete, never an old success.
+	c.mu.Unlock()
 	runner, err := checkpackages.Verify(c.packageDir, c.trustDir, c.packageName, c.packageVersion, c.checkName)
 	if err != nil {
 		return nil, errors.New("external.python: package verification failed")
@@ -149,8 +159,52 @@ func (c *externalPythonCheck) Run(ctx context.Context) ([]*collectorv1.Metric, e
 	}
 	c.mu.Lock()
 	c.inventory, c.coverage, c.status = inventory, coverage, status
+	c.report = c.makeInventoryReport(started)
 	c.mu.Unlock()
 	return metrics, nil
+}
+
+// InventoryReport is independent of metrics; failures carry an incomplete empty snapshot.
+func (c *externalPythonCheck) InventoryReport() *inventory.Snapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.report == nil {
+		return nil
+	}
+	report := *c.report
+	report.Resources = append([]inventory.Resource{}, c.report.Resources...)
+	report.Coverage = append(json.RawMessage(nil), c.report.Coverage...)
+	return &report
+}
+
+func (c *externalPythonCheck) makeInventoryReport(observed string) *inventory.Snapshot {
+	if c.checkName != "proxmox" || c.configVersion <= 0 {
+		return nil
+	}
+	host, err := strconv.ParseInt(c.hostID, 10, 64)
+	if err != nil || host <= 0 {
+		return nil
+	}
+	var coverage struct {
+		Complete    bool   `json:"inventory_complete"`
+		Truncated   bool   `json:"result_truncated"`
+		ClusterMode string `json:"cluster_mode"`
+		Endpoint    string `json:"cluster_status_endpoint"`
+	}
+	if json.Unmarshal(c.coverage, &coverage) != nil {
+		return nil
+	}
+	if coverage.ClusterMode != "clustered" && coverage.ClusterMode != "standalone" {
+		coverage.ClusterMode = "unknown"
+	}
+	if coverage.Endpoint != "available" && coverage.Endpoint != "invalid" {
+		coverage.Endpoint = "unavailable"
+	}
+	encoded, _ := json.Marshal(map[string]string{"cluster_status_endpoint": coverage.Endpoint})
+	return &inventory.Snapshot{ProtocolVersion: 1, CheckID: c.id, ConfigVersion: c.configVersion,
+		HostID: c.hostID, Provider: c.checkName, ObservedAt: observed, ClusterMode: coverage.ClusterMode,
+		Complete:  c.status != "error" && coverage.Complete && !coverage.Truncated && coverage.ClusterMode != "unknown",
+		Resources: append([]inventory.Resource{}, c.inventory...), Coverage: encoded}
 }
 
 // invokeExternal is replaceable only within package tests. No shell is used;
