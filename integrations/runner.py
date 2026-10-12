@@ -27,6 +27,8 @@ def run(check, request):
     try:
         if check == "proxmox":
             from proxmox.check import collect
+        elif check == "vsphere":
+            from vsphere.check import collect
         else:
             return result(status="error", error="unknown_check")
         return collect(request["instance_id"], request["params"], request["static_tags"])
