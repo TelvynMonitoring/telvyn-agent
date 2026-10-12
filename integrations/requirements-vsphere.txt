@@ -1,0 +1,3 @@
+# Candidate runtime bundle pin for vCenter 8.x; approve against supported vCenter matrix.
+# The package installer must also lock and hash every transitive wheel offline.
+pyvmomi==8.0.3.0.1
