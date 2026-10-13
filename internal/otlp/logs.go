@@ -9,8 +9,8 @@
 //     (severity_number, body, attributes) e os field names canônicos.
 //   • Batch send a cada 2s OU a cada 100 records, o que vier primeiro.
 //
-// Sem WAL: logs são best-effort. Channel-full = drop silencioso com
-// counter agent_logs_dropped_total.
+// Sem WAL: falhas de transporte são best-effort e contabilizadas.
+// Lotes cheios aplicam backpressure aos leitores, sem descartar por volume.
 
 package otlp
 
@@ -71,7 +71,7 @@ type LogsExporter struct {
 
 	// ingest != nil ⇒ modo certless: em vez do POST mTLS pro
 	// /api/collector/v1/logs, cada batch sai como OTLP JSON + Bearer pro
-	// gateway /api/ingest/v1/logs. Toda a maquinaria de buffer/flush/overflow
+	// gateway /api/ingest/v1/logs. Toda a maquinaria de buffer/flush
 	// é reusada — só o transporte do sendBatch muda.
 	ingest *IngestExporter
 
@@ -126,7 +126,7 @@ func NewLogsExporter(endpoint, tenantID, collectorID string, certPath, keyPath, 
 
 // NewIngestLogsExporter constrói um LogsExporter no modo certless: os batches
 // são enviados via ingest.PostLogs (OTLP JSON + Bearer) em vez do canal mTLS.
-// Reusa Push/Run/flush/overflow/Stats do exporter mTLS.
+// Reusa Push/Run/flush/Stats do exporter mTLS.
 func NewIngestLogsExporter(ingest *IngestExporter, log *slog.Logger) *LogsExporter {
 	return &LogsExporter{
 		ingest:     ingest,
@@ -135,19 +135,16 @@ func NewIngestLogsExporter(ingest *IngestExporter, log *slog.Logger) *LogsExport
 	}
 }
 
-// Push adiciona records ao buffer interno. Não bloqueia — overflow >4x
-// batch size dropa do início (FIFO), same pattern do span Forwarder.
+// Push envia o lote cheio antes de aceitar mais registros; os leitores
+// aguardam o envio em vez de perder linhas durante rajadas.
 func (e *LogsExporter) Push(rec LogRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.buf = append(e.buf, rec)
 	e.linesTotal.Add(1)
 	e.bytesTotal.Add(int64(len(rec.Body)))
-	if cap := LogsBatchMaxRecords * 4; len(e.buf) > cap {
-		drop := len(e.buf) - cap
-		e.buf = e.buf[drop:]
-		e.droppedTotal.Add(int64(drop))
-		e.log.Warn("logs buffer overflow, dropped oldest", "dropped", drop, "buffered", len(e.buf))
+	if len(e.buf) >= LogsBatchMaxRecords {
+		e.flushLocked(context.Background())
 	}
 }
 
@@ -170,29 +167,27 @@ func (e *LogsExporter) Run(ctx context.Context) {
 // flush drena o buffer em batches de até LogsBatchMaxRecords e POSTa cada
 // batch. Falha de POST não recoloca records no buffer — best-effort.
 func (e *LogsExporter) flush(ctx context.Context) {
-	for {
-		e.mu.Lock()
-		if len(e.buf) == 0 {
-			e.mu.Unlock()
-			return
-		}
-		n := len(e.buf)
-		if n > LogsBatchMaxRecords {
-			n = LogsBatchMaxRecords
-		}
-		batch := make([]LogRecord, n)
-		copy(batch, e.buf[:n])
-		e.buf = e.buf[n:]
-		e.mu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.flushLocked(ctx)
+}
 
-		if err := e.sendBatch(ctx, batch); err != nil {
-			e.sendFailures.Add(1)
-			e.log.Warn("logs batch send failed", "count", len(batch), "err", err)
-			// não retry — dropamos batch e seguimos. Logs perdidos == OK.
-			return
-		}
+// Caller mantém mu durante o envio para limitar a memória a um lote.
+func (e *LogsExporter) flushLocked(ctx context.Context) {
+	if len(e.buf) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, LogsRequestTimeout)
+	defer cancel()
+	if err := e.sendBatch(ctx, e.buf); err != nil {
+		e.sendFailures.Add(1)
+		e.droppedTotal.Add(int64(len(e.buf)))
+		e.log.Warn("logs batch send failed", "count", len(e.buf), "err", err)
+	} else {
 		e.sentBatches.Add(1)
 	}
+	clear(e.buf)
+	e.buf = e.buf[:0]
 }
 
 // logBatchWire é o shape JSON enviado em cada POST. Campos espelham OTLP
