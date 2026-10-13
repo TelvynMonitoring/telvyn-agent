@@ -1,4 +1,25 @@
-# Agente Telvyn para Node.js — primeira integração
+# Agente Telvyn para Node.js
+
+## Candidata em desenvolvimento — ainda não publicada
+
+O código desta branch amplia o mesmo pacote com CPU/heap V8, workers, origem de arquivo/revisão, Debugger e segurança. A release pública 0.1.0 não contém esse conjunto. As verificações abaixo distinguem checks locais de aceite no painel; não usar esta seção como confirmação de release.
+
+| Configuração explícita | Comportamento da candidata |
+| --- | --- |
+| `TELVYN_PROFILING_ENABLED=true` | CPU a cada 15 s e heap vivo amostrado; cada worker com preload envia sua própria identidade. Heap é média por gravação de uma thread, não taxa de alocação ou soma do heap do processo. |
+| `TELVYN_PROFILE_SOURCE_ROOT=/app` | Limita caminhos de origem e módulos elegíveis para Debugger/IAST ao diretório da aplicação. `node_modules` fica fora da reescrita. |
+| `TELVYN_GIT_REPOSITORY_URL`, `TELVYN_GIT_COMMIT_SHA`, `TELVYN_GIT_SOURCE_ROOT` | Vinculam profiles ao commit exato e diretório relativo do repositório. Não há fallback para main. JavaScript gerado não é apresentado como TypeScript original. |
+| `TELVYN_DEBUGGER_ENABLED=true` | Consulta probes pelo coletor. Métodos/funções exportados em CommonJS/ESM: snapshot, condição tipada, contagem, duração e gauge. Linha explícita usa o inspector interno, sem porta de rede. Valores capturados limitam-se a números/booleanos; strings e objetos são ocultados. Configuração sem renovação expira em 60 s. |
+| `TELVYN_SECURITY_ENABLED=true` e `TELVYN_SECURITY_ROUTES=/search,/lookup` | Engine libddwaf nas rotas exatas permitidas, somente parâmetro `q`; observa, sem bloquear tráfego. Não captura corpo, cookies, autenticação ou valores no relatório. |
+| `TELVYN_IAST_ENABLED=true` | Rastreamento nativo de `q` até `pg.Client/Pool.query`, com propagação por operadores/string e contexto assíncrono. Consultas parametrizadas não são tratadas como SQL concatenado. Requer rotas e raiz explícitas. Não implica cobertura de todos os bancos, fontes, operações ou frameworks. |
+
+O coletor precisa conter os novos endpoints de segurança/SDK/Debugger; o backend precisa aceitar os contratos Node e a identidade de worker. A instrumentação ESM usa o loader OTel existente e exige `module.register` (Node 20.6+). Não carregar outro tracer/rewriter no mesmo processo: conflitos de contexto impedem a ativação do IAST, preservando a aplicação.
+
+Conferências pontuais: CPU/heap com main e dois workers nas versões Node 20.20.2, 22.23.3 e 24.21.0 (sem thread interna do loader); PostgreSQL concatenado/parametrizado/literal/assíncrono em CommonJS e ESM; oito chamadas do Debugger em cada formato. No painel local: SQLi/XSS, IAST com arquivo/linha/trace, snapshot, condição numérica, locais por linha e exceção; ACK de instalação e cinco chamadas observadas. Métricas reais recebidas: contagem 5, gauge 8 e histograma de duração. Ainda pendem fechamento de fonte exata, instalação/distribuição e medição de impacto; não declarar cobertura universal.
+
+Relatórios têm limites de tamanho, concorrência e timeout. Perfis/eventos/snapshots que não alcançam o coletor podem ser perdidos com aviso; o WAL de logs não os protege. Probes de linha podem aumentar o custo de execução, especialmente em loops. Native addons de segurança vêm dos projetos Apache-2.0 `@datadog/native-appsec`, `@datadog/native-iast-taint-tracking` e `@datadog/wasm-js-rewriter`; são usados localmente, sem envio ao Datadog. Licenças acompanham as dependências.
+
+## Distribuição anterior e evidências históricas
 
 Injeção Kubernetes: o coletor Telvyn pode montar este pacote sem alterar a imagem/comando da aplicação. Construa `docker build -f telvyn-node-agent/Dockerfile -t <imagem> .` na raiz; configure essa imagem em `webhook.nodeAgentImageRef` do chart do coletor e a annotation do template do pod `instrumentation.telvyn.io/node-containers: "nome-do-container"`. A imagem precisa estar acessível nos nós. Opt-in explícito, sem inferir runtime pelo nome da imagem. Node 20/CommonJS validado em 13/10; preserve e confira opções herdadas da imagem/envFrom, que o admission controller não consegue ler.
 

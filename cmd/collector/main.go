@@ -610,6 +610,7 @@ func runIngestMode(ingestURL string) {
 		os.Exit(1)
 	}
 	rec.SetVerifiedHostTags(hostTags)
+	rec.SetDebugConfig(exporter.DebugConfig)
 	rec.SetForwardRaw(func(signal, ct string, body []byte) error {
 		if signal == "logs" {
 			if logsExp == nil {

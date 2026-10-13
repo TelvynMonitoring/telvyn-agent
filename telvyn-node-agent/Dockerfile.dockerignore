@@ -5,3 +5,9 @@
 !telvyn-node-agent/register.cjs
 !telvyn-node-agent/bootstrap.cjs
 !telvyn-node-agent/profiler.cjs
+!telvyn-node-agent/security.cjs
+!telvyn-node-agent/iast.cjs
+!telvyn-node-agent/debugger.cjs
+!telvyn-node-agent/runtime.cjs
+!telvyn-node-agent/loader.mjs
+!telvyn-node-agent/security-rules.json
