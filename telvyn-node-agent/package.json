@@ -22,6 +22,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@fastify/otel": "0.21.2",
     "@opentelemetry/api": "1.9.1",
     "@opentelemetry/exporter-metrics-otlp-proto": "0.223.0",
     "@opentelemetry/exporter-trace-otlp-proto": "0.223.0",

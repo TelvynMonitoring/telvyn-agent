@@ -4,6 +4,7 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
   const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-proto');
   const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http');
   const { ExpressInstrumentation } = require('@opentelemetry/instrumentation-express');
+  const FastifyOtelInstrumentation = require('@fastify/otel');
   const { PeriodicExportingMetricReader } = require('@opentelemetry/sdk-metrics');
   const { OTLPMetricExporter } = require('@opentelemetry/exporter-metrics-otlp-proto');
   const { ServerResponse, IncomingMessage } = require('node:http');
@@ -56,7 +57,9 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
         const { traceId, spanId } = span.spanContext();
         console.log(JSON.stringify({service: process.env.OTEL_SERVICE_NAME, level: response.statusCode >= 500 ? 'error' : 'info', message: 'HTTP request completed', method: request.method, status: response.statusCode, trace_id: traceId, span_id: spanId}));
       },
-    }), new ExpressInstrumentation({requestHook(span, info) { iast?.request(info.request); }})],
+    }), new ExpressInstrumentation({requestHook(span, info) { iast?.request(info.request); }}),
+    new FastifyOtelInstrumentation({registerOnInitialization: true, recordExceptions: false,
+      requestHook(span, request) { iast?.request(request); }})],
   });
   sdk.start();
   let transport, debuggerAgent, stopConfiguration;
