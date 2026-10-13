@@ -75,6 +75,16 @@ spec:
               value: {{ required "values.ingest.token é obrigatório p/ o webhook" .Values.ingest.token | quote }}
             - name: ISPWATCH_AGENT_IMAGE
               value: {{ default (printf "%s:%s" .Values.image.repository .Values.image.tag) .Values.webhook.agentImageRef | quote }}
+            - name: TELVYN_NODE_AGENT_IMAGE
+              value: {{ .Values.webhook.nodeAgentImageRef | quote }}
+            - name: TELVYN_PYTHON_AGENT_IMAGE
+              value: {{ .Values.webhook.pythonAgentImageRef | quote }}
+            - name: TELVYN_DOTNET_AGENT_IMAGE
+              value: {{ .Values.webhook.dotnetAgentImageRef | quote }}
+            - name: TELVYN_RUBY_AGENT_IMAGE
+              value: {{ .Values.webhook.rubyAgentImageRef | quote }}
+            - name: TELVYN_PHP_AGENT_IMAGE
+              value: {{ .Values.webhook.phpAgentImageRef | quote }}
             - name: ISPWATCH_OTLP_ENDPOINT
               value: {{ .Values.webhook.otlpEndpoint | quote }}
             - name: ISPWATCH_OTLP_PROTOCOL

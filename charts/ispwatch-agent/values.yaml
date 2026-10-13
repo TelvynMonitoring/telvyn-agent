@@ -118,6 +118,12 @@ webhook:
   # (precisa estar disponível em todos os nós onde os pods alvo rodam).
   # Default usa a mesma do DaemonSet.
   agentImageRef: ""
+  # Imagem do pacote @telvyn/node-agent. Opt-in por annotation node-containers.
+  nodeAgentImageRef: ""
+  pythonAgentImageRef: ""
+  dotnetAgentImageRef: ""
+  rubyAgentImageRef: ""
+  phpAgentImageRef: ""
   # OTLP endpoint que o javaagent injetado vai usar. $(NODE_IP) é
   # expandido pelo K8s downward API no pod alvo. Em modo ingest o agent só
   # sobe o receptor OTLP/HTTP na :4318 (gRPC :4317 só no modo server-driven).

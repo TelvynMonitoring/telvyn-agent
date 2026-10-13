@@ -205,14 +205,19 @@ func main() {
 		go func() { <-sigCh; cancel() }()
 
 		cfg := webhook.Config{
-			ListenAddr:      getenvOr("ISPWATCH_WEBHOOK_ADDR", webhook.DefaultListenAddr),
-			CertDir:         getenvOr("ISPWATCH_WEBHOOK_CERT_DIR", webhook.DefaultCertDir),
-			IngestURL:       mustEnv("ISPWATCH_INGEST_URL"),
-			Token:           mustEnv("ISPWATCH_INGEST_TOKEN"),
-			AgentImage:      getenvOr("ISPWATCH_AGENT_IMAGE", "localhost/telvyn-agent:local"),
-			OtlpEndpointEnv: getenvOr("ISPWATCH_OTLP_ENDPOINT", "http://$(NODE_IP):4318"),
-			OtlpProtocol:    getenvOr("ISPWATCH_OTLP_PROTOCOL", "http/protobuf"),
-			Log:             whLog,
+			ListenAddr:       getenvOr("ISPWATCH_WEBHOOK_ADDR", webhook.DefaultListenAddr),
+			CertDir:          getenvOr("ISPWATCH_WEBHOOK_CERT_DIR", webhook.DefaultCertDir),
+			IngestURL:        os.Getenv("ISPWATCH_INGEST_URL"),
+			Token:            os.Getenv("ISPWATCH_INGEST_TOKEN"),
+			AgentImage:       getenvOr("ISPWATCH_AGENT_IMAGE", "localhost/telvyn-agent:local"),
+			NodeAgentImage:   os.Getenv("TELVYN_NODE_AGENT_IMAGE"),
+			PythonAgentImage: os.Getenv("TELVYN_PYTHON_AGENT_IMAGE"),
+			DotnetAgentImage: os.Getenv("TELVYN_DOTNET_AGENT_IMAGE"),
+			RubyAgentImage:   os.Getenv("TELVYN_RUBY_AGENT_IMAGE"),
+			PhpAgentImage:    os.Getenv("TELVYN_PHP_AGENT_IMAGE"),
+			OtlpEndpointEnv:  getenvOr("ISPWATCH_OTLP_ENDPOINT", "http://$(NODE_IP):4318"),
+			OtlpProtocol:     getenvOr("ISPWATCH_OTLP_PROTOCOL", "http/protobuf"),
+			Log:              whLog,
 		}
 		srv := webhook.New(cfg)
 		if err := srv.Run(ctx); err != nil {
