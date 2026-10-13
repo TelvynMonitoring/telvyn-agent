@@ -11,6 +11,7 @@ function startDebugger(transport) {
   const { trace, metrics } = require('@opentelemetry/api');
   const meter = metrics.getMeter('telvyn.debugger');
   const instruments = new Map(), captures = new Map(), breakpoints = new Map();
+  const errorIds = new WeakMap();
   const installed = new Set(), observed = new Map();
   const sessionId = require('node:crypto').randomBytes(16).toString('hex');
   let policies = new Map(), errors = [], stopped = false, lastConfig = 0, reportReady = false;
@@ -24,9 +25,15 @@ function startDebugger(transport) {
     if (now - (captures.get(target) || 0) < 1000) return;
     if (!captures.has(target) && captures.size >= 200) return;
     captures.set(target, now);
+    let errorId;
+    if (error && (typeof error === 'object' || typeof error === 'function')) {
+      errorId = errorIds.get(error);
+      if (!errorId) { errorId = require('node:crypto').randomBytes(16).toString('hex'); errorIds.set(error, errorId); }
+    }
     const span = trace.getActiveSpan()?.spanContext();
     transport.send('debug', {snapshots: [{method: target, phase, captured_unix_ms: now, payload, duration_ms: duration,
       error: error ? error.name === 'TypeError' ? 'TypeError' : 'Error' : undefined,
+      ...(errorId ? {error_id: errorId} : {}),
       ...(span ? {trace_id: span.traceId, span_id: span.spanId} : {})}]});
   }
   function matches(condition, args, duration, error) {
@@ -44,7 +51,7 @@ function startDebugger(transport) {
   function observe(target, args, value, duration, error) {
     if (stopped || Date.now() - lastConfig > 60000) return;
     const policy = policies.get(target);
-    if (!policy) { if (error && errors.some(prefix => target.startsWith(prefix))) snapshot(target, 'exception', {}, duration, error); return; }
+    if (!policy) { if (error && errors.some(prefix => target.startsWith(prefix))) snapshot(target, 'exception', {args: args.slice(0, 20).map(scalar)}, duration, error); return; }
     observed.set(target, Math.min(1000000000000, (observed.get(target) || 0) + 1));
     if (!matches(policy.condition, args, duration, error)) return;
     if (policy.action === 'snapshot') { snapshot(target, 'call', {args: args.slice(0, 20).map(scalar), returned: scalar(value)}, duration, error); return; }
