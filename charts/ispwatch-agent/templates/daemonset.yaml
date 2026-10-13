@@ -27,7 +27,7 @@ spec:
       # resolve nomes públicos via upstream.
       dnsPolicy: ClusterFirstWithHostNet
       {{- end }}
-      {{- if or .Values.ebpfTracing.enabled .Values.profiling.enabled }}
+      {{- if or .Values.ebpfTracing.enabled .Values.profiling.enabled .Values.webhook.enabled }}
       # eBPF (L7 tracing e/ou CPU profiler) exige hostPID pra resolver
       # pid → container via /proc do host (cgroup parsing). Sem isso o
       # resolver vê só PIDs do próprio pod, não dos workloads do nó.
@@ -195,6 +195,16 @@ spec:
             runAsUser: 0
             runAsGroup: 0
             readOnlyRootFilesystem: false
+            {{- else if .Values.webhook.enabled }}
+            # Runtime detection reads /proc/<pid>/exe and maps across UIDs.
+            # It needs hostPID and ptrace read access, not eBPF/privileged mode.
+            runAsUser: 0
+            runAsGroup: 0
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["NET_RAW", "SYS_PTRACE", "DAC_READ_SEARCH"]
             {{- else if .Values.sbomScan.enabled }}
             # Trivy precisa ler o socket do containerd (root:root) e escrever cache
             # em /tmp. Roda como root SEM privileged — escopo só do store de imagens.
