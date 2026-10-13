@@ -1,0 +1,7 @@
+**
+!telvyn-go-agent/
+!telvyn-go-agent/go.mod
+!telvyn-go-agent/go.sum
+!telvyn-go-agent/agent.go
+!telvyn-go-agent/bootstrap.go
+!telvyn-go-agent/compile/**

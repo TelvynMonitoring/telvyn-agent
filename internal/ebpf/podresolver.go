@@ -48,6 +48,8 @@ type PodIndex struct {
 }
 
 type NamespacedName struct {
+	Container string
+	Image     string
 	Namespace string
 	Pod       string
 	Workload  string // Deployment/StatefulSet/DaemonSet derivado (ownerRef → k8smeta.WorkloadOf)
@@ -155,6 +157,16 @@ func (r *PodResolverImpl) Resolve(pid uint32) (string, string, bool) {
 		return "", "", false
 	}
 	return pod.Namespace, pod.Pod, true
+}
+
+// ResolveContainer keeps runtime discovery attached to the actual container,
+// rather than choosing one runtime for all sidecars in a pod.
+func (r *PodResolverImpl) ResolveContainer(pid uint32) (string, string, string, string, bool) {
+	id := r.containerIDFor(pid)
+	r.mu.RLock()
+	pod, ok := r.idToPod[id]
+	r.mu.RUnlock()
+	return pod.Namespace, pod.Pod, pod.Container, pod.Image, ok && pod.Container != ""
 }
 
 // ResolveIP resolve um endereço IP pra (namespace, pod) — lado SERVER da
@@ -338,7 +350,9 @@ func (h *httpPodLister) List(ctx context.Context) (PodIndex, error) {
 		for _, c := range p.Status.ContainerStatuses {
 			id := stripContainerIDPrefix(c.ContainerID)
 			if id != "" {
-				byID[id] = ns
+				entry := ns
+				entry.Container, entry.Image = c.Name, c.Image
+				byID[id] = entry
 			}
 		}
 		for _, c := range p.Status.InitContainerStatuses {
@@ -434,6 +448,8 @@ type kubeletPodList struct {
 				IP string `json:"ip"`
 			} `json:"podIPs"`
 			ContainerStatuses []struct {
+				Name        string `json:"name"`
+				Image       string `json:"image"`
 				ContainerID string `json:"containerID"`
 			} `json:"containerStatuses"`
 			InitContainerStatuses []struct {

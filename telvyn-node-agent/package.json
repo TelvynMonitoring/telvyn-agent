@@ -1,0 +1,16 @@
+{
+  "name": "@telvyn/node-agent",
+  "version": "0.1.0",
+  "description": "Telvyn HTTP and Express instrumentation through the existing OTLP collector",
+  "main": "register.cjs",
+  "exports": {"./register": "./register.cjs"},
+  "files": ["register.cjs", "bootstrap.cjs", "README.md"],
+  "engines": {"node": ">=20"},
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/sdk-node": "0.223.0",
+    "@opentelemetry/instrumentation-http": "0.223.0",
+    "@opentelemetry/instrumentation-express": "0.71.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.223.0"
+  }
+}

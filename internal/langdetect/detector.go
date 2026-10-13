@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,7 @@ type Pusher interface {
 
 // Detector varre os processos do nó periodicamente e reporta a linguagem por pod.
 type Detector struct {
+	Cluster  string
 	resolver PodResolver
 	pusher   Pusher
 	log      *slog.Logger
@@ -82,6 +84,8 @@ func (d *Detector) scanAndPush(ctx context.Context) {
 	// Melhor linguagem por pod (ns/pod). Um pod pode ter shell + runtime; o
 	// rank prioriza o runtime real sobre genéricos.
 	byPod := make(map[string]podLang, 32)
+	byContainer := make(map[string]map[string]string)
+	ambiguous := make(map[string]bool)
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -100,6 +104,18 @@ func (d *Detector) scanAndPush(ctx context.Context) {
 			continue
 		}
 		key := ns + "/" + pod
+		if resolver, ok := d.resolver.(interface {
+			ResolveContainer(uint32) (string, string, string, string, bool)
+		}); ok {
+			_, _, container, image, found := resolver.ResolveContainer(pid)
+			if found {
+				containerKey := key + "/" + container
+				if previous, exists := byContainer[containerKey]; exists && strings.TrimSuffix(previous["language"], "-unsupported") != lang {
+					ambiguous[containerKey] = true
+				}
+				byContainer[containerKey] = map[string]string{"namespace": ns, "pod": pod, "container": container, "image": image, "language": d.containerLanguage(pid, lang)}
+			}
+		}
 		if cur, exists := byPod[key]; !exists || rank(lang) > rank(cur.Language) {
 			byPod[key] = podLang{Namespace: ns, Pod: pod, Language: lang}
 		}
@@ -120,6 +136,43 @@ func (d *Detector) scanAndPush(ctx context.Context) {
 		return
 	}
 	d.log.Info("langdetect: linguagens reportadas", "pods", len(list))
+	if d.Cluster != "" && len(byContainer) > 0 {
+		containers := []map[string]string{}
+		for key, item := range byContainer {
+			if ambiguous[key] {
+				item["language"] = "ambiguous"
+			}
+			containers = append(containers, item)
+		}
+		body, err := json.Marshal(map[string]any{"cluster": d.Cluster, "containers": containers})
+		if err == nil {
+			if err := d.pusher.PostRaw(ctx, "k8s/runtime-languages", "application/json", body); err != nil {
+				d.log.Debug("container language report failed", "err", err)
+			}
+		}
+	}
+}
+
+// Bundled native dependencies must match the runtime actually mapped by the
+// process. Unknown/other ABIs remain visible but cannot be selected for injection.
+func (d *Detector) containerLanguage(pid uint32, language string) string {
+	maps := filepath.Join(d.procRoot, strconv.FormatUint(uint64(pid), 10), "maps")
+	switch language {
+	case "dotnet":
+		if runtime.GOARCH != "amd64" || !hasLib(maps, "/Microsoft.NETCore.App/8.") {
+			return "dotnet-unsupported"
+		}
+	case "python":
+		exe, _ := os.Readlink(filepath.Join(d.procRoot, strconv.FormatUint(uint64(pid), 10), "exe"))
+		if runtime.GOARCH != "amd64" || (!hasLib(maps, "libpython3.13") && filepath.Base(exe) != "python3.13") || !hasLib(maps, "ld-musl-") {
+			return "python-unsupported"
+		}
+	case "ruby":
+		if runtime.GOARCH != "amd64" || !hasLib(maps, "libruby.so.3.3") || !hasLib(maps, "ld-musl-") {
+			return "ruby-unsupported"
+		}
+	}
+	return language
 }
 
 // detectLang olha exe → cmdline → maps (fallback p/ Java via libjvm.so).
@@ -147,6 +200,9 @@ func (d *Detector) detectLang(pid uint32) string {
 	if hasLib(filepath.Join(base, "maps"), "libjvm.so") {
 		return "java"
 	}
+	if hasLib(filepath.Join(base, "maps"), "libcoreclr.so") {
+		return "dotnet"
+	}
 	return ""
 }
 
@@ -164,6 +220,8 @@ func langFromName(name string) string {
 		return "ruby"
 	case n == "dotnet":
 		return "dotnet"
+	case n == "php" || strings.HasPrefix(n, "php-fpm"):
+		return "php"
 	}
 	return ""
 }

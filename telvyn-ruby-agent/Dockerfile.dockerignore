@@ -1,0 +1,6 @@
+**
+!telvyn-ruby-agent/
+!telvyn-ruby-agent/telvyn-ruby-agent.gemspec
+!telvyn-ruby-agent/README.md
+!telvyn-ruby-agent/lib/**
+!telvyn-ruby-agent/injection/**

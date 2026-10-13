@@ -1,0 +1,1 @@
+{"name":"telvyn/php-agent","version":"0.1.0","description":"Telvyn HTTP request lifecycle through the existing OTLP collector","require":{"php":"^8.3","open-telemetry/sdk":"1.15.0","open-telemetry/exporter-otlp":"1.4.0","guzzlehttp/guzzle":"8.2.0"},"autoload":{"psr-4":{"Telvyn\\Agent\\":"src/"},"files":["bootstrap.php"]}}

@@ -1,0 +1,6 @@
+**
+!telvyn-python-agent/
+!telvyn-python-agent/pyproject.toml
+!telvyn-python-agent/telvyn_python_agent.py
+!telvyn-python-agent/injection/
+!telvyn-python-agent/injection/sitecustomize.py

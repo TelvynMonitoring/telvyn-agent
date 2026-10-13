@@ -183,7 +183,7 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return modules["REDE_SNMP"]
 	case "sbom":
 		return modules["VULNERABILIDADES"]
-	case "k8s/events", "k8s/pod-languages":
+	case "k8s/events", "k8s/pod-languages", "k8s/runtime-languages":
 		return modules["KUBERNETES"]
 	case "k8s/resources":
 		return modules["KUBERNETES"]

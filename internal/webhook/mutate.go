@@ -49,10 +49,13 @@ type AdmissionResponse struct {
 }
 
 type podMeta struct {
-	Metadata struct {
+	serviceName string
+	clusterName string
+	Metadata    struct {
 		Name            string            `json:"name"`
 		Namespace       string            `json:"namespace"`
 		Annotations     map[string]string `json:"annotations,omitempty"`
+		Labels          map[string]string `json:"labels,omitempty"`
 		GenerateName    string            `json:"generateName,omitempty"`
 		OwnerReferences []struct {
 			Name string `json:"name"`
@@ -148,6 +151,7 @@ func (s *Server) decide(req *AdmissionRequest) *AdmissionResponse {
 	if ns == "" {
 		ns = pod.Metadata.Namespace
 	}
+	pod.clusterName = s.cfg.Cluster
 	// Explicit container selection avoids guessing a runtime from an application image name.
 	type injector struct {
 		language, image string
@@ -155,8 +159,12 @@ func (s *Server) decide(req *AdmissionRequest) *AdmissionResponse {
 	}
 	injections := []injector{{"node", s.cfg.NodeAgentImage, nodePatch}, {"python", s.cfg.PythonAgentImage, pythonPatch}, {"dotnet", s.cfg.DotnetAgentImage, dotnetPatch}, {"ruby", s.cfg.RubyAgentImage, rubyPatch}, {"php", s.cfg.PhpAgentImage, phpPatch}}
 	selectedRuntime := -1
+	central, centralSelected := s.runtimeSelection(pod, ns)
+	if centralSelected {
+		pod.serviceName = central.Workload
+	}
 	for i, injection := range injections {
-		if pod.Metadata.Annotations["instrumentation.telvyn.io/"+injection.language+"-containers"] != "" {
+		if (centralSelected && central.Language == injection.language) || pod.Metadata.Annotations["instrumentation.telvyn.io/"+injection.language+"-containers"] != "" {
 			if selectedRuntime >= 0 {
 				s.cfg.Log.Warn("webhook: conflicting runtime selections", "ns", ns)
 				return out
@@ -167,6 +175,13 @@ func (s *Server) decide(req *AdmissionRequest) *AdmissionResponse {
 	if selectedRuntime >= 0 {
 		injection := injections[selectedRuntime]
 		selected := pod.Metadata.Annotations["instrumentation.telvyn.io/"+injection.language+"-containers"]
+		if centralSelected {
+			if selected != "" && selected != central.Container {
+				s.cfg.Log.Warn("webhook: annotation conflicts with central container selection", "ns", ns)
+				return out
+			}
+			selected = central.Container
+		}
 		patch, err := injection.patch(pod, selected, injection.image, s.cfg.OtlpEndpointEnv)
 		if err != nil {
 			s.cfg.Log.Warn("webhook: runtime injection skipped", "ns", ns, "runtime", injection.language, "reason", err)

@@ -5,9 +5,19 @@ import (
 	"strings"
 )
 
+func runtimeServiceName(pod podMeta, containerName string) string {
+	if service := pod.Metadata.Labels["tags.datadoghq.com/service"]; service != "" {
+		return service
+	}
+	if pod.serviceName != "" {
+		return pod.serviceName
+	}
+	return containerName
+}
+
 // nodePatch installs the operator's package without changing the application command.
 func nodePatch(pod podMeta, selected, image, endpoint string) ([]patchOp, error) {
-	return runtimePatch(pod, selected, image, endpoint, "node", "NODE_OPTIONS", "--require=/opt/telvyn/node/register.cjs", " ", nil)
+	return runtimePatch(pod, selected, image, endpoint, "node", "NODE_OPTIONS", "--require=/opt/telvyn/node/bootstrap.cjs", " ", nil)
 }
 
 func pythonPatch(pod podMeta, selected, image, endpoint string) ([]patchOp, error) {
@@ -101,8 +111,22 @@ func runtimePatch(pod podMeta, selected, image, endpoint, language, optionsName,
 			{Name: "NODE_IP", ValueFrom: fieldRef("status.hostIP")},
 			{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: endpoint},
 			{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: "http/protobuf"},
-			{Name: "OTEL_SERVICE_NAME", Value: c.Name},
+			{Name: "OTEL_SERVICE_NAME", Value: runtimeServiceName(pod, c.Name)},
 		}
+		attributes := []string{"k8s.pod.name=$(TELVYN_POD_NAME)", "k8s.namespace.name=$(TELVYN_POD_NAMESPACE)", "k8s.container.name=" + c.Name}
+		for _, tag := range []struct{ key, value string }{
+			{"k8s.cluster.name", pod.clusterName},
+			{"deployment.environment", pod.Metadata.Labels["tags.datadoghq.com/env"]},
+			{"service.version", pod.Metadata.Labels["tags.datadoghq.com/version"]},
+		} {
+			if tag.value != "" && !strings.ContainsAny(tag.value, ",=\r\n") {
+				attributes = append(attributes, tag.key+"="+tag.value)
+			}
+		}
+		defaults = append(defaults,
+			envVar{Name: "TELVYN_POD_NAME", ValueFrom: fieldRef("metadata.name")},
+			envVar{Name: "TELVYN_POD_NAMESPACE", ValueFrom: fieldRef("metadata.namespace")},
+			envVar{Name: "OTEL_RESOURCE_ATTRIBUTES", Value: strings.Join(attributes, ",")})
 		defaults = append(defaults, settings...)
 		for _, e := range defaults {
 			if !existing[e.Name] {

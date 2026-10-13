@@ -5,10 +5,19 @@ O coletor continua recebendo OTLP e calculando stats antes da amostragem. O modo
 sem substituir o coletor do host, seu token ou seu WAL. Não instala automaticamente
 um runtime em todas as imagens do cluster.
 
+## Ativação pela tela
+
+No Telvyn, abra um pod de um Deployment e **Instrumentar aplicação**. O coletor confirma a linguagem do container; a API salva a seleção por tenant, cluster, namespace, Deployment, container e imagem. Novos pods recebem o pacote após a sincronização (15 s). Faça o rollout no fluxo habitual da aplicação; salvar a seleção não reinicia o workload.
+
+O painel separa configuração salva de **SDK observado**, confirmado por spans reais do mesmo pod/container/cluster nos últimos 15 minutos. Desativar remove a seleção para novos pods; pods existentes mantêm o SDK até serem recriados. Uma imagem diferente exige nova seleção. O cache de seleções expira após um minuto sem comunicação.
+
+O pacote atual é linux/amd64. Seleção central de Python requer 3.13/musl, Ruby requer 3.3/musl e .NET requer runtime 8; outras versões aparecem como não cobertas. Node requer 20+ e PHP 8.3+ no bootstrap. Esses limites não certificam todos os frameworks dessas versões. Go continua exigindo compilação; Java preserva a integração anterior.
+
+Os seis SDKs e `.github/workflows/publish-runtime-agents.yml` pertencem a este repositório. A plataforma não precisa conter suas fontes. A imagem compartilhada inclui os cinco runtimes injetáveis; não inclui backend, frontend ou credenciais.
+
 ## Configuração pelo operador
 
-Com `webhook.enabled=true`, o chart existente usa cert-manager para o certificado
-TLS e caBundle. Configure a imagem correspondente ao runtime da aplicação:
+Com `webhook.enabled=true`, o chart gera TLS/caBundle pelo Helm, válido por 365 dias e renovado em upgrades. `webhook.certificateProvider=cert-manager` mantém a renovação automática por cert-manager como opção. `webhook.runtimeBundleImageRef` configura o pacote compartilhado; os overrides por linguagem continuam disponíveis:
 
 | Annotation no template do Pod | Valor Helm | Variável do webhook |
 | --- | --- | --- |
@@ -29,7 +38,7 @@ spec:
 ```
 
 A imagem é escolhida pelo operador, nunca pela annotation. Construa os Dockerfiles
-`telvyn-{linguagem}-agent` do repositório da plataforma, publique em seu registry e
+`telvyn-{linguagem}-agent` deste repositório, publique em seu registry e
 fixe uma versão/digest. Não há release pública desses pacotes nesta entrega.
 Confirme acesso ao registry antes do rollout: falha no download do init container
 impede a aplicação de iniciar, mesmo com failurePolicy Ignore no webhook.
@@ -58,7 +67,7 @@ para as mesmas bibliotecas. OTEL_SDK_DISABLED=true desliga o SDK na aplicação.
 - PHP 8.3/cli-server: PHP_INI_SCAN_DIR e auto_prepend_file; configuração da aplicação tem precedência.
 
 ABI, libc e dependências precisam corresponder à aplicação; não é uma matriz
-universal de versões. Go usa o builder `telvyn-go-agent` da plataforma e hooks
+universal de versões. Go usa o builder `telvyn-go-agent` deste repositório e hooks
 net/http durante compilação; não existe annotation para injetar em binário pronto.
 O caminho Java já existente e seu controle pelo backend permanecem separados.
 

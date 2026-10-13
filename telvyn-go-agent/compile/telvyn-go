@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+if [ "${1:-}" != build ]; then
+  echo 'Usage: telvyn-go build [go build arguments]' >&2
+  exit 2
+fi
+# Run in a disposable build context: like otelc, setup updates module dependencies.
+go mod edit -require=github.com/TelvynMonitoring/telvyn-agent/telvyn-go-agent@v0.0.0
+go mod edit -replace=github.com/TelvynMonitoring/telvyn-agent/telvyn-go-agent=/opt/telvyn/go
+for module in pkg pkg/runtime instrumentation instrumentation/net/http/server instrumentation/net/http/client; do
+  go mod edit "-require=go.opentelemetry.io/otelc/$module@v0.0.0"
+  go mod edit "-replace=go.opentelemetry.io/otelc/$module=/opt/otelc/$module"
+done
+go mod download all
+export GOFLAGS="${GOFLAGS:-} -mod=mod"
+exec otelc --rules /opt/telvyn/go/compile/otelc.yml go "$@"

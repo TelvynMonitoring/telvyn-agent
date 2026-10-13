@@ -55,6 +55,7 @@ const (
 // Modelo certless (igual ao resto do agent ingest): a lista de workloads
 // marcados vem do gateway via Bearer token — sem mTLS. Ver scraper quarkus.
 type Config struct {
+	Cluster          string
 	ListenAddr       string
 	CertDir          string
 	IngestURL        string // ex: http://backend.ispwatch.svc.cluster.local:8080
@@ -72,10 +73,12 @@ type Config struct {
 
 // Server é o webhook HTTPS que responde AdmissionReview do api-server.
 type Server struct {
-	cfg    Config
-	mu     sync.RWMutex
-	enable map[string]struct{} // "ns/workload" → ativado em mode=java_javaagent
-	client *http.Client
+	cfg               Config
+	mu                sync.RWMutex
+	enable            map[string]struct{} // "ns/workload" → ativado em mode=java_javaagent
+	client            *http.Client
+	runtimePolicies   []runtimePolicy
+	runtimePoliciesAt time.Time
 }
 
 func New(cfg Config) *Server {
@@ -178,6 +181,7 @@ type instrResp struct {
 }
 
 func (s *Server) poll(ctx context.Context) {
+	s.pollRuntimePolicies(ctx)
 	url := strings.TrimRight(s.cfg.IngestURL, "/") + "/api/ingest/v1/k8s/instrumentation"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

@@ -1,16 +1,18 @@
 {{- if .Values.webhook.enabled }}
+{{- $service := printf "%s-webhook" (include "ispwatch-agent.fullname" .) }}
+{{- $ca := genCA (printf "%s-ca" $service) 365 }}
+{{- $cert := genSignedCert $service nil (list $service (printf "%s.%s" $service .Release.Namespace) (printf "%s.%s.svc" $service .Release.Namespace) (printf "%s.%s.svc.cluster.local" $service .Release.Namespace)) 365 $ca }}
 {{- /*
   Mutating Webhook stack (auto-injeção do -javaagent por admission controller
   controller):
-   - Issuer selfSigned + Certificate (cert-manager) → Secret webhook-tls; o
-     cainjector preenche o caBundle do MutatingWebhookConfiguration via a
-     annotation cert-manager.io/inject-ca-from. (cert-manager é pré-requisito.)
+   - TLS gerado pelo Helm e renovado em upgrades; cert-manager é opcional.
    - Deployment: 1 réplica do agent rodando --webhook (certless/Bearer).
    - Service: ClusterIP, porta 443 → 8443.
    - MutatingWebhookConfiguration: Pod CREATE → /mutate; failurePolicy Ignore
      (se o webhook cair, pods sobem normal — tracing é nice-to-have).
 */}}
 ---
+{{- if eq (.Values.webhook.certificateProvider | default "helm") "cert-manager" }}
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -34,6 +36,18 @@ spec:
   issuerRef:
     name: {{ include "ispwatch-agent.fullname" . }}-webhook-selfsign
     kind: Issuer
+{{- else }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $service }}-tls
+  namespace: {{ .Release.Namespace }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $cert.Cert | b64enc }}
+  tls.key: {{ $cert.Key | b64enc }}
+  ca.crt: {{ $ca.Cert | b64enc }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -51,6 +65,10 @@ spec:
       app.kubernetes.io/component: webhook
   template:
     metadata:
+      {{- if ne (.Values.webhook.certificateProvider | default "helm") "cert-manager" }}
+      annotations:
+        checksum/webhook-certificate: {{ $cert.Cert | sha256sum }}
+      {{- end }}
       labels:
         app.kubernetes.io/name: ispwatch-agent
         app.kubernetes.io/component: webhook
@@ -58,7 +76,7 @@ spec:
       serviceAccountName: {{ include "ispwatch-agent.fullname" . }}
       containers:
         - name: webhook
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # Bypassa o entrypoint.sh (que escolhe modo por env e rodaria ingest):
           # roda o binário direto em modo webhook.
@@ -67,6 +85,8 @@ spec:
           ports:
             - { name: https, containerPort: 8443 }
           env:
+            - name: ISPWATCH_CLUSTER
+              value: {{ .Values.clusterName | quote }}
             # Certless (mesmo modelo do DaemonSet): lista de workloads vem do
             # gateway via Bearer; sem mTLS.
             - name: ISPWATCH_INGEST_URL
@@ -74,17 +94,17 @@ spec:
             - name: ISPWATCH_INGEST_TOKEN
               value: {{ required "values.ingest.token é obrigatório p/ o webhook" .Values.ingest.token | quote }}
             - name: ISPWATCH_AGENT_IMAGE
-              value: {{ default (printf "%s:%s" .Values.image.repository .Values.image.tag) .Values.webhook.agentImageRef | quote }}
+              value: {{ default (printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion)) .Values.webhook.agentImageRef | quote }}
             - name: TELVYN_NODE_AGENT_IMAGE
-              value: {{ .Values.webhook.nodeAgentImageRef | quote }}
+              value: {{ .Values.webhook.nodeAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
             - name: TELVYN_PYTHON_AGENT_IMAGE
-              value: {{ .Values.webhook.pythonAgentImageRef | quote }}
+              value: {{ .Values.webhook.pythonAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
             - name: TELVYN_DOTNET_AGENT_IMAGE
-              value: {{ .Values.webhook.dotnetAgentImageRef | quote }}
+              value: {{ .Values.webhook.dotnetAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
             - name: TELVYN_RUBY_AGENT_IMAGE
-              value: {{ .Values.webhook.rubyAgentImageRef | quote }}
+              value: {{ .Values.webhook.rubyAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
             - name: TELVYN_PHP_AGENT_IMAGE
-              value: {{ .Values.webhook.phpAgentImageRef | quote }}
+              value: {{ .Values.webhook.phpAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
             - name: ISPWATCH_OTLP_ENDPOINT
               value: {{ .Values.webhook.otlpEndpoint | quote }}
             - name: ISPWATCH_OTLP_PROTOCOL
@@ -121,12 +141,17 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
   name: {{ include "ispwatch-agent.fullname" . }}-webhook
+  {{- if eq (.Values.webhook.certificateProvider | default "helm") "cert-manager" }}
   annotations:
     # cainjector preenche clientConfig.caBundle a partir do Secret da Certificate.
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "ispwatch-agent.fullname" . }}-webhook
+  {{- end }}
 webhooks:
   - name: javaagent.ispwatch.io
     clientConfig:
+      {{- if ne (.Values.webhook.certificateProvider | default "helm") "cert-manager" }}
+      caBundle: {{ $ca.Cert | b64enc }}
+      {{- end }}
       service:
         name: {{ include "ispwatch-agent.fullname" . }}-webhook
         namespace: {{ .Release.Namespace }}

@@ -1,0 +1,6 @@
+**
+!telvyn-dotnet-agent/
+!telvyn-dotnet-agent/*.csproj
+!telvyn-dotnet-agent/*.cs
+!telvyn-dotnet-agent/injection/
+!telvyn-dotnet-agent/injection/prepare-store.py
