@@ -1,0 +1,6 @@
+**
+!telvyn-node-agent/
+!telvyn-node-agent/package.json
+!telvyn-node-agent/package-lock.json
+!telvyn-node-agent/register.cjs
+!telvyn-node-agent/bootstrap.cjs

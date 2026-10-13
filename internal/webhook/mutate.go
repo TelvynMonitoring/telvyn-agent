@@ -25,8 +25,8 @@ type AdmissionReview struct {
 }
 
 type AdmissionRequest struct {
-	UID       string `json:"uid"`
-	Kind      struct {
+	UID  string `json:"uid"`
+	Kind struct {
 		Group   string `json:"group"`
 		Version string `json:"version"`
 		Kind    string `json:"kind"`
@@ -49,11 +49,14 @@ type AdmissionResponse struct {
 }
 
 type podMeta struct {
-	Metadata struct {
-		Name        string            `json:"name"`
-		Namespace   string            `json:"namespace"`
-		Annotations map[string]string `json:"annotations,omitempty"`
-		GenerateName string           `json:"generateName,omitempty"`
+	serviceName string
+	clusterName string
+	Metadata    struct {
+		Name            string            `json:"name"`
+		Namespace       string            `json:"namespace"`
+		Annotations     map[string]string `json:"annotations,omitempty"`
+		Labels          map[string]string `json:"labels,omitempty"`
+		GenerateName    string            `json:"generateName,omitempty"`
 		OwnerReferences []struct {
 			Name string `json:"name"`
 			Kind string `json:"kind"`
@@ -67,15 +70,16 @@ type podMeta struct {
 }
 
 type container struct {
-	Name         string       `json:"name"`
-	Image        string       `json:"image"`
-	Env          []envVar     `json:"env,omitempty"`
-	VolumeMounts []volumeMount `json:"volumeMounts,omitempty"`
+	Name         string            `json:"name"`
+	Image        string            `json:"image"`
+	Env          []envVar          `json:"env,omitempty"`
+	EnvFrom      []json.RawMessage `json:"envFrom,omitempty"`
+	VolumeMounts []volumeMount     `json:"volumeMounts,omitempty"`
 }
 
 type envVar struct {
-	Name  string `json:"name"`
-	Value string `json:"value,omitempty"`
+	Name      string `json:"name"`
+	Value     string `json:"value,omitempty"`
 	ValueFrom *struct {
 		FieldRef *struct {
 			FieldPath string `json:"fieldPath"`
@@ -146,6 +150,48 @@ func (s *Server) decide(req *AdmissionRequest) *AdmissionResponse {
 	ns := req.Namespace
 	if ns == "" {
 		ns = pod.Metadata.Namespace
+	}
+	pod.clusterName = s.cfg.Cluster
+	// Explicit container selection avoids guessing a runtime from an application image name.
+	type injector struct {
+		language, image string
+		patch           func(podMeta, string, string, string) ([]patchOp, error)
+	}
+	injections := []injector{{"node", s.cfg.NodeAgentImage, nodePatch}, {"python", s.cfg.PythonAgentImage, pythonPatch}, {"dotnet", s.cfg.DotnetAgentImage, dotnetPatch}, {"ruby", s.cfg.RubyAgentImage, rubyPatch}, {"php", s.cfg.PhpAgentImage, phpPatch}}
+	selectedRuntime := -1
+	central, centralSelected := s.runtimeSelection(pod, ns)
+	if centralSelected {
+		pod.serviceName = central.Workload
+	}
+	for i, injection := range injections {
+		if (centralSelected && central.Language == injection.language) || pod.Metadata.Annotations["instrumentation.telvyn.io/"+injection.language+"-containers"] != "" {
+			if selectedRuntime >= 0 {
+				s.cfg.Log.Warn("webhook: conflicting runtime selections", "ns", ns)
+				return out
+			}
+			selectedRuntime = i
+		}
+	}
+	if selectedRuntime >= 0 {
+		injection := injections[selectedRuntime]
+		selected := pod.Metadata.Annotations["instrumentation.telvyn.io/"+injection.language+"-containers"]
+		if centralSelected {
+			if selected != "" && selected != central.Container {
+				s.cfg.Log.Warn("webhook: annotation conflicts with central container selection", "ns", ns)
+				return out
+			}
+			selected = central.Container
+		}
+		patch, err := injection.patch(pod, selected, injection.image, s.cfg.OtlpEndpointEnv)
+		if err != nil {
+			s.cfg.Log.Warn("webhook: runtime injection skipped", "ns", ns, "runtime", injection.language, "reason", err)
+			return out
+		}
+		if len(patch) > 0 {
+			out.Patch, _ = json.Marshal(patch)
+			out.PatchType = "JSONPatch"
+		}
+		return out
 	}
 	workload, ok := s.matchWorkload(pod, ns)
 	if !ok {
@@ -403,4 +449,3 @@ func itoa(i int) string {
 	}
 	return string(buf[pos:])
 }
-

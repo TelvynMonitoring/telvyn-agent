@@ -55,22 +55,30 @@ const (
 // Modelo certless (igual ao resto do agent ingest): a lista de workloads
 // marcados vem do gateway via Bearer token — sem mTLS. Ver scraper quarkus.
 type Config struct {
-	ListenAddr      string
-	CertDir         string
-	IngestURL       string // ex: http://backend.ispwatch.svc.cluster.local:8080
-	Token           string // Bearer iwI_... (mesmo token do DaemonSet)
-	AgentImage      string // imagem que o initContainer usa pra copiar o jar
-	OtlpEndpointEnv string // valor de OTEL_EXPORTER_OTLP_ENDPOINT injetado
-	OtlpProtocol    string // valor de OTEL_EXPORTER_OTLP_PROTOCOL injetado
-	Log             *slog.Logger
+	Cluster          string
+	ListenAddr       string
+	CertDir          string
+	IngestURL        string // ex: http://backend.ispwatch.svc.cluster.local:8080
+	Token            string // Bearer iwI_... (mesmo token do DaemonSet)
+	AgentImage       string // imagem que o initContainer usa pra copiar o jar
+	NodeAgentImage   string // pacote Node escolhido pelo operador; vazio desabilita injeção
+	PythonAgentImage string // imagem com ABI/versão Python compatível com a aplicação
+	DotnetAgentImage string
+	RubyAgentImage   string
+	PhpAgentImage    string
+	OtlpEndpointEnv  string // valor de OTEL_EXPORTER_OTLP_ENDPOINT injetado
+	OtlpProtocol     string // valor de OTEL_EXPORTER_OTLP_PROTOCOL injetado
+	Log              *slog.Logger
 }
 
 // Server é o webhook HTTPS que responde AdmissionReview do api-server.
 type Server struct {
-	cfg    Config
-	mu     sync.RWMutex
-	enable map[string]struct{} // "ns/workload" → ativado em mode=java_javaagent
-	client *http.Client
+	cfg               Config
+	mu                sync.RWMutex
+	enable            map[string]struct{} // "ns/workload" → ativado em mode=java_javaagent
+	client            *http.Client
+	runtimePolicies   []runtimePolicy
+	runtimePoliciesAt time.Time
 }
 
 func New(cfg Config) *Server {
@@ -98,10 +106,18 @@ func New(cfg Config) *Server {
 
 // Run inicia o poller do backend + HTTPS server. Bloqueia até ctx cancel.
 func (s *Server) Run(ctx context.Context) error {
+	if (s.cfg.IngestURL == "") != (s.cfg.Token == "") {
+		return fmt.Errorf("backend URL and token must be configured together")
+	}
+	if s.cfg.IngestURL == "" && s.cfg.NodeAgentImage == "" && s.cfg.PythonAgentImage == "" && s.cfg.DotnetAgentImage == "" && s.cfg.RubyAgentImage == "" && s.cfg.PhpAgentImage == "" {
+		return fmt.Errorf("configure backend access or a runtime agent image")
+	}
 	if err := s.setupClient(); err != nil {
 		return err
 	}
-	go s.pollLoop(ctx)
+	if s.cfg.IngestURL != "" {
+		go s.pollLoop(ctx)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", s.handleMutate)
@@ -165,6 +181,7 @@ type instrResp struct {
 }
 
 func (s *Server) poll(ctx context.Context) {
+	s.pollRuntimePolicies(ctx)
 	url := strings.TrimRight(s.cfg.IngestURL, "/") + "/api/ingest/v1/k8s/instrumentation"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

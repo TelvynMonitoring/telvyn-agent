@@ -1,0 +1,48 @@
+name: Publish runtime agent bundle
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Immutable runtime bundle version
+        required: true
+permissions:
+  contents: read
+  packages: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build the existing runtime packages and bundle
+        env:
+          BUNDLE_VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          printf '%s' "$BUNDLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.-]+)?$'
+          owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/$owner/telvyn-runtime-agents:$BUNDLE_VERSION"
+          if docker manifest inspect "$image" >/dev/null 2>&1; then
+            echo 'Version already exists; choose a new version.' >&2
+            exit 1
+          fi
+          for runtime in node python dotnet ruby php; do
+            docker build --platform linux/amd64 -f "telvyn-$runtime-agent/Dockerfile" -t "telvyn-$runtime-agent:bundle" .
+          done
+          docker build --platform linux/amd64 -f infra/runtime-agents/Dockerfile \
+            --build-arg NODE_IMAGE=telvyn-node-agent:bundle \
+            --build-arg PYTHON_IMAGE=telvyn-python-agent:bundle \
+            --build-arg DOTNET_IMAGE=telvyn-dotnet-agent:bundle \
+            --build-arg RUBY_IMAGE=telvyn-ruby-agent:bundle \
+            --build-arg PHP_IMAGE=telvyn-php-agent:bundle \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.version=$BUNDLE_VERSION" \
+            -t "$image" .
+          docker push "$image"
+          docker inspect --format '{{index .RepoDigests 0}}' "$image" >> "$GITHUB_STEP_SUMMARY"

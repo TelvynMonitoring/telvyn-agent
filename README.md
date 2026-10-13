@@ -4,6 +4,10 @@ Agente de monitoramento do [Telvyn](https://telvyn.com) — coleta métricas,
 logs e traces L7 (eBPF) do host/cluster e envia via HTTP/OTLP com um ingest
 token Bearer (certless) para o servidor Telvyn. Um agent por host.
 
+Para instalar os pacotes de aplicação pelo admission controller, consulte
+[Injeção dos agentes de runtime](docs/RUNTIME-INJECTION.md). A seleção é explícita
+por container; Go usa instrumentação durante a compilação.
+
 ## Kubernetes (DaemonSet)
 
 Instala um pod por nó. O comando exato (com seu token e a URL do seu portal)

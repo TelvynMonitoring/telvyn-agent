@@ -1,0 +1,34 @@
+version: "v1.0.0"
+
+telvyn_bootstrap:
+  target: main
+  where:
+    func: main
+  imports:
+    telvyn_agent: github.com/TelvynMonitoring/telvyn-agent/telvyn-go-agent
+  do:
+    - inject_code:
+        raw: defer telvyn_agent.Bootstrap()()
+
+# Official OTel compiler hooks; Telvyn owns the provider/exporter and privacy filter.
+http_server:
+  target: net/http
+  where:
+    func: ServeHTTP
+    recv: serverHandler
+  do:
+    - inject_hooks:
+        before: BeforeServeHTTP
+        after: AfterServeHTTP
+        path: go.opentelemetry.io/otelc/instrumentation/net/http/server
+
+http_client:
+  target: net/http
+  where:
+    func: RoundTrip
+    recv: "*Transport"
+  do:
+    - inject_hooks:
+        before: BeforeRoundTrip
+        after: AfterRoundTrip
+        path: go.opentelemetry.io/otelc/instrumentation/net/http/client

@@ -1,0 +1,7 @@
+**
+!telvyn-php-agent/
+!telvyn-php-agent/composer.json
+!telvyn-php-agent/composer.lock
+!telvyn-php-agent/bootstrap.php
+!telvyn-php-agent/src/**
+!telvyn-php-agent/injection/**
