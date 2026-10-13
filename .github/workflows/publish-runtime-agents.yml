@@ -40,6 +40,7 @@ jobs:
             --build-arg DOTNET_IMAGE=telvyn-dotnet-agent:bundle \
             --build-arg RUBY_IMAGE=telvyn-ruby-agent:bundle \
             --build-arg PHP_IMAGE=telvyn-php-agent:bundle \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --label "org.opencontainers.image.version=$BUNDLE_VERSION" \
             -t "$image" .
