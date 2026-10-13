@@ -9,8 +9,8 @@
 //     (severity_number, body, attributes) e os field names canônicos.
 //   • Batch send a cada 2s OU a cada 100 records, o que vier primeiro.
 //
-// Sem WAL: logs são best-effort. Channel-full = drop silencioso com
-// counter agent_logs_dropped_total.
+// WAL bbolt antes de liberar o leitor; retry mantém registros até confirmação.
+// shortcut: entrega at-least-once; resposta perdida pode duplicar até existir deduplicação no intake.
 
 package otlp
 
@@ -29,6 +29,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ispwatch/collector/internal/sendbuf"
 )
 
 const (
@@ -42,7 +44,7 @@ const (
 	LogsBatchFlushInterval = 2 * time.Second
 
 	// LogsRequestTimeout — request HTTP tem cap de 10s. Mais que isso é
-	// problema de saúde do backend; melhor falhar rápido e dropar batch.
+	// problema de saúde do backend; o lote permanece no WAL para retry.
 	LogsRequestTimeout = 10 * time.Second
 )
 
@@ -71,12 +73,14 @@ type LogsExporter struct {
 
 	// ingest != nil ⇒ modo certless: em vez do POST mTLS pro
 	// /api/collector/v1/logs, cada batch sai como OTLP JSON + Bearer pro
-	// gateway /api/ingest/v1/logs. Toda a maquinaria de buffer/flush/overflow
+	// gateway /api/ingest/v1/logs. Toda a maquinaria de buffer/flush
 	// é reusada — só o transporte do sendBatch muda.
 	ingest *IngestExporter
 
-	mu  sync.Mutex
-	buf []LogRecord
+	mu         sync.Mutex
+	pending    *sendbuf.Queue
+	retryAt    time.Time
+	retryDelay time.Duration
 
 	// Counters — drenados pelo publisher de self-metrics.
 	linesTotal   atomic.Int64
@@ -112,7 +116,12 @@ func NewLogsExporter(endpoint, tenantID, collectorID string, certPath, keyPath, 
 		}
 		tlsCfg.RootCAs = pool
 	}
+	pending, err := sendbuf.NewDurable("logs", 64<<20, sendbuf.DefaultDir(), log)
+	if err != nil {
+		return nil, err
+	}
 	return &LogsExporter{
+		pending:     pending,
 		collectorID: collectorID,
 		endpoint:    strings.TrimRight(endpoint, "/"),
 		tenantID:    tenantID,
@@ -126,73 +135,146 @@ func NewLogsExporter(endpoint, tenantID, collectorID string, certPath, keyPath, 
 
 // NewIngestLogsExporter constrói um LogsExporter no modo certless: os batches
 // são enviados via ingest.PostLogs (OTLP JSON + Bearer) em vez do canal mTLS.
-// Reusa Push/Run/flush/overflow/Stats do exporter mTLS.
-func NewIngestLogsExporter(ingest *IngestExporter, log *slog.Logger) *LogsExporter {
+// Reusa Push/Run/flush/Stats do exporter mTLS.
+func NewIngestLogsExporter(ingest *IngestExporter, log *slog.Logger) (*LogsExporter, error) {
+	pending, err := sendbuf.NewDurable("logs", 64<<20, sendbuf.DefaultDir(), log)
+	if err != nil {
+		return nil, err
+	}
 	return &LogsExporter{
+		pending:    pending,
 		ingest:     ingest,
 		httpClient: &http.Client{Timeout: LogsRequestTimeout},
 		log:        log.With("component", "otlp-logs-ingest"),
-	}
+	}, nil
 }
 
-// Push adiciona records ao buffer interno. Não bloqueia — overflow >4x
-// batch size dropa do início (FIFO), same pattern do span Forwarder.
+type pendingLog struct {
+	Record      *LogRecord `json:"record,omitempty"`
+	ContentType string     `json:"content_type,omitempty"`
+	Body        []byte     `json:"body,omitempty"`
+}
+
+// EnqueueRaw confirma ao SDK somente depois de persistir; fila cheia devolve erro ao receiver.
+func (e *LogsExporter) EnqueueRaw(contentType string, body []byte) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	payload, err := json.Marshal(pendingLog{ContentType: contentType, Body: body})
+	if err != nil {
+		return err
+	}
+	return e.pending.OfferDurable(payload)
+}
+
+// Push persiste antes de liberar o leitor e seu cursor. Disco cheio pausa a leitura.
 func (e *LogsExporter) Push(rec LogRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.buf = append(e.buf, rec)
+	body, err := json.Marshal(pendingLog{Record: &rec})
+	if err != nil {
+		panic(err)
+	} // LogRecord contém apenas tipos JSON serializáveis.
+	var lastWarning time.Time
+	for {
+		if err := e.pending.OfferDurable(body); err == nil {
+			break
+		} else if time.Since(lastWarning) >= time.Minute {
+			e.log.Error("logs WAL indisponível ou cheio; leitura aguardando espaço", "err", err)
+			lastWarning = time.Now()
+		}
+		e.flushLocked(context.Background())
+		time.Sleep(LogsBatchFlushInterval)
+	}
 	e.linesTotal.Add(1)
 	e.bytesTotal.Add(int64(len(rec.Body)))
-	if cap := LogsBatchMaxRecords * 4; len(e.buf) > cap {
-		drop := len(e.buf) - cap
-		e.buf = e.buf[drop:]
-		e.droppedTotal.Add(int64(drop))
-		e.log.Warn("logs buffer overflow, dropped oldest", "dropped", drop, "buffered", len(e.buf))
+	if e.pending.Snapshot().Pending >= LogsBatchMaxRecords {
+		e.flushLocked(context.Background())
 	}
 }
 
-// Run loops flushing periodicamente até ctx ser cancelado. Best-effort
-// drain final no shutdown.
+// Run também reenvia o WAL recuperado, mesmo sem novas linhas na origem.
 func (e *LogsExporter) Run(ctx context.Context) {
 	ticker := time.NewTicker(LogsBatchFlushInterval)
 	defer ticker.Stop()
+	e.flush(ctx)
 	for {
 		select {
 		case <-ctx.Done():
-			e.flush(context.Background()) // best-effort
-			return
+			return // registros já persistidos serão retomados no próximo processo.
 		case <-ticker.C:
 			e.flush(ctx)
 		}
 	}
 }
 
-// flush drena o buffer em batches de até LogsBatchMaxRecords e POSTa cada
-// batch. Falha de POST não recoloca records no buffer — best-effort.
 func (e *LogsExporter) flush(ctx context.Context) {
-	for {
-		e.mu.Lock()
-		if len(e.buf) == 0 {
-			e.mu.Unlock()
-			return
-		}
-		n := len(e.buf)
-		if n > LogsBatchMaxRecords {
-			n = LogsBatchMaxRecords
-		}
-		batch := make([]LogRecord, n)
-		copy(batch, e.buf[:n])
-		e.buf = e.buf[n:]
-		e.mu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.flushLocked(ctx)
+}
 
-		if err := e.sendBatch(ctx, batch); err != nil {
-			e.sendFailures.Add(1)
-			e.log.Warn("logs batch send failed", "count", len(batch), "err", err)
-			// não retry — dropamos batch e seguimos. Logs perdidos == OK.
-			return
-		}
-		e.sentBatches.Add(1)
+func (e *LogsExporter) flushLocked(ctx context.Context) {
+	if time.Now().Before(e.retryAt) {
+		return
 	}
+	recovering := e.retryDelay > 0
+	// Limita cada ciclo para não monopolizar os leitores durante a recuperação.
+	ctx, cancel := context.WithTimeout(ctx, LogsRequestTimeout)
+	defer cancel()
+	err := e.pending.FlushBatch(ctx, LogsBatchMaxRecords, func(ctx context.Context, bodies [][]byte) error {
+		var records []LogRecord
+		sendRecords := func() error {
+			if len(records) == 0 {
+				return nil
+			}
+			if err := e.sendBatch(ctx, records); err != nil {
+				return err
+			}
+			e.sentBatches.Add(1)
+			records = nil
+			return nil
+		}
+		for _, body := range bodies {
+			var item pendingLog
+			if err := json.Unmarshal(body, &item); err != nil {
+				return err
+			}
+			if item.Record != nil {
+				records = append(records, *item.Record)
+				continue
+			}
+			if err := sendRecords(); err != nil {
+				return err
+			}
+			if e.ingest == nil || !e.ingest.signalAllowed("logs") {
+				return fmt.Errorf("logs intake indisponível; WAL preservado")
+			}
+			if err := e.ingest.PostRaw(ctx, "logs", item.ContentType, item.Body); err != nil {
+				return err
+			}
+			e.sentBatches.Add(1)
+		}
+		return sendRecords()
+	})
+	if err != nil {
+		e.sendFailures.Add(1)
+		if e.retryDelay == 0 {
+			e.retryDelay = LogsBatchFlushInterval
+		} else {
+			e.retryDelay *= 2
+		}
+		if e.retryDelay > 30*time.Second {
+			e.retryDelay = 30 * time.Second
+		}
+		e.retryAt = time.Now().Add(e.retryDelay)
+		e.log.Warn("logs retidos no WAL; envio será repetido", "pending", e.pending.Snapshot().Pending, "retry_in", e.retryDelay, "err", err)
+		return
+	}
+	if recovering {
+		e.log.Info("logs WAL recuperado; fila entregue")
+	}
+	e.retryDelay = 0
+	e.retryAt = time.Time{}
 }
 
 // logBatchWire é o shape JSON enviado em cada POST. Campos espelham OTLP
@@ -220,6 +302,9 @@ type logRecordWire struct {
 // sendBatch monta o JSON batch e POSTa.
 func (e *LogsExporter) sendBatch(ctx context.Context, batch []LogRecord) error {
 	if e.ingest != nil {
+		if !e.ingest.signalAllowed("logs") {
+			return fmt.Errorf("logs desabilitados pela política; WAL preservado")
+		}
 		return e.ingest.PostLogs(ctx, batch)
 	}
 	if e.endpoint == "" {

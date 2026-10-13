@@ -586,6 +586,18 @@ func runIngestMode(ingestURL string) {
 		}
 	}
 
+	// CRI, syslog e SDKs compartilham um único WAL de logs.
+	var logsExp *otlp.LogsExporter
+	if !databaseAgent && (getenvOr("ISPWATCH_LOGS_ENABLED", "0") == "1" || getenvOr("ISPWATCH_SYSLOG_ENABLED", "0") == "1" || getenvOr("ISPWATCH_OTLP_HTTP_DISABLE", "0") != "1") {
+		var err error
+		logsExp, err = otlp.NewIngestLogsExporter(exporter, log)
+		if err != nil {
+			log.Error("coleta de logs não iniciada: WAL indisponível", "err", err)
+		} else {
+			go logsExp.Run(ctx)
+		}
+	}
+
 	// Receiver OTLP/HTTP (4318): apps locais mandam spans/metrics/logs e o
 	// agent encaminha o corpo cru pro gateway com o Bearer token.
 	httpAddr := otlp.ParsePortOrDefault(getenvOr("ISPWATCH_OTLP_HTTP_PORT", ""))
@@ -599,6 +611,12 @@ func runIngestMode(ingestURL string) {
 	}
 	rec.SetVerifiedHostTags(hostTags)
 	rec.SetForwardRaw(func(signal, ct string, body []byte) error {
+		if signal == "logs" {
+			if logsExp == nil {
+				return fmt.Errorf("logs WAL unavailable")
+			}
+			return logsExp.EnqueueRaw(ct, body)
+		}
 		return exporter.PostRaw(ctx, signal, ct, body)
 	})
 
@@ -720,24 +738,17 @@ func runIngestMode(ingestURL string) {
 		go startEbpfTracer(ctx, log, ebpfStatsSink{conc: apmConc, host: hostID, cluster: cluster, hostTags: hostTags}, out, hostID, databaseMonitors)
 	}
 
-	// Coleta opcional de logs: taila /var/log/pods (CRI) e
-	// encaminha cada linha como OTLP JSON + Bearer pro gateway /api/ingest/v1/logs.
-	if databaseAgent {
-		log.Info("logs desativados para o perfil database")
-	} else if getenvOr("ISPWATCH_LOGS_ENABLED", "0") == "1" {
-		startIngestPodLogs(ctx, log, exporter, hostID)
-	} else {
-		log.Debug("pod logs desativados (set ISPWATCH_LOGS_ENABLED=1 pra habilitar)")
-	}
-
-	if !databaseAgent && getenvOr("ISPWATCH_SYSLOG_ENABLED", "0") == "1" {
-		logsExp := otlp.NewIngestLogsExporter(exporter, log)
-		go logsExp.Run(ctx)
-		go func() {
-			if err := logs.RunSyslog(ctx, getenvOr("ISPWATCH_SYSLOG_ADDR", "127.0.0.1:5514"), logsExp.Push); err != nil {
-				log.Warn("syslog receiver stopped", "err", err)
-			}
-		}()
+	if logsExp != nil {
+		if getenvOr("ISPWATCH_LOGS_ENABLED", "0") == "1" {
+			startIngestPodLogs(ctx, log, logsExp, hostID)
+		}
+		if getenvOr("ISPWATCH_SYSLOG_ENABLED", "0") == "1" {
+			go func() {
+				if err := logs.RunSyslog(ctx, getenvOr("ISPWATCH_SYSLOG_ADDR", "127.0.0.1:5514"), logsExp.Push); err != nil {
+					log.Warn("syslog receiver stopped", "err", err)
+				}
+			}()
+		}
 	}
 
 	// SNMP traps (toggle, B2): receptor UDP/162 que encaminha traps do device pro
@@ -784,8 +795,7 @@ func runIngestMode(ingestURL string) {
 // LogsExporter certless (batch → OTLP JSON + Bearer) + o tailer CRI. Exclui o
 // próprio namespace do agent (POD_NAMESPACE) e os de ISPWATCH_LOGS_EXCLUDE_NAMESPACES
 // pra evitar loop de logs.
-func startIngestPodLogs(ctx context.Context, log *slog.Logger, exporter *otlp.IngestExporter, hostID string) {
-	logsExp := otlp.NewIngestLogsExporter(exporter, log)
+func startIngestPodLogs(ctx context.Context, log *slog.Logger, logsExp *otlp.LogsExporter, hostID string) {
 
 	exclude := []string{}
 	if self := strings.TrimSpace(getenvOr("POD_NAMESPACE", "")); self != "" {
@@ -815,7 +825,6 @@ func startIngestPodLogs(ctx context.Context, log *slog.Logger, exporter *otlp.In
 		log.Info("logs: service tagging unificado ativo")
 	}
 
-	go logsExp.Run(ctx)
 	go tailer.Run(ctx)
 	log.Info("pod logs habilitados (CRI tailer)", "cursor", cursorPath, "exclude_ns", strings.Join(exclude, ","))
 }
