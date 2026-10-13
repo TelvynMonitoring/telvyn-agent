@@ -36,6 +36,7 @@
   "optionalDependencies": {
     "@datadog/native-appsec": "11.0.3",
     "@datadog/native-iast-taint-tracking": "4.2.1",
+    "@datadog/pprof": "5.20.0",
     "@datadog/wasm-js-rewriter": "5.0.4"
   }
 }

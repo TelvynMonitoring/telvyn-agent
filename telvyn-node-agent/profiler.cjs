@@ -4,7 +4,7 @@ const { threadId } = require('node:worker_threads');
 const { randomUUID } = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
-const { fileURLToPath } = require('node:url');
+const { fileURLToPath, pathToFileURL } = require('node:url');
 
 function sourceFile(frame) {
   if (!process.env.TELVYN_PROFILE_SOURCE_ROOT || !frame.url?.startsWith('file:')) return '';
@@ -31,6 +31,27 @@ function heapProfile(profile) {
   };
   visit(profile.head, []);
   return [...stacks].map(([stack, size]) => `${stack} ${size}`).join('\n');
+}
+
+function wallProfile(profile) {
+  const strings = profile.stringTable.strings;
+  const index = profile.sampleType.findIndex(type => strings[type.type] === 'wall' && strings[type.unit] === 'nanoseconds');
+  if (index < 0) throw new Error('Native wall profile unit unavailable');
+  const functions = new Map(profile.function.map(fn => [fn.id, fn]));
+  const locations = new Map(profile.location.map(location => [location.id, location]));
+  const stacks = new Map();
+  for (const sample of profile.sample) {
+    const weight = sample.value[index];
+    if (!Number.isSafeInteger(weight) || weight <= 0) continue;
+    const frames = sample.locationId.slice().reverse().flatMap(id => (locations.get(id)?.line || []).map(line => {
+      const fn = functions.get(line.functionId);
+      if (!fn) return '';
+      const filename = strings[fn.filename];
+      return frameName({url: filename && path.isAbsolute(filename) ? pathToFileURL(filename).href : '', functionName: strings[fn.name]});
+    })).filter(Boolean);
+    if (frames.length) { const stack = frames.join(';'); stacks.set(stack, (stacks.get(stack) || 0) + weight); }
+  }
+  return [...stacks].map(([stack, weight]) => `${stack} ${weight}`).join('\n');
 }
 
 // Keep actual sample counts: V8 intervals are not exact CPU durations.
@@ -82,6 +103,11 @@ function startProfiler() {
   }
   const session = new Session();
   session.connect();
+  let wall;
+  if (process.env.TELVYN_PROFILE_WALL_ENABLED === 'true') {
+    try { wall = require('@datadog/pprof').time; wall.start({intervalMicros: 10000, lineNumbers: true}); }
+    catch (_) { wall = undefined; console.warn('[Telvyn] Native wall profiler unavailable; CPU/heap remain enabled.'); }
+  }
   let stopped = false, timer, startedAt, rotating = Promise.resolve();
   const warn = () => console.warn('[Telvyn] Profile could not be collected or delivered.');
   async function begin() {
@@ -98,6 +124,10 @@ function startProfiler() {
       if (stopped) return;
       await begin();
       const uploads = [upload('cpu', foldedProfile(profile), from, seconds, 10)];
+      if (wall) {
+        try { uploads.push(upload('wall', wallProfile(wall.stop(true)), from, seconds, 0)); }
+        catch (_) { warn(); }
+      }
       try {
         const { profile: heap } = await session.post('HeapProfiler.getSamplingProfile');
         uploads.push(upload('heap', heapProfile(heap), from, seconds, 0));
@@ -122,6 +152,6 @@ function startProfiler() {
   }
   const ready = session.post('Profiler.enable').then(() => session.post('Profiler.setSamplingInterval', {interval: 10000}))
     .then(() => session.post('HeapProfiler.startSampling', {samplingInterval: 524288})).then(begin).catch(() => { warn(); session.disconnect(); });
-  return { stop: async () => { stopped = true; await ready; clearTimeout(timer); await rotating; try { await session.post('Profiler.stop'); await session.post('HeapProfiler.stopSampling'); } catch (_) {} session.disconnect(); } };
+  return { stop: async () => { stopped = true; await ready; clearTimeout(timer); await rotating; try { await session.post('Profiler.stop'); await session.post('HeapProfiler.stopSampling'); } catch (_) {} try { if (wall?.isStarted()) wall.stop(); } catch (_) {} session.disconnect(); } };
 }
-module.exports = { startProfiler, foldedProfile, heapProfile };
+module.exports = { startProfiler, foldedProfile, heapProfile, wallProfile };
