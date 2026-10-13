@@ -22,7 +22,7 @@ O preload precisa preceder os imports de HTTP/Express. A aplicação não import
 
 Referências: [inicialização antecipada do DD](https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/nodejs/), [SDK Node OTel](https://opentelemetry.io/docs/languages/js/getting-started/nodejs/). ESM, bancos, outros loggers, outras versões e desligamento remoto ainda não comprovados.
 
-## Profiling de CPU V8 (em validação)
+## Profiling de CPU V8
 
 `TELVYN_PROFILING_ENABLED=true` habilita o profiler nativo do V8 no mesmo preload. O padrão é desligado; `OTEL_SDK_DISABLED=true` também o desliga. O endpoint OTLP HTTP do coletor existente recebe `/v1/profile`; não há token do host na aplicação nem porta de inspector exposta. A aplicação precisa reiniciar para carregar a configuração.
 
@@ -30,7 +30,7 @@ Janelas de 15 segundos, intervalo solicitado de 10 ms. O Flame Graph usa contage
 
 O envio tem limite de 4 MiB e timeout de 5 segundos; uma falha gera aviso e descarta essa janela, sem fila ilimitada na aplicação. O WAL de logs não protege profiles. A última janela incompleta não é exportada no encerramento. A API de consulta precisa aceitar a fonte `v8`; ingestão isolada não comprova visualização.
 
-Em 13/10, Node 20.20.2 capturou uma função real sob carga e enviou profiles ao backend local pelo coletor existente. Controle desligado não enviou profiles. Validação do Flame Graph ainda depende da ativação autorizada da API.
+Em 13/10, Node 20.20.2 capturou uma função real sob carga e enviou profiles ao backend local pelo coletor existente. Controle desligado não enviou profiles. Flame Graph validado em claro/escuro: 14 janelas, 1.460 amostras, `hotLoop` com 1.289; filtro, detalhe, zoom e troca JFR/V8 exercitados. A distribuição pública ainda não inclui esta alteração. Workers, outras versões e equivalência numérica com o profiler DD não foram comprovados.
 
 ## Validação de 12/10/2026
 
