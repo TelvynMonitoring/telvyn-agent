@@ -1,0 +1,32 @@
+name: telvyn-agent-persistence-lab
+
+services:
+  agent:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        VERSION: lab
+    image: telvyn-agent:persistence-lab
+    environment:
+      ISPWATCH_INGEST_URL: http://quarkus:8080/api/ingest/v1
+      ISPWATCH_INGEST_TOKEN: ${ISPWATCH_INGEST_TOKEN:?Defina ISPWATCH_INGEST_TOKEN com um token kind=agent e capability metrics}
+      ISPWATCH_NODE_NAME: telvyn-persistence-lab
+      ISPWATCH_STATE_DIR: /var/lib/ispwatch
+      ISPWATCH_CHECKS_ENABLED: "0"
+      ISPWATCH_OTLP_HTTP_DISABLE: "1"
+      COLLECTOR_LOG_LEVEL: debug
+    volumes:
+      - agent_state:/var/lib/ispwatch
+    networks:
+      - telvyn_backend
+    restart: "no"
+
+volumes:
+  agent_state:
+    name: telvyn-agent-persistence-lab-state
+
+networks:
+  telvyn_backend:
+    external: true
+    name: ${TELVYN_BACKEND_NETWORK:-ispwatch-dev_ispwatch-net}
