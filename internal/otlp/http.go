@@ -50,6 +50,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	logspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -982,6 +983,10 @@ func (h *HTTPReceiver) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPReceiver) handleLogs(w http.ResponseWriter, r *http.Request) {
 	h.serveOTLP(w, r, "/v1/logs", func(body []byte, ct string, _ string) (int, error) {
+		var request logspb.ExportLogsServiceRequest
+		if err := unmarshalOTLP(body, ct, &request); err != nil {
+			return http.StatusBadRequest, err
+		}
 		if h.forwardRaw != nil {
 			if err := h.forwardRaw("logs", ct, body); err != nil {
 				return http.StatusBadGateway, fmt.Errorf("forward logs: %w", err)
