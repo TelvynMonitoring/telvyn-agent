@@ -4,7 +4,7 @@
   "description": "Telvyn HTTP and Express instrumentation through the existing OTLP collector",
   "main": "register.cjs",
   "exports": {"./register": "./register.cjs"},
-  "files": ["register.cjs", "bootstrap.cjs", "README.md"],
+  "files": ["register.cjs", "bootstrap.cjs", "profiler.cjs", "README.md"],
   "engines": {"node": ">=20"},
   "dependencies": {
     "@opentelemetry/api": "1.9.1",

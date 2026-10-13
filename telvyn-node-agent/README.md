@@ -2,7 +2,7 @@
 
 Injeção Kubernetes: o coletor Telvyn pode montar este pacote sem alterar a imagem/comando da aplicação. Construa `docker build -f telvyn-node-agent/Dockerfile -t <imagem> .` na raiz; configure essa imagem em `webhook.nodeAgentImageRef` do chart do coletor e a annotation do template do pod `instrumentation.telvyn.io/node-containers: "nome-do-container"`. A imagem precisa estar acessível nos nós. Opt-in explícito, sem inferir runtime pelo nome da imagem. Node 20/CommonJS validado em 13/10; preserve e confira opções herdadas da imagem/envFrom, que o admission controller não consegue ler.
 
-Pacote carregado antes da aplicação, reutilizando as instrumentações oficiais HTTP/Express do OpenTelemetry. O coletor Go continua recebendo OTLP e coletando stdout; não é substituído. Esta versão cobre CommonJS e HTTP/Express, não IAST, profiling ou todos os frameworks do DD.
+Pacote carregado antes da aplicação, reutilizando as instrumentações oficiais HTTP/Express do OpenTelemetry. O coletor Go continua recebendo OTLP e coletando stdout; não é substituído. Esta versão cobre CommonJS e HTTP/Express, com profiling de CPU opcional; não cobre IAST ou todos os frameworks do DD.
 
 Instale o pacote a partir da fonte ou de um tarball criado com `npm pack`; ele ainda não foi publicado no npm. Em aplicações existentes, não carregue simultaneamente outro SDK/tracer para as mesmas bibliotecas.
 
@@ -21,6 +21,16 @@ O preload precisa preceder os imports de HTTP/Express. A aplicação não import
 `OTEL_SDK_DISABLED=true` desliga SDK, patches e logs do pacote na próxima inicialização, preservando a aplicação. `SIGTERM` solicita o flush; aplicações com handler próprio conservam o controle da saída. Uma falha de flush gera aviso sem mudar o resultado da aplicação. Use um init no container (a fixture usa tini) e conceda tempo para o flush no prazo de término. Uma interrupção abrupta ou coletor indisponível pode perder spans ainda em memória; o WAL do coletor protege apenas dados que ele recebeu. Configuração de endpoint, recursos e batch usa o padrão OTel existente, sem token do host embutido na aplicação.
 
 Referências: [inicialização antecipada do DD](https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/nodejs/), [SDK Node OTel](https://opentelemetry.io/docs/languages/js/getting-started/nodejs/). ESM, bancos, outros loggers, outras versões e desligamento remoto ainda não comprovados.
+
+## Profiling de CPU V8 (em validação)
+
+`TELVYN_PROFILING_ENABLED=true` habilita o profiler nativo do V8 no mesmo preload. O padrão é desligado; `OTEL_SDK_DISABLED=true` também o desliga. O endpoint OTLP HTTP do coletor existente recebe `/v1/profile`; não há token do host na aplicação nem porta de inspector exposta. A aplicação precisa reiniciar para carregar a configuração.
+
+Janelas de 15 segundos, intervalo solicitado de 10 ms. O Flame Graph usa contagem real de amostras da thread principal, excluindo idle, sem estimar segundos de CPU. Não cobre worker threads, pilhas nativas completas, alocações, associação com traces nem código-fonte nesta unidade. Nomes de funções iguais são agregados. Nenhum argumento, variável local ou conteúdo de requisição é capturado.
+
+O envio tem limite de 4 MiB e timeout de 5 segundos; uma falha gera aviso e descarta essa janela, sem fila ilimitada na aplicação. O WAL de logs não protege profiles. A última janela incompleta não é exportada no encerramento. A API de consulta precisa aceitar a fonte `v8`; ingestão isolada não comprova visualização.
+
+Em 13/10, Node 20.20.2 capturou uma função real sob carga e enviou profiles ao backend local pelo coletor existente. Controle desligado não enviou profiles. Validação do Flame Graph ainda depende da ativação autorizada da API.
 
 ## Validação de 12/10/2026
 

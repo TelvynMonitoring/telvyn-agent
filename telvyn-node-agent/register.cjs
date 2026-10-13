@@ -32,9 +32,12 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
     }), new ExpressInstrumentation()],
   });
   sdk.start();
+  let profiler;
+  try { profiler = require('./profiler.cjs').startProfiler(); }
+  catch (_) { console.warn('[Telvyn] CPU profiling could not start.'); }
   process.once('SIGTERM', () => {
     // Applications with their own shutdown handler retain control of process exit.
     const exitAfterFlush = process.listenerCount('SIGTERM') === 0;
-    sdk.shutdown().catch(() => console.error('Telvyn telemetry flush failed')).finally(() => { if (exitAfterFlush) process.exit(0); });
+    Promise.all([sdk.shutdown(), profiler?.stop()]).catch(() => console.error('Telvyn telemetry flush failed')).finally(() => { if (exitAfterFlush) process.exit(0); });
   });
 }
