@@ -1,5 +1,7 @@
 if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
   const { NodeSDK } = require('@opentelemetry/sdk-node');
+  const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks');
+  const profileContext = require('./profile-context.cjs');
   const { isSpanContextValid, trace } = require('@opentelemetry/api');
   const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-proto');
   const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http');
@@ -46,6 +48,7 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
   }
 
   const sdk = new NodeSDK({
+    contextManager: new (profileContext.contextManager(AsyncLocalStorageContextManager))(),
     traceExporter: new QuerySafeExporter(),
     ...(process.env.TELVYN_DEBUGGER_ENABLED === 'true' ? {metricReader: new PeriodicExportingMetricReader({exporter: new OTLPMetricExporter(), exportIntervalMillis: 10000})} : {}),
     instrumentations: [new HttpInstrumentation({
