@@ -176,18 +176,36 @@ function startIast(report) {
       const source = sourceOf(scope, value);
       // Echoing a request header under the same name is the usual proxy behaviour, not an injection.
       if (header && source?.type === 'header' && source.name === label(header)) return;
+      reportAt(scope, rule, sink, started, new Error().stack || '', statement, source);
+    } catch (_) { console.warn('[Telvyn] IAST finding could not be reported.'); }
+  }
+  // The finding is placed at the first application frame of the stack; one report per rule and code line per request.
+  function reportAt(scope, rule, sink, started, stack, statement, source) {
+    const location = stack.split('\n').map(line => line.match(/^\s*at (?:(.*?) \()?([^()]+):(\d+):(\d+)\)?$/)).find(match => match && relativeFile(match[2]));
+    if (!location) return;
+    const filename = location[2].startsWith('file:') ? fileURLToPath(location[2]) : location[2];
+    const mapped = getSourcePathAndLineFromSourceMaps(filename, Number(location[3]), Number(location[4]));
+    const file = relativeFile(mapped.path);
+    const method = (location[1] || 'anonymous').replace(/[^\w$]/g, '_');
+    const key = `${rule}:${file}:${mapped.line}`;
+    if (file && !scope.reported.has(key) && scope.reported.size < 8) {
+      scope.reported.add(key);
+      report({rule_id: rule, code_method: `${file}#${method}`, code_line: mapped.line, sink, ...(statement === undefined ? {} : {sql: maskSql(statement)}), stack: stackFrames(stack), source: source ? `${source.type}:${source.name}` : undefined, request_method: scope.request.method, request_path: scope.request.path, user_agent: scope.request.userAgent}, Number((process.hrtime.bigint() - started) / 1000n));
+    }
+  }
+  // Findings that need no input: the unsafe call itself. Only inside a request of a selected route, like every other finding.
+  // `direct`: the unsafe call must come from application code itself; a library using a weak algorithm internally
+  // (Express computes ETags with SHA-1) is not the application's finding.
+  function inspectFlaw(rule, sink, direct = false) {
+    const scope = storage.getStore();
+    if (stopped || !scope || !active.has(scope.id)) return;
+    try {
       const stack = new Error().stack || '';
-      const location = stack.split('\n').map(line => line.match(/^\s*at (?:(.*?) \()?([^()]+):(\d+):(\d+)\)?$/)).find(match => match && relativeFile(match[2]));
-      if (!location) return;
-      const filename = location[2].startsWith('file:') ? fileURLToPath(location[2]) : location[2];
-      const mapped = getSourcePathAndLineFromSourceMaps(filename, Number(location[3]), Number(location[4]));
-      const file = relativeFile(mapped.path);
-      const method = (location[1] || 'anonymous').replace(/[^\w$]/g, '_');
-      const key = `${rule}:${file}:${mapped.line}`;
-      if (file && !scope.reported.has(key) && scope.reported.size < 8) {
-        scope.reported.add(key);
-        report({rule_id: rule, code_method: `${file}#${method}`, code_line: mapped.line, sink, ...(statement === undefined ? {} : {sql: maskSql(statement)}), stack: stackFrames(stack), source: source ? `${source.type}:${source.name}` : undefined, request_method: scope.request.method, request_path: scope.request.path, user_agent: scope.request.userAgent}, Number((process.hrtime.bigint() - started) / 1000n));
+      if (direct) {
+        const caller = stack.split('\n').slice(1).map(line => line.match(/^\s*at (?:(.*?) \()?([^()]+):(\d+):(\d+)\)?$/)).find(match => match && !match[2].startsWith('node:') && !match[2].startsWith(__dirname));
+        if (!caller || !relativeFile(caller[2].startsWith('file:') ? fileURLToPath(caller[2]) : caller[2])) return;
       }
+      reportAt(scope, rule, sink, process.hrtime.bigint(), stack);
     } catch (_) { console.warn('[Telvyn] IAST finding could not be reported.'); }
   }
   const patched = new WeakMap();
@@ -227,8 +245,8 @@ function startIast(report) {
       if (key === 'length' || key === 'prototype') continue;
       try { Object.defineProperty(replacement, key, Object.getOwnPropertyDescriptor(original, key)); } catch (_) { /* keep the default */ }
     }
-    ours.add(replacement);
-    owner[name] = replacement;
+    // Some Node.js versions expose deprecated functions as read-only: that point is skipped, the rest keeps working.
+    try { owner[name] = replacement; ours.add(replacement); } catch (_) { /* not wrappable here */ }
   }
   const first = args => [args[0]];
   const strings = args => args.filter(value => typeof value === 'string');
@@ -256,6 +274,39 @@ function startIast(report) {
     }
     if (changed) Module.syncBuiltinESMExports();
   }
+  // Weak algorithms and cookie attributes are judged on what the application passes, never on a value it holds.
+  const WEAK_HASH = new Set(['md4', 'md5', 'ripemd', 'ripemd160', 'rmd160', 'sha1', 'sha-1', 'md5-sha1', 'rsa-md5', 'rsa-sha1', 'rsa-sha1-2', 'mdc2', 'whirlpool']);
+  const WEAK_CIPHER = /^(?:des|des-ede|des-ede3|des3|des-cbc|des-ecb|des-cfb|des-ofb|des-ede-cbc|des-ede3-cbc|rc2|rc4|rc2-40|rc2-64|rc2-128|rc4-40|rc4-hmac-md5|bf|bf-cbc|bf-ecb|blowfish|idea|cast|cast5|seed|aes-128-ecb|aes-192-ecb|aes-256-ecb)(?:-.*)?$/i;
+  function patchFlaws(crypto) {
+    const algorithm = args => typeof args[0] === 'string' ? args[0].toLowerCase() : '';
+    wrapFlaw(crypto, 'createHash', 'WEAK_HASH', 'crypto.createHash', args => WEAK_HASH.has(algorithm(args)));
+    wrapFlaw(crypto, 'createHmac', 'WEAK_HASH', 'crypto.createHmac', args => WEAK_HASH.has(algorithm(args)));
+    for (const name of ['createCipheriv', 'createCipher']) wrapFlaw(crypto, name, 'WEAK_CIPHER', `crypto.${name}`, args => WEAK_CIPHER.test(algorithm(args)));
+  }
+  function wrapFlaw(owner, name, rule, sink, flawed) {
+    const original = owner?.[name];
+    if (typeof original !== 'function' || ours.has(original)) return;
+    const replacement = function (...args) {
+      try { if (flawed(args)) inspectFlaw(rule, sink, true); } catch (_) { /* never alters the call */ }
+      return original.apply(this, args);
+    };
+    for (const key of Reflect.ownKeys(original)) {
+      if (key === 'length' || key === 'prototype') continue;
+      try { Object.defineProperty(replacement, key, Object.getOwnPropertyDescriptor(original, key)); } catch (_) { /* keep the default */ }
+    }
+    // Some Node.js versions expose deprecated functions as read-only: that point is skipped, the rest keeps working.
+    try { owner[name] = replacement; ours.add(replacement); } catch (_) { /* not wrappable here */ }
+  }
+  // Set-Cookie: missing Secure, HttpOnly or SameSite. Only the attributes are read; a removal (empty value or Max-Age=0) is not a finding.
+  function inspectCookie(value) {
+    if (typeof value !== 'string') return;
+    const [pair, ...attributes] = value.split(';').map(part => part.trim());
+    if (!pair || pair.slice(pair.indexOf('=') + 1) === '' || attributes.some(attribute => /^max-age=0+$/i.test(attribute))) return;
+    const has = name => attributes.some(attribute => attribute.toLowerCase() === name || attribute.toLowerCase().startsWith(name + '='));
+    if (!has('secure')) inspectFlaw('INSECURE_COOKIE', 'http.ServerResponse.setHeader');
+    if (!has('httponly')) inspectFlaw('NO_HTTPONLY_COOKIE', 'http.ServerResponse.setHeader');
+    if (!has('samesite')) inspectFlaw('NO_SAMESITE_COOKIE', 'http.ServerResponse.setHeader');
+  }
   function patchBuiltins() {
     const childProcess = require('node:child_process'), fs = require('node:fs'), http = require('node:http'), vm = require('node:vm');
     for (const name of ['exec', 'execSync']) wrap(childProcess, name, 'COMMAND_INJECTION', `child_process.${name}`, first);
@@ -270,10 +321,15 @@ function startIast(report) {
     wrap(globalThis, 'fetch', 'SSRF', 'fetch', args => typeof args[0] === 'string' ? [args[0]] : []);
     wrapOutgoing();
     for (const name of ['runInThisContext', 'runInNewContext', 'runInContext', 'compileFunction']) wrap(vm, name, 'CODE_INJECTION', `vm.${name}`, first);
+    patchFlaws(require('node:crypto'));
     const response = http.ServerResponse.prototype;
     const setHeader = response.setHeader;
     response.setHeader = function (name, value, ...rest) {
-      try { inspectSink(String(name).toLowerCase() === 'location' ? 'UNVALIDATED_REDIRECT' : 'HEADER_INJECTION', 'http.ServerResponse.setHeader', Array.isArray(value) ? value : [value], undefined, String(name).toLowerCase()); } catch (_) { /* never alters the call */ }
+      try {
+        const lower = String(name).toLowerCase();
+        if (lower === 'set-cookie') for (const cookie of Array.isArray(value) ? value : [value]) inspectCookie(cookie);
+        inspectSink(lower === 'location' ? 'UNVALIDATED_REDIRECT' : 'HEADER_INJECTION', 'http.ServerResponse.setHeader', Array.isArray(value) ? value : [value], undefined, lower);
+      } catch (_) { /* never alters the call */ }
       return setHeader.call(this, name, value, ...rest);
     };
     Module.syncBuiltinESMExports();
