@@ -134,7 +134,7 @@ function startIast(report) {
     try { return native.newTaintedString(scope.id, value, label(name), type); } catch (_) { return value; }
   }
   // Strings, arrays and plain objects (parsed bodies, queries, parameters, cookies) are marked in place, leaf by leaf.
-  const marked = new WeakSet();
+  const marked = new WeakMap();
   function mark(value, type, name, scope, budget = {left: 256}, depth = 0) {
     if (typeof value === 'string') return budget.left-- > 0 ? taint(value, type, name, scope) : value;
     if (!value || typeof value !== 'object' || depth > 5 || marked.has(value)) return value;
@@ -142,7 +142,7 @@ function startIast(report) {
     const prototype = Object.getPrototypeOf(value);
     const plain = prototype === null || prototype === Object.prototype || (Object.getPrototypeOf(prototype) === null && Object.getOwnPropertyNames(prototype).every(key => key === 'constructor'));
     if (!Array.isArray(value) && !plain) return value;
-    marked.add(value);
+    marked.set(value, {type, name: label(name)});
     for (const key of Object.keys(value)) {
       try {
         const child = value[key], next = Array.isArray(value) ? name : depth ? `${name}.${key}` : key;
@@ -176,18 +176,36 @@ function startIast(report) {
       const source = sourceOf(scope, value);
       // Echoing a request header under the same name is the usual proxy behaviour, not an injection.
       if (header && source?.type === 'header' && source.name === label(header)) return;
+      reportAt(scope, rule, sink, started, new Error().stack || '', statement, source);
+    } catch (_) { console.warn('[Telvyn] IAST finding could not be reported.'); }
+  }
+  // The finding is placed at the first application frame of the stack; one report per rule and code line per request.
+  function reportAt(scope, rule, sink, started, stack, statement, source) {
+    const location = stack.split('\n').map(line => line.match(/^\s*at (?:(.*?) \()?([^()]+):(\d+):(\d+)\)?$/)).find(match => match && relativeFile(match[2]));
+    if (!location) return;
+    const filename = location[2].startsWith('file:') ? fileURLToPath(location[2]) : location[2];
+    const mapped = getSourcePathAndLineFromSourceMaps(filename, Number(location[3]), Number(location[4]));
+    const file = relativeFile(mapped.path);
+    const method = (location[1] || 'anonymous').replace(/[^\w$]/g, '_');
+    const key = `${rule}:${file}:${mapped.line}`;
+    if (file && !scope.reported.has(key) && scope.reported.size < 8) {
+      scope.reported.add(key);
+      report({rule_id: rule, code_method: `${file}#${method}`, code_line: mapped.line, sink, ...(statement === undefined ? {} : {sql: maskSql(statement)}), stack: stackFrames(stack), source: source ? `${source.type}:${source.name}` : undefined, request_method: scope.request.method, request_path: scope.request.path, user_agent: scope.request.userAgent}, Number((process.hrtime.bigint() - started) / 1000n));
+    }
+  }
+  // Findings that need no input: the unsafe call itself. Only inside a request of a selected route, like every other finding.
+  // `direct`: the unsafe call must come from application code itself; a library using a weak algorithm internally
+  // (Express computes ETags with SHA-1) is not the application's finding.
+  function inspectFlaw(rule, sink, direct = false) {
+    const scope = storage.getStore();
+    if (stopped || !scope || !active.has(scope.id)) return;
+    try {
       const stack = new Error().stack || '';
-      const location = stack.split('\n').map(line => line.match(/^\s*at (?:(.*?) \()?([^()]+):(\d+):(\d+)\)?$/)).find(match => match && relativeFile(match[2]));
-      if (!location) return;
-      const filename = location[2].startsWith('file:') ? fileURLToPath(location[2]) : location[2];
-      const mapped = getSourcePathAndLineFromSourceMaps(filename, Number(location[3]), Number(location[4]));
-      const file = relativeFile(mapped.path);
-      const method = (location[1] || 'anonymous').replace(/[^\w$]/g, '_');
-      const key = `${rule}:${file}:${mapped.line}`;
-      if (file && !scope.reported.has(key) && scope.reported.size < 8) {
-        scope.reported.add(key);
-        report({rule_id: rule, code_method: `${file}#${method}`, code_line: mapped.line, sink, ...(statement === undefined ? {} : {sql: maskSql(statement)}), stack: stackFrames(stack), source: source ? `${source.type}:${source.name}` : undefined, request_method: scope.request.method, request_path: scope.request.path, user_agent: scope.request.userAgent}, Number((process.hrtime.bigint() - started) / 1000n));
+      if (direct) {
+        const caller = stack.split('\n').slice(1).map(line => line.match(/^\s*at (?:(.*?) \()?([^()]+):(\d+):(\d+)\)?$/)).find(match => match && !match[2].startsWith('node:') && !match[2].startsWith(__dirname));
+        if (!caller || !relativeFile(caller[2].startsWith('file:') ? fileURLToPath(caller[2]) : caller[2])) return;
       }
+      reportAt(scope, rule, sink, process.hrtime.bigint(), stack);
     } catch (_) { console.warn('[Telvyn] IAST finding could not be reported.'); }
   }
   const patched = new WeakMap();
@@ -227,8 +245,8 @@ function startIast(report) {
       if (key === 'length' || key === 'prototype') continue;
       try { Object.defineProperty(replacement, key, Object.getOwnPropertyDescriptor(original, key)); } catch (_) { /* keep the default */ }
     }
-    ours.add(replacement);
-    owner[name] = replacement;
+    // Some Node.js versions expose deprecated functions as read-only: that point is skipped, the rest keeps working.
+    try { owner[name] = replacement; ours.add(replacement); } catch (_) { /* not wrappable here */ }
   }
   const first = args => [args[0]];
   const strings = args => args.filter(value => typeof value === 'string');
@@ -256,6 +274,39 @@ function startIast(report) {
     }
     if (changed) Module.syncBuiltinESMExports();
   }
+  // Weak algorithms and cookie attributes are judged on what the application passes, never on a value it holds.
+  const WEAK_HASH = new Set(['md4', 'md5', 'ripemd', 'ripemd160', 'rmd160', 'sha1', 'sha-1', 'md5-sha1', 'rsa-md5', 'rsa-sha1', 'rsa-sha1-2', 'mdc2', 'whirlpool']);
+  const WEAK_CIPHER = /^(?:des|des-ede|des-ede3|des3|des-cbc|des-ecb|des-cfb|des-ofb|des-ede-cbc|des-ede3-cbc|rc2|rc4|rc2-40|rc2-64|rc2-128|rc4-40|rc4-hmac-md5|bf|bf-cbc|bf-ecb|blowfish|idea|cast|cast5|seed|aes-128-ecb|aes-192-ecb|aes-256-ecb)(?:-.*)?$/i;
+  function patchFlaws(crypto) {
+    const algorithm = args => typeof args[0] === 'string' ? args[0].toLowerCase() : '';
+    wrapFlaw(crypto, 'createHash', 'WEAK_HASH', 'crypto.createHash', args => WEAK_HASH.has(algorithm(args)));
+    wrapFlaw(crypto, 'createHmac', 'WEAK_HASH', 'crypto.createHmac', args => WEAK_HASH.has(algorithm(args)));
+    for (const name of ['createCipheriv', 'createCipher']) wrapFlaw(crypto, name, 'WEAK_CIPHER', `crypto.${name}`, args => WEAK_CIPHER.test(algorithm(args)));
+  }
+  function wrapFlaw(owner, name, rule, sink, flawed) {
+    const original = owner?.[name];
+    if (typeof original !== 'function' || ours.has(original)) return;
+    const replacement = function (...args) {
+      try { if (flawed(args)) inspectFlaw(rule, sink, true); } catch (_) { /* never alters the call */ }
+      return original.apply(this, args);
+    };
+    for (const key of Reflect.ownKeys(original)) {
+      if (key === 'length' || key === 'prototype') continue;
+      try { Object.defineProperty(replacement, key, Object.getOwnPropertyDescriptor(original, key)); } catch (_) { /* keep the default */ }
+    }
+    // Some Node.js versions expose deprecated functions as read-only: that point is skipped, the rest keeps working.
+    try { owner[name] = replacement; ours.add(replacement); } catch (_) { /* not wrappable here */ }
+  }
+  // Set-Cookie: missing Secure, HttpOnly or SameSite. Only the attributes are read; a removal (empty value or Max-Age=0) is not a finding.
+  function inspectCookie(value) {
+    if (typeof value !== 'string') return;
+    const [pair, ...attributes] = value.split(';').map(part => part.trim());
+    if (!pair || pair.slice(pair.indexOf('=') + 1) === '' || attributes.some(attribute => /^max-age=0+$/i.test(attribute))) return;
+    const has = name => attributes.some(attribute => attribute.toLowerCase() === name || attribute.toLowerCase().startsWith(name + '='));
+    if (!has('secure')) inspectFlaw('INSECURE_COOKIE', 'http.ServerResponse.setHeader');
+    if (!has('httponly')) inspectFlaw('NO_HTTPONLY_COOKIE', 'http.ServerResponse.setHeader');
+    if (!has('samesite')) inspectFlaw('NO_SAMESITE_COOKIE', 'http.ServerResponse.setHeader');
+  }
   function patchBuiltins() {
     const childProcess = require('node:child_process'), fs = require('node:fs'), http = require('node:http'), vm = require('node:vm');
     for (const name of ['exec', 'execSync']) wrap(childProcess, name, 'COMMAND_INJECTION', `child_process.${name}`, first);
@@ -270,28 +321,112 @@ function startIast(report) {
     wrap(globalThis, 'fetch', 'SSRF', 'fetch', args => typeof args[0] === 'string' ? [args[0]] : []);
     wrapOutgoing();
     for (const name of ['runInThisContext', 'runInNewContext', 'runInContext', 'compileFunction']) wrap(vm, name, 'CODE_INJECTION', `vm.${name}`, first);
+    patchFlaws(require('node:crypto'));
     const response = http.ServerResponse.prototype;
     const setHeader = response.setHeader;
     response.setHeader = function (name, value, ...rest) {
-      try { inspectSink(String(name).toLowerCase() === 'location' ? 'UNVALIDATED_REDIRECT' : 'HEADER_INJECTION', 'http.ServerResponse.setHeader', Array.isArray(value) ? value : [value], undefined, String(name).toLowerCase()); } catch (_) { /* never alters the call */ }
+      try {
+        const lower = String(name).toLowerCase();
+        if (lower === 'set-cookie') for (const cookie of Array.isArray(value) ? value : [value]) inspectCookie(cookie);
+        inspectSink(lower === 'location' ? 'UNVALIDATED_REDIRECT' : 'HEADER_INJECTION', 'http.ServerResponse.setHeader', Array.isArray(value) ? value : [value], undefined, lower);
+      } catch (_) { /* never alters the call */ }
       return setHeader.call(this, name, value, ...rest);
     };
     Module.syncBuiltinESMExports();
   }
   patchBuiltins();
+  // NoSQL injection: query operators come from the request. A plain object read from the request (a string only matches
+  // by equality) reaching a query filter, or request text inside $where / $function, is the finding.
+  function inputObject(value, depth = 0) {
+    if (!value || typeof value !== 'object' || depth > 5) return null;
+    if (!Array.isArray(value) && marked.has(value)) return marked.get(value);
+    for (const key of Object.keys(value)) { const found = inputObject(value[key], depth + 1); if (found) return found; }
+    return null;
+  }
+  function scriptInput(scope, value, depth = 0) {
+    if (!value || typeof value !== 'object' || depth > 5) return null;
+    for (const key of Object.keys(value)) {
+      const child = value[key];
+      const text = key === '$where' ? child : key === '$function' ? child?.body : undefined;
+      if (typeof text === 'string' && native.isTainted(scope.id, text)) return sourceOf(scope, text);
+      const found = scriptInput(scope, child, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  function inspectNoSql(sink, filter) {
+    const scope = storage.getStore();
+    if (stopped || !scope || !active.has(scope.id)) return;
+    const started = process.hrtime.bigint();
+    try {
+      const source = inputObject(filter) ?? scriptInput(scope, filter);
+      if (source) reportAt(scope, 'NOSQL_INJECTION', sink, started, new Error().stack || '', undefined, source);
+    } catch (_) { console.warn('[Telvyn] IAST finding could not be reported.'); }
+  }
+  function wrapNoSql(owner, name, index) {
+    const original = owner?.[name];
+    if (typeof original !== 'function' || ours.has(original)) return;
+    const replacement = function (...args) {
+      try { inspectNoSql(`mongodb.Collection.${name}`, args[index]); } catch (_) { /* never alters the call */ }
+      return original.apply(this, args);
+    };
+    for (const key of Reflect.ownKeys(original)) {
+      if (key === 'length' || key === 'prototype') continue;
+      try { Object.defineProperty(replacement, key, Object.getOwnPropertyDescriptor(original, key)); } catch (_) { /* keep the default */ }
+    }
+    try { owner[name] = replacement; ours.add(replacement); } catch (_) { /* not wrappable here */ }
+  }
+  function patchMongo(driver) {
+    const prototype = driver?.Collection?.prototype ?? driver?.default?.Collection?.prototype;
+    for (const name of ['find', 'findOne', 'updateOne', 'updateMany', 'replaceOne', 'deleteOne', 'deleteMany', 'findOneAndUpdate', 'findOneAndDelete', 'findOneAndReplace', 'countDocuments', 'aggregate']) wrapNoSql(prototype, name, 0);
+    wrapNoSql(prototype, 'distinct', 1);
+  }
+  // HTTP client libraries rebuild the destination from a parsed URL, so the mark only exists at their entry call.
+  const clientUrl = args => [typeof args[0] === 'string' ? args[0] : args[0]?.url, args[0]?.baseURL, args[1]?.url, args[1]?.baseURL].filter(value => typeof value === 'string');
+  const CLIENT_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'request', 'stream']);
+  const clients = new WeakMap();
+  function clientProxy(library, sink) {
+    if (typeof library !== 'function') return library;
+    if (clients.has(library)) return clients.get(library);
+    const check = args => { try { inspectSink('SSRF', sink, clientUrl(args)); } catch (_) { /* never alters the call */ } };
+    const proxy = new Proxy(library, {
+      apply(target, thisArg, args) { check(args); return Reflect.apply(target, thisArg, args); },
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' && CLIENT_METHODS.has(property) ? function (...args) { check(args); return value.apply(this === receiver ? target : this, args); } : value;
+      },
+    });
+    clients.set(library, proxy);
+    return proxy;
+  }
+  function patchAxios(axios) {
+    const library = axios?.default ?? axios;
+    wrap(library?.Axios?.prototype, 'request', 'SSRF', 'axios', clientUrl);
+    return typeof axios === 'function' ? clientProxy(axios, 'axios') : axios;
+  }
+  // ESM namespaces: replace the exported function with the observing proxy.
+  function patchClientModule(namespace, sink) {
+    for (const key of ['default', 'got', 'axios']) {
+      try { if (typeof namespace[key] === 'function') namespace[key] = clientProxy(namespace[key], sink); } catch (_) { /* read-only export */ }
+    }
+  }
   function patchExpress(framework) { wrap((framework?.default ?? framework)?.response, 'redirect', 'UNVALIDATED_REDIRECT', 'express.redirect', strings); }
   const load = Module._load;
   Module._load = function (name, ...args) {
     const exported = load.call(this, name, ...args);
     if (name === 'pg') { patchQuery(exported.Client?.prototype, 'pg'); patchQuery(exported.Pool?.prototype, 'pg'); }
     else if (name === 'express') patchExpress(exported);
+    else if (name === 'mongodb') patchMongo(exported);
+    else if (name === 'axios') return patchAxios(exported);
     else if (name === 'mysql2') patchMysql2(exported);
     else if (name === 'mysql2/promise') { try { patchMysql2(load.call(this, 'mysql2', ...args)); } catch (_) { /* core package unavailable */ } }
     return exported;
   };
   const { Hook } = require('import-in-the-middle');
-  const sqlHook = new Hook(['pg', 'mysql2', 'mysql2/promise', 'express'], (exported, name, baseDir) => {
+  const sqlHook = new Hook(['pg', 'mysql2', 'mysql2/promise', 'express', 'mongodb', 'axios', 'got'], (exported, name, baseDir) => {
     if (name === 'express') { patchExpress(exported); return; }
+    if (name === 'mongodb') { patchMongo(exported); return; }
+    if (name === 'axios' || name === 'got') { patchClientModule(exported, name); return; }
     if (name === 'pg') { patchQuery(exported.Client?.prototype, 'pg'); patchQuery(exported.Pool?.prototype, 'pg'); patchQuery(exported.default?.Client?.prototype, 'pg'); return; }
     patchMysql2(exported);
     if (name.endsWith('/promise')) { try { patchMysql2(Module._load(baseDir, module)); } catch (_) { /* core package unavailable */ } }

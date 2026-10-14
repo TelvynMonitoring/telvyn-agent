@@ -2,6 +2,9 @@
 const { randomUUID } = require('node:crypto');
 const os = require('node:os');
 
+// Findings that need no input (weak algorithms, cookie attributes) have their own rule set.
+const FLAW_RULES = new Set(['WEAK_HASH', 'WEAK_CIPHER', 'INSECURE_COOKIE', 'NO_HTTPONLY_COOKIE', 'NO_SAMESITE_COOKIE']);
+
 // Only explicitly selected routes and q are inspected; reports never contain input values.
 function startSecurity() {
   const enabled = process.env.TELVYN_SECURITY_ENABLED === 'true';
@@ -27,7 +30,7 @@ function startSecurity() {
     if (pending.size >= 32) { console.warn('[Telvyn] Security delivery saturated; event not queued.'); return; }
     const context = span?.spanContext();
     const body = JSON.stringify({id: randomUUID(), service, host: process.env.POD_NAME || os.hostname(), environment,
-      service_version: attributes['service.version'], outcome, rule_id: rule, rules_version: finding ? (rule === 'SQL_INJECTION' ? 'iast-q-node-sql-1' : 'iast-q-node-sinks-1') : 'query-allowlist-1',
+      service_version: attributes['service.version'], outcome, rule_id: rule, rules_version: finding ? (rule === 'SQL_INJECTION' ? 'iast-q-node-sql-1' : FLAW_RULES.has(rule) ? 'iast-node-flaws-1' : 'iast-q-node-sinks-1') : 'query-allowlist-1',
       engine_version: DDWAF.version(), elapsed_us: elapsed,
       ...finding,
       ...(context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? {trace_id: context.traceId, span_id: context.spanId} : {})});
