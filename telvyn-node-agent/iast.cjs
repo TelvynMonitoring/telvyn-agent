@@ -134,7 +134,7 @@ function startIast(report) {
     try { return native.newTaintedString(scope.id, value, label(name), type); } catch (_) { return value; }
   }
   // Strings, arrays and plain objects (parsed bodies, queries, parameters, cookies) are marked in place, leaf by leaf.
-  const marked = new WeakSet();
+  const marked = new WeakMap();
   function mark(value, type, name, scope, budget = {left: 256}, depth = 0) {
     if (typeof value === 'string') return budget.left-- > 0 ? taint(value, type, name, scope) : value;
     if (!value || typeof value !== 'object' || depth > 5 || marked.has(value)) return value;
@@ -142,7 +142,7 @@ function startIast(report) {
     const prototype = Object.getPrototypeOf(value);
     const plain = prototype === null || prototype === Object.prototype || (Object.getPrototypeOf(prototype) === null && Object.getOwnPropertyNames(prototype).every(key => key === 'constructor'));
     if (!Array.isArray(value) && !plain) return value;
-    marked.add(value);
+    marked.set(value, {type, name: label(name)});
     for (const key of Object.keys(value)) {
       try {
         const child = value[key], next = Array.isArray(value) ? name : depth ? `${name}.${key}` : key;
@@ -335,19 +335,98 @@ function startIast(report) {
     Module.syncBuiltinESMExports();
   }
   patchBuiltins();
+  // NoSQL injection: query operators come from the request. A plain object read from the request (a string only matches
+  // by equality) reaching a query filter, or request text inside $where / $function, is the finding.
+  function inputObject(value, depth = 0) {
+    if (!value || typeof value !== 'object' || depth > 5) return null;
+    if (!Array.isArray(value) && marked.has(value)) return marked.get(value);
+    for (const key of Object.keys(value)) { const found = inputObject(value[key], depth + 1); if (found) return found; }
+    return null;
+  }
+  function scriptInput(scope, value, depth = 0) {
+    if (!value || typeof value !== 'object' || depth > 5) return null;
+    for (const key of Object.keys(value)) {
+      const child = value[key];
+      const text = key === '$where' ? child : key === '$function' ? child?.body : undefined;
+      if (typeof text === 'string' && native.isTainted(scope.id, text)) return sourceOf(scope, text);
+      const found = scriptInput(scope, child, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  function inspectNoSql(sink, filter) {
+    const scope = storage.getStore();
+    if (stopped || !scope || !active.has(scope.id)) return;
+    const started = process.hrtime.bigint();
+    try {
+      const source = inputObject(filter) ?? scriptInput(scope, filter);
+      if (source) reportAt(scope, 'NOSQL_INJECTION', sink, started, new Error().stack || '', undefined, source);
+    } catch (_) { console.warn('[Telvyn] IAST finding could not be reported.'); }
+  }
+  function wrapNoSql(owner, name, index) {
+    const original = owner?.[name];
+    if (typeof original !== 'function' || ours.has(original)) return;
+    const replacement = function (...args) {
+      try { inspectNoSql(`mongodb.Collection.${name}`, args[index]); } catch (_) { /* never alters the call */ }
+      return original.apply(this, args);
+    };
+    for (const key of Reflect.ownKeys(original)) {
+      if (key === 'length' || key === 'prototype') continue;
+      try { Object.defineProperty(replacement, key, Object.getOwnPropertyDescriptor(original, key)); } catch (_) { /* keep the default */ }
+    }
+    try { owner[name] = replacement; ours.add(replacement); } catch (_) { /* not wrappable here */ }
+  }
+  function patchMongo(driver) {
+    const prototype = driver?.Collection?.prototype ?? driver?.default?.Collection?.prototype;
+    for (const name of ['find', 'findOne', 'updateOne', 'updateMany', 'replaceOne', 'deleteOne', 'deleteMany', 'findOneAndUpdate', 'findOneAndDelete', 'findOneAndReplace', 'countDocuments', 'aggregate']) wrapNoSql(prototype, name, 0);
+    wrapNoSql(prototype, 'distinct', 1);
+  }
+  // HTTP client libraries rebuild the destination from a parsed URL, so the mark only exists at their entry call.
+  const clientUrl = args => [typeof args[0] === 'string' ? args[0] : args[0]?.url, args[0]?.baseURL, args[1]?.url, args[1]?.baseURL].filter(value => typeof value === 'string');
+  const CLIENT_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'request', 'stream']);
+  const clients = new WeakMap();
+  function clientProxy(library, sink) {
+    if (typeof library !== 'function') return library;
+    if (clients.has(library)) return clients.get(library);
+    const check = args => { try { inspectSink('SSRF', sink, clientUrl(args)); } catch (_) { /* never alters the call */ } };
+    const proxy = new Proxy(library, {
+      apply(target, thisArg, args) { check(args); return Reflect.apply(target, thisArg, args); },
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' && CLIENT_METHODS.has(property) ? function (...args) { check(args); return value.apply(this === receiver ? target : this, args); } : value;
+      },
+    });
+    clients.set(library, proxy);
+    return proxy;
+  }
+  function patchAxios(axios) {
+    const library = axios?.default ?? axios;
+    wrap(library?.Axios?.prototype, 'request', 'SSRF', 'axios', clientUrl);
+    return typeof axios === 'function' ? clientProxy(axios, 'axios') : axios;
+  }
+  // ESM namespaces: replace the exported function with the observing proxy.
+  function patchClientModule(namespace, sink) {
+    for (const key of ['default', 'got', 'axios']) {
+      try { if (typeof namespace[key] === 'function') namespace[key] = clientProxy(namespace[key], sink); } catch (_) { /* read-only export */ }
+    }
+  }
   function patchExpress(framework) { wrap((framework?.default ?? framework)?.response, 'redirect', 'UNVALIDATED_REDIRECT', 'express.redirect', strings); }
   const load = Module._load;
   Module._load = function (name, ...args) {
     const exported = load.call(this, name, ...args);
     if (name === 'pg') { patchQuery(exported.Client?.prototype, 'pg'); patchQuery(exported.Pool?.prototype, 'pg'); }
     else if (name === 'express') patchExpress(exported);
+    else if (name === 'mongodb') patchMongo(exported);
+    else if (name === 'axios') return patchAxios(exported);
     else if (name === 'mysql2') patchMysql2(exported);
     else if (name === 'mysql2/promise') { try { patchMysql2(load.call(this, 'mysql2', ...args)); } catch (_) { /* core package unavailable */ } }
     return exported;
   };
   const { Hook } = require('import-in-the-middle');
-  const sqlHook = new Hook(['pg', 'mysql2', 'mysql2/promise', 'express'], (exported, name, baseDir) => {
+  const sqlHook = new Hook(['pg', 'mysql2', 'mysql2/promise', 'express', 'mongodb', 'axios', 'got'], (exported, name, baseDir) => {
     if (name === 'express') { patchExpress(exported); return; }
+    if (name === 'mongodb') { patchMongo(exported); return; }
+    if (name === 'axios' || name === 'got') { patchClientModule(exported, name); return; }
     if (name === 'pg') { patchQuery(exported.Client?.prototype, 'pg'); patchQuery(exported.Pool?.prototype, 'pg'); patchQuery(exported.default?.Client?.prototype, 'pg'); return; }
     patchMysql2(exported);
     if (name.endsWith('/promise')) { try { patchMysql2(Module._load(baseDir, module)); } catch (_) { /* core package unavailable */ } }
