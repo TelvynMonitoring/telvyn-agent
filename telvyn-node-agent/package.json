@@ -21,7 +21,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": "^18.19.0 || >=20"
   },
   "dependencies": {
     "@fastify/otel": "0.21.2",
