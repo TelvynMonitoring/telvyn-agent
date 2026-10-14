@@ -1,16 +1,42 @@
 {
   "name": "@telvyn/node-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Telvyn HTTP and Express instrumentation through the existing OTLP collector",
   "main": "register.cjs",
-  "exports": {"./register": "./register.cjs"},
-  "files": ["register.cjs", "bootstrap.cjs", "README.md"],
-  "engines": {"node": ">=20"},
+  "exports": {
+    "./register": "./register.cjs"
+  },
+  "files": [
+    "register.cjs",
+    "bootstrap.cjs",
+    "profiler.cjs",
+    "security.cjs",
+    "iast.cjs",
+    "debugger.cjs",
+    "runtime.cjs",
+    "loader.mjs",
+    "security-rules.json",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
+    "@fastify/otel": "0.21.2",
     "@opentelemetry/api": "1.9.1",
-    "@opentelemetry/sdk-node": "0.223.0",
-    "@opentelemetry/instrumentation-http": "0.223.0",
+    "@opentelemetry/exporter-metrics-otlp-proto": "0.223.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "0.223.0",
+    "@opentelemetry/instrumentation": "0.223.0",
     "@opentelemetry/instrumentation-express": "0.71.0",
-    "@opentelemetry/exporter-trace-otlp-proto": "0.223.0"
+    "@opentelemetry/instrumentation-http": "0.223.0",
+    "@opentelemetry/sdk-metrics": "2.12.0",
+    "@opentelemetry/sdk-node": "0.223.0",
+    "import-in-the-middle": "3.5.2"
+  },
+  "optionalDependencies": {
+    "@datadog/native-appsec": "11.0.3",
+    "@datadog/native-iast-taint-tracking": "4.2.1",
+    "@datadog/pprof": "5.20.0",
+    "@datadog/wasm-js-rewriter": "5.0.4"
   }
 }

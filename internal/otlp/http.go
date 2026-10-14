@@ -91,6 +91,7 @@ type HTTPReceiver struct {
 	// OTLP cru pro gateway com Bearer token em vez de empurrar pro sink gRPC.
 	// signal ∈ {"traces","metrics","logs"}.
 	forwardRaw                    func(signal, contentType string, body []byte) error
+	debugConfig                   func(context.Context, string, string, string) ([]byte, error)
 	traceProcessor                func(contentType string, body []byte) ([]byte, error)
 	verifiedHost, verifiedCluster string
 	primaryMu                     sync.RWMutex
@@ -775,6 +776,12 @@ func (h *HTTPReceiver) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/traces", h.handleTraces)
 	mux.HandleFunc("/v1/metrics", h.handleMetrics)
 	mux.HandleFunc("/v1/profile", h.handleProfile)
+	mux.HandleFunc("/v1/security/events", h.handleSecurity)
+	mux.HandleFunc("/v1/security/iast", h.handleSecurity)
+	mux.HandleFunc("/v1/sdk/configuration", h.handleApplicationReport)
+	mux.HandleFunc("/v1/debug", h.handleApplicationReport)
+	mux.HandleFunc("/v1/debug/config", h.handleDebugConfig)
+	mux.HandleFunc("/v1/debug/config/applied", h.handleApplicationReport)
 	mux.HandleFunc("/v1/logs", h.handleLogs)
 	// Healthcheck simples — útil pro Helm chart probar antes de marcar pod
 	// como ready. Sem CORS porque é uso interno.
