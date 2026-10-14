@@ -38,10 +38,14 @@ function runtimeTransport() {
   };
 }
 
+function flag(name) { return {value: String(process.env[name] === 'true'), source: process.env[name] === undefined ? 'default' : 'environment'}; }
+
 function reportConfiguration(transport, security, iast) {
   const send = () => transport.send('sdk/configuration', {sdk_name: 'telvyn-node-agent', sdk_version: require('./package.json').version, runtime: process.version,
     configurations: [
-      {name: 'telvyn.profiling.enabled', value: String(process.env.TELVYN_PROFILING_ENABLED === 'true'), source: process.env.TELVYN_PROFILING_ENABLED === undefined ? 'default' : 'environment'},
+      {name: 'telvyn.profiling.enabled', ...flag('TELVYN_PROFILING_ENABLED')},
+      {name: 'telvyn.profiling.wall.enabled', ...flag('TELVYN_PROFILE_WALL_ENABLED')},
+      {name: 'telvyn.profiling.alloc.enabled', ...flag('TELVYN_PROFILE_ALLOCATION_ENABLED')},
       {name: 'telvyn.security.attack.state', value: security?.state || (process.env.TELVYN_SECURITY_ENABLED === 'true' ? 'error' : 'disabled'), source: 'runtime'},
       {name: 'telvyn.security.iast.state', value: iast?.state || (process.env.TELVYN_IAST_ENABLED === 'true' ? 'error' : 'disabled'), source: 'runtime'},
     ]});
