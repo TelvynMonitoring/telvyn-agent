@@ -173,6 +173,16 @@ function foldedProfile(profile) {
   return [...stacks].map(([stack, count]) => `${stack} ${count}`).join('\n');
 }
 
+// Same names, ranges and fallback as the Javaagent (JfrCpuProfiler.intConf): an out-of-range integer is clamped,
+// anything that is not a 32-bit integer uses the default.
+function intSetting(name, fallback, min, max) {
+  const raw = process.env[name]?.trim();
+  if (!raw || !/^[+-]?\d+$/.test(raw)) return fallback;
+  const value = Number(raw);
+  if (value < -2147483648 || value > 2147483647) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
 function startProfiler() {
   if (process.env.TELVYN_PROFILING_ENABLED !== 'true' || isInternalThread === true) return { stop: async () => {} };
   const instance = `${randomUUID()}:${threadId}`;
@@ -192,6 +202,8 @@ function startProfiler() {
     if (!/^https:\/\/(github\.com|gitlab\.com)\/[\w.-]+(?:\/[\w.-]+)+$/.test(repository || '') || !/^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$/.test(revision || '') || !/^(?:[\w$.-]+\/)*[\w$.-]*$/.test(sourceRoot) || sourceRoot.split('/').includes('..')) throw new Error('Invalid profile build identity');
     build = {repository_url: repository, commit_sha: revision, source_root: sourceRoot};
   }
+  const periodMs = intSetting('TELVYN_PROFILING_PERIOD_MS', 10, 1, 1000);
+  const flushMs = intSetting('TELVYN_PROFILING_FLUSH_SEC', 15, 2, 600) * 1000;
   const session = inspectorSession();
   session.connect();
   let wall, wallContexts = false;
@@ -199,13 +211,13 @@ function startProfiler() {
     try {
       wall = require('@datadog/pprof').time;
       // Span context needs V8 continuation-preserved data; otherwise Wall Time starts without it.
-      try { wall.start({intervalMicros: 10000, withContexts: true, useCPED: true}); wallContexts = true; }
-      catch (_) { wall.start({intervalMicros: 10000, lineNumbers: true}); }
+      try { wall.start({intervalMicros: periodMs * 1000, withContexts: true, useCPED: true}); wallContexts = true; }
+      catch (_) { wall.start({intervalMicros: periodMs * 1000, lineNumbers: true}); }
     } catch (_) { wall = undefined; console.warn('[Telvyn] Native wall profiler unavailable; CPU/heap remain enabled.'); }
     if (wallContexts) profileContext.enable(wall).then(supported => {
       if (supported) return;
       wallContexts = false;
-      try { wall.stop(); wall.start({intervalMicros: 10000, lineNumbers: true}); }
+      try { wall.stop(); wall.start({intervalMicros: periodMs * 1000, lineNumbers: true}); }
       catch (_) { wall = undefined; console.warn('[Telvyn] Native wall profiler unavailable; CPU/heap remain enabled.'); }
     });
   }
@@ -223,7 +235,7 @@ function startProfiler() {
     await session.post('Profiler.start');
     startedAt = Date.now();
     if (stopped) return;
-    timer = setTimeout(() => { rotating = rotate(); }, 15000); timer.unref();
+    timer = setTimeout(() => { rotating = rotate(); }, flushMs); timer.unref();
   }
   async function rotate() {
     try {
@@ -232,7 +244,7 @@ function startProfiler() {
       const seconds = Math.max(1, Math.round((Date.now() - from) / 1000));
       if (stopped) return;
       await begin();
-      const uploads = [upload('cpu', foldedProfile(profile), from, seconds, 10)];
+      const uploads = [upload('cpu', foldedProfile(profile), from, seconds, periodMs)];
       if (wall) {
         try {
           const samples = wallSamples(wallContexts ? wall.stop(true, profileContext.generateLabels) : wall.stop(true));
@@ -258,7 +270,7 @@ function startProfiler() {
       for (const result of await Promise.allSettled(uploads)) if (result.status === 'rejected') warn();
     } catch (_) {
       warn();
-      if (!stopped) { timer = setTimeout(() => { rotating = rotate(); }, 15000); timer.unref(); }
+      if (!stopped) { timer = setTimeout(() => { rotating = rotate(); }, flushMs); timer.unref(); }
     }
   }
   async function upload(type, folded, from, seconds, period, links = []) {
@@ -275,7 +287,7 @@ function startProfiler() {
   }
   // The first window waits (briefly) for the maps so one function keeps one file name across windows.
   const mapsReady = Promise.race([loadSourceMapper(), new Promise(resolve => setTimeout(resolve, 10000).unref())]);
-  const ready = mapsReady.then(() => session.post('Profiler.enable')).then(() => session.post('Profiler.setSamplingInterval', {interval: 10000}))
+  const ready = mapsReady.then(() => session.post('Profiler.enable')).then(() => session.post('Profiler.setSamplingInterval', {interval: periodMs * 1000}))
     .then(async () => {
       if (allocation) return;
       await session.post('HeapProfiler.startSampling', {samplingInterval: 524288});

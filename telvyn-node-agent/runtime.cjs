@@ -38,6 +38,15 @@ function runtimeTransport() {
   };
 }
 
+// Configured input before the profiler applies its limits, as the Javaagent reports it; unparsable text is never sent.
+function number(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return {value: String(fallback), source: 'default'};
+  const text = raw.trim();
+  const value = /^[+-]?\d+$/.test(text) && Number.isSafeInteger(Number(text)) ? String(Number(text)) : 'invalid';
+  return {value, source: 'environment'};
+}
+
 function flag(name) { return {value: String(process.env[name] === 'true'), source: process.env[name] === undefined ? 'default' : 'environment'}; }
 
 function reportConfiguration(transport, security, iast) {
@@ -46,6 +55,8 @@ function reportConfiguration(transport, security, iast) {
       {name: 'telvyn.profiling.enabled', ...flag('TELVYN_PROFILING_ENABLED')},
       {name: 'telvyn.profiling.wall.enabled', ...flag('TELVYN_PROFILE_WALL_ENABLED')},
       {name: 'telvyn.profiling.alloc.enabled', ...flag('TELVYN_PROFILE_ALLOCATION_ENABLED')},
+      {name: 'telvyn.profiling.period.ms', ...number('TELVYN_PROFILING_PERIOD_MS', 10)},
+      {name: 'telvyn.profiling.flush.sec', ...number('TELVYN_PROFILING_FLUSH_SEC', 15)},
       {name: 'telvyn.security.attack.state', value: security?.state || (process.env.TELVYN_SECURITY_ENABLED === 'true' ? 'error' : 'disabled'), source: 'runtime'},
       {name: 'telvyn.security.iast.state', value: iast?.state || (process.env.TELVYN_IAST_ENABLED === 'true' ? 'error' : 'disabled'), source: 'runtime'},
     ]});
