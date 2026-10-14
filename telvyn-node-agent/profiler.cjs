@@ -1,5 +1,4 @@
 'use strict';
-const { Session } = require('node:inspector/promises');
 const { threadId, isInternalThread } = require('node:worker_threads');
 const { randomUUID } = require('node:crypto');
 const os = require('node:os');
@@ -7,17 +6,77 @@ const path = require('node:path');
 const { fileURLToPath, pathToFileURL } = require('node:url');
 const profileContext = require('./profile-context.cjs');
 
+// node:inspector/promises exists from Node.js 19; Node.js 18 only has the callback API.
+function inspectorSession() {
+  try { return new (require('node:inspector/promises').Session)(); }
+  catch (_) {
+    const session = new (require('node:inspector').Session)();
+    const post = session.post.bind(session);
+    session.post = (method, params) => new Promise((resolve, reject) => post(method, params ?? {}, (error, result) => error ? reject(error) : resolve(result)));
+    return session;
+  }
+}
+
+// Original sources of transpiled code (TypeScript and similar) are valid frame files too.
+const SOURCE_FILE = /^(?:[\w$.-]+\/)*[\w$.-]+\.(?:cjs|mjs|js|jsx|ts|tsx|mts|cts)$/;
+let sourceMapper;
+const mappedFiles = new Map();
+const relativeSource = file => {
+  const relative = path.relative(path.resolve(process.env.TELVYN_PROFILE_SOURCE_ROOT), file).split(path.sep).join('/');
+  return SOURCE_FILE.test(relative) && !relative.split('/').includes('..') ? relative : '';
+};
+// Function start positions go through the source map; a result outside the source root keeps the compiled file.
+function mappedFile(file, line, column) {
+  const key = `${file}:${line}:${column}`;
+  if (mappedFiles.has(key)) return mappedFiles.get(key);
+  let result = file;
+  try {
+    // With the IAST on, application modules run rewritten: V8 positions belong to that code, and the rewriter keeps
+    // the way back (to the compiled file, or to the original source when it chains a source map).
+    let original = {path: file, line, column};
+    if (process.env.TELVYN_IAST_ENABLED === 'true') {
+      try { original = require('@datadog/wasm-js-rewriter/js/source-map').getSourcePathAndLineFromSourceMaps(file, line, column) || original; } catch (_) { /* IAST unavailable */ }
+    }
+    if (original.path && original.path !== file) { if (path.isAbsolute(original.path) && relativeSource(original.path)) result = original.path; }
+    else {
+      const info = sourceMapper.mappingInfo({file, line: original.line > 0 ? original.line : line, column: original.column > 0 ? original.column : column});
+      if (info?.file && path.isAbsolute(info.file) && relativeSource(info.file)) result = info.file;
+    }
+  } catch (_) { /* keep the compiled file */ }
+  if (mappedFiles.size >= 20000) mappedFiles.clear();
+  mappedFiles.set(key, result);
+  return result;
+}
+// Frame line and column are 1-based here.
 function sourceFile(frame) {
   if (!process.env.TELVYN_PROFILE_SOURCE_ROOT || !frame.url?.startsWith('file:')) return '';
   try {
-    const relative = path.relative(path.resolve(process.env.TELVYN_PROFILE_SOURCE_ROOT), fileURLToPath(frame.url)).split(path.sep).join('/');
-    return /^(?:[\w$.-]+\/)*[\w$.-]+\.(?:cjs|mjs|js|ts)$/.test(relative) && !relative.split('/').includes('..') ? relative : '';
+    let file = fileURLToPath(frame.url);
+    if (sourceMapper && frame.line > 0) file = mappedFile(file, frame.line, frame.column > 0 ? frame.column : 1);
+    return relativeSource(file);
   } catch (_) { return ''; }
 }
+// Reads the source maps found under the source root, once. Disable with TELVYN_PROFILE_SOURCE_MAPS=false.
+async function loadSourceMapper() {
+  if (!process.env.TELVYN_PROFILE_SOURCE_ROOT || process.env.TELVYN_PROFILE_SOURCE_MAPS === 'false') return;
+  try { sourceMapper = await require('@datadog/pprof').SourceMapper.create([path.resolve(process.env.TELVYN_PROFILE_SOURCE_ROOT)]); }
+  catch (_) { sourceMapper = undefined; }
+}
 
+const frameNames = new Map();
 function frameName(frame) {
-  const file = sourceFile(frame);
-  return (file ? `${file}#` : '') + (frame.functionName || '(anonymous)').replace(/[;\r\n]/g, '_');
+  // Inspector frames carry 0-based positions; callers that already know the 1-based position pass line and column.
+  const line = frame.line ?? (Number.isInteger(frame.lineNumber) ? frame.lineNumber + 1 : 0);
+  const column = frame.column ?? (Number.isInteger(frame.columnNumber) ? frame.columnNumber + 1 : 0);
+  // Every sample repeats its frames: resolve each distinct frame once per source map state.
+  const key = `${frame.url}|${line}|${column}|${frame.functionName}|${sourceMapper ? 1 : 0}`;
+  const known = frameNames.get(key);
+  if (known !== undefined) return known;
+  const file = sourceFile({url: frame.url, line, column});
+  const name = (file ? `${file}#` : '') + (frame.functionName || '(anonymous)').replace(/[;\r\n]/g, '_');
+  if (frameNames.size >= 50000) frameNames.clear();
+  frameNames.set(key, name);
+  return name;
 }
 
 function heapProfile(profile) {
@@ -48,7 +107,7 @@ function wallSamples(profile) {
       const fn = functions.get(line.functionId);
       if (!fn) return '';
       const filename = strings[fn.filename];
-      return frameName({url: filename && path.isAbsolute(filename) ? pathToFileURL(filename).href : '', functionName: strings[fn.name]});
+      return frameName({url: filename && path.isAbsolute(filename) ? pathToFileURL(filename).href : '', functionName: strings[fn.name], line: Number(fn.startLine) || Number(line.line) || 0, column: 1});
     })).filter(Boolean);
     if (!frames.length) continue;
     const labels = Object.fromEntries((sample.label || []).map(label => [strings[label.key], strings[label.str]]));
@@ -68,7 +127,7 @@ function wallProfile(profile) { return foldWall(wallSamples(profile)); }
 function allocationProfiles(root) {
   const allocated = new Map(), live = new Map(), objects = new Map();
   const visit = (node, parent) => {
-    const frame = frameName({functionName: node.name, url: node.scriptName && path.isAbsolute(node.scriptName) ? pathToFileURL(node.scriptName).href : ''});
+    const frame = frameName({functionName: node.name, url: node.scriptName && path.isAbsolute(node.scriptName) ? pathToFileURL(node.scriptName).href : '', line: node.lineNumber > 0 ? node.lineNumber : 0, column: node.columnNumber > 0 ? node.columnNumber : 1});
     const frames = node.name === '(root)' || !node.name ? parent : [...parent, frame];
     for (const allocation of node.allocations || []) {
       for (const [map, key] of [[allocated, 'allocSpaceBytes'], [live, 'inuseSpaceBytes']]) {
@@ -133,7 +192,7 @@ function startProfiler() {
     if (!/^https:\/\/(github\.com|gitlab\.com)\/[\w.-]+(?:\/[\w.-]+)+$/.test(repository || '') || !/^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$/.test(revision || '') || !/^(?:[\w$.-]+\/)*[\w$.-]*$/.test(sourceRoot) || sourceRoot.split('/').includes('..')) throw new Error('Invalid profile build identity');
     build = {repository_url: repository, commit_sha: revision, source_root: sourceRoot};
   }
-  const session = new Session();
+  const session = inspectorSession();
   session.connect();
   let wall, wallContexts = false;
   if (process.env.TELVYN_PROFILE_WALL_ENABLED === 'true') {
@@ -214,7 +273,9 @@ function startProfiler() {
       if (!response.ok) throw new Error('Profile delivery failed');
       await response.arrayBuffer();
   }
-  const ready = session.post('Profiler.enable').then(() => session.post('Profiler.setSamplingInterval', {interval: 10000}))
+  // The first window waits (briefly) for the maps so one function keeps one file name across windows.
+  const mapsReady = Promise.race([loadSourceMapper(), new Promise(resolve => setTimeout(resolve, 10000).unref())]);
+  const ready = mapsReady.then(() => session.post('Profiler.enable')).then(() => session.post('Profiler.setSamplingInterval', {interval: 10000}))
     .then(async () => {
       if (allocation) return;
       await session.post('HeapProfiler.startSampling', {samplingInterval: 524288});

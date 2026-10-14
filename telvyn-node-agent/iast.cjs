@@ -64,10 +64,13 @@ function startIast(report) {
     const agent = request.headers?.['user-agent'];
     return {method: /^[A-Z]{1,20}$/.test(request.method || '') ? request.method : undefined, path: text(route, 1024), userAgent: text(Array.isArray(agent) ? agent[0] : agent, 512)};
   }
-  function relativeFile(filename) {
+  // Compiled code is what runs and is rewritten; reports name the original source when a source map says so (TypeScript).
+  const COMPILED_FILE = /^(?:[\w$.-]+\/)*[\w$.-]+\.(?:js|cjs|mjs)$/;
+  const SOURCE_FILE = /^(?:[\w$.-]+\/)*[\w$.-]+\.(?:js|cjs|mjs|jsx|ts|tsx|mts|cts)$/;
+  function relativeFile(filename, pattern = SOURCE_FILE) {
     if (filename.startsWith('file:')) filename = fileURLToPath(filename);
     const relative = path.relative(sourceRoot, filename).split(path.sep).join('/');
-    return relative && !relative.split('/').some(part => part === '..' || part === 'node_modules') && /^(?:[\w$.-]+\/)*[\w$.-]+\.(?:js|cjs|mjs)$/.test(relative) ? relative : null;
+    return relative && !relative.split('/').some(part => part === '..' || part === 'node_modules') && pattern.test(relative) ? relative : null;
   }
   // Application frames by relative path, libraries by package path, Node internals as reported; never absolute paths.
   function stackFrames(stack) {
@@ -78,11 +81,19 @@ function startIast(report) {
       let file = match[2];
       try { if (file.startsWith('file:')) file = fileURLToPath(file); } catch (_) { continue; }
       if (file.startsWith(__dirname)) continue;
-      const application = relativeFile(file);
+      let application = relativeFile(file);
       let row = match[3];
       // Application code is rewritten by the IAST, so its lines go back through the source map like the finding's line.
-      if (application) { try { row = String(getSourcePathAndLineFromSourceMaps(file, Number(match[3]), Number(match[4])).line); } catch (_) { /* keep the reported line */ } }
-      const shown = application || (file.startsWith('node:') ? file : file.includes('/node_modules/') ? 'node_modules/' + file.split('/node_modules/').pop() : '(externo)');
+      if (application) {
+        try {
+          const mapped = getSourcePathAndLineFromSourceMaps(file, Number(match[3]), Number(match[4]));
+          row = String(mapped.line);
+          application = relativeFile(mapped.path) || application;
+        } catch (_) { /* keep the reported line */ }
+      }
+      // Windows paths use backslashes: compare with forward slashes.
+      const posix = file.split(path.sep).join('/');
+      const shown = application || (file.startsWith('node:') ? file : posix.includes('/node_modules/') ? 'node_modules/' + posix.split('/node_modules/').pop() : '(externo)');
       frames.push(`${(match[1] || 'anonymous').replace(control, '').slice(0, 120)} (${shown}:${row})`);
       if (frames.length >= 64) break;
     }
@@ -90,7 +101,7 @@ function startIast(report) {
   }
   Module.prototype._compile = function (source, filename) {
     let code = source;
-    if (!stopped && relativeFile(filename)) {
+    if (!stopped && relativeFile(filename, COMPILED_FILE)) {
       try { code = rewriter.rewrite(source, filename, ['iast']).content || source; if (code !== source) cacheRewrittenSourceMap(filename, code); }
       catch (_) { console.warn('[Telvyn] IAST could not instrument an application module.'); }
     }
