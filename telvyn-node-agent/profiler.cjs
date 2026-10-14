@@ -54,6 +54,24 @@ function wallProfile(profile) {
   return [...stacks].map(([stack, weight]) => `${stack} ${weight}`).join('\n');
 }
 
+function allocationProfiles(root) {
+  const allocated = new Map(), live = new Map();
+  const visit = (node, parent) => {
+    const frame = frameName({functionName: node.name, url: node.scriptName && path.isAbsolute(node.scriptName) ? pathToFileURL(node.scriptName).href : ''});
+    const frames = node.name === '(root)' || !node.name ? parent : [...parent, frame];
+    for (const allocation of node.allocations || []) {
+      for (const [map, key] of [[allocated, 'allocSpaceBytes'], [live, 'inuseSpaceBytes']]) {
+        const weight = allocation[key];
+        if (frames.length && Number.isSafeInteger(weight) && weight > 0) { const stack = frames.join(';'); map.set(stack, (map.get(stack) || 0) + weight); }
+      }
+    }
+    for (const child of node.children || []) visit(child, frames);
+  };
+  visit(root, []);
+  const folded = map => [...map].map(([stack, weight]) => `${stack} ${weight}`).join('\n');
+  return {allocated: folded(allocated), live: folded(live)};
+}
+
 // Keep actual sample counts: V8 intervals are not exact CPU durations.
 function foldedProfile(profile) {
   const nodes = new Map(profile.nodes.map(node => [node.id, node]));
@@ -108,6 +126,14 @@ function startProfiler() {
     try { wall = require('@datadog/pprof').time; wall.start({intervalMicros: 10000, lineNumbers: true}); }
     catch (_) { wall = undefined; console.warn('[Telvyn] Native wall profiler unavailable; CPU/heap remain enabled.'); }
   }
+  let allocation, allocationFrom;
+  if (process.env.TELVYN_PROFILE_ALLOCATION_ENABLED === 'true') {
+    try {
+      if (Number(process.versions.node.split('.')[0]) < 26) throw new Error('Allocation profiling requires Node.js 26 or newer');
+      allocation = require('@datadog/pprof').heap;
+      allocation.start(524288, 64, true); allocationFrom = Date.now();
+    } catch (_) { allocation = undefined; console.warn('[Telvyn] Allocation profiling unavailable (requires Node.js 26+ and native addon); CPU/heap remain enabled.'); }
+  }
   let stopped = false, timer, startedAt, rotating = Promise.resolve();
   const warn = () => console.warn('[Telvyn] Profile could not be collected or delivered.');
   async function begin() {
@@ -129,8 +155,17 @@ function startProfiler() {
         catch (_) { warn(); }
       }
       try {
-        const { profile: heap } = await session.post('HeapProfiler.getSamplingProfile');
-        uploads.push(upload('heap', heapProfile(heap), from, seconds, 0));
+        if (allocation) {
+          const profiles = allocationProfiles(allocation.v8Profile());
+          const allocationSeconds = Math.max(1, Math.round((Date.now() - allocationFrom) / 1000));
+          allocation.stop(); allocation.start(524288, 64, true);
+          const previousFrom = allocationFrom; allocationFrom = Date.now();
+          uploads.push(upload('alloc', profiles.allocated, previousFrom, allocationSeconds, 0));
+          uploads.push(upload('heap', profiles.live, previousFrom, allocationSeconds, 0));
+        } else {
+          const { profile: heap } = await session.post('HeapProfiler.getSamplingProfile');
+          uploads.push(upload('heap', heapProfile(heap), from, seconds, 0));
+        }
       } catch (_) { warn(); }
       for (const result of await Promise.allSettled(uploads)) if (result.status === 'rejected') warn();
     } catch (_) {
@@ -151,7 +186,7 @@ function startProfiler() {
       await response.arrayBuffer();
   }
   const ready = session.post('Profiler.enable').then(() => session.post('Profiler.setSamplingInterval', {interval: 10000}))
-    .then(() => session.post('HeapProfiler.startSampling', {samplingInterval: 524288})).then(begin).catch(() => { warn(); session.disconnect(); });
-  return { stop: async () => { stopped = true; await ready; clearTimeout(timer); await rotating; try { await session.post('Profiler.stop'); await session.post('HeapProfiler.stopSampling'); } catch (_) {} try { if (wall?.isStarted()) wall.stop(); } catch (_) {} session.disconnect(); } };
+    .then(() => allocation ? undefined : session.post('HeapProfiler.startSampling', {samplingInterval: 524288})).then(begin).catch(() => { warn(); session.disconnect(); });
+  return { stop: async () => { stopped = true; await ready; clearTimeout(timer); await rotating; try { await session.post('Profiler.stop'); if (allocation) allocation.stop(); else await session.post('HeapProfiler.stopSampling'); } catch (_) {} try { if (wall?.isStarted()) wall.stop(); } catch (_) {} session.disconnect(); } };
 }
-module.exports = { startProfiler, foldedProfile, heapProfile, wallProfile };
+module.exports = { startProfiler, foldedProfile, heapProfile, wallProfile, allocationProfiles };
