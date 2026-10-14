@@ -16,7 +16,12 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		if ct != "application/json" {
 			return http.StatusUnsupportedMediaType, errors.New("security requires JSON")
 		}
-		if len(body) > 8192 {
+		// Code findings also carry a masked statement and a call stack.
+		limit := 8192
+		if signal == "security/iast" {
+			limit = 32768
+		}
+		if len(body) > limit {
 			return http.StatusRequestEntityTooLarge, errors.New("security report too large")
 		}
 		var report map[string]json.RawMessage
@@ -26,7 +31,7 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		for field := range report {
 			switch field {
 			case "id", "service", "host", "environment", "service_version", "outcome", "rule_id", "rules_version", "engine_version", "elapsed_us", "trace_id", "span_id":
-			case "code_method", "code_line":
+			case "code_method", "code_line", "sink", "sql", "stack", "source", "request_method", "request_path", "user_agent":
 				if signal != "security/iast" {
 					return http.StatusBadRequest, errors.New("unsupported security field")
 				}
