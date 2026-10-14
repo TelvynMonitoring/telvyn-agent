@@ -6,8 +6,8 @@ const os = require('node:os');
 function startSecurity() {
   const enabled = process.env.TELVYN_SECURITY_ENABLED === 'true';
   if (!enabled && process.env.TELVYN_IAST_ENABLED !== 'true') return { state: 'disabled', inspect() {}, stop() {} };
-  const routes = new Set((process.env.TELVYN_SECURITY_ROUTES || '').split(',').filter(Boolean));
-  if (!routes.size || [...routes].some(route => !/^\/[\w/.-]*$/.test(route) || route.includes('..'))) throw new Error('Explicit security routes required');
+  const routes = require('./routes.cjs').compileRoutes(process.env.TELVYN_SECURITY_ROUTES);
+  if (!routes.size) throw new Error('Explicit security routes required');
   const service = process.env.OTEL_SERVICE_NAME;
   if (!service) throw new Error('Security requires service identity');
   const attributes = Object.fromEntries((process.env.OTEL_RESOURCE_ATTRIBUTES || '').split(',').map(pair => {
@@ -27,7 +27,7 @@ function startSecurity() {
     if (pending.size >= 32) { console.warn('[Telvyn] Security delivery saturated; event not queued.'); return; }
     const context = span?.spanContext();
     const body = JSON.stringify({id: randomUUID(), service, host: process.env.POD_NAME || os.hostname(), environment,
-      service_version: attributes['service.version'], outcome, rule_id: rule, rules_version: finding ? 'iast-q-node-pg-1' : 'query-allowlist-1',
+      service_version: attributes['service.version'], outcome, rule_id: rule, rules_version: finding ? (rule === 'SQL_INJECTION' ? 'iast-q-node-sql-1' : 'iast-q-node-sinks-1') : 'query-allowlist-1',
       engine_version: DDWAF.version(), elapsed_us: elapsed,
       ...finding,
       ...(context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? {trace_id: context.traceId, span_id: context.spanId} : {})});
@@ -41,14 +41,14 @@ function startSecurity() {
   }
   return {
     state: enabled ? 'active' : 'disabled',
-    reportIast(finding, elapsed, span) { if (!stopped) report('match', 'SQL_INJECTION', elapsed, span, finding); },
+    reportIast({rule_id: rule, ...finding}, elapsed, span) { if (!stopped) report('match', rule, elapsed, span, finding); },
     inspect(request, span) {
       if (stopped || !waf || typeof request.url !== 'string') return;
       const started = process.hrtime.bigint();
       let context;
       try {
         const url = new URL(request.url, 'http://application.invalid');
-        if (!routes.has(url.pathname)) return;
+        if (!routes.match(url.pathname)) return;
         const values = url.searchParams.getAll('q');
         if (!values.length) return;
         if (request.url.length > 8192 || values.length > 8 || values.some(value => value.length > 4096)) { report('limit', undefined, Number((process.hrtime.bigint() - started) / 1000n), span); return; }

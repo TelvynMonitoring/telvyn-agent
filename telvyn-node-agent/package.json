@@ -10,6 +10,8 @@
     "register.cjs",
     "bootstrap.cjs",
     "profiler.cjs",
+    "profile-context.cjs",
+    "routes.cjs",
     "security.cjs",
     "iast.cjs",
     "debugger.cjs",
@@ -24,6 +26,7 @@
   "dependencies": {
     "@fastify/otel": "0.21.2",
     "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/context-async-hooks": "2.12.0",
     "@opentelemetry/exporter-metrics-otlp-proto": "0.223.0",
     "@opentelemetry/exporter-trace-otlp-proto": "0.223.0",
     "@opentelemetry/instrumentation": "0.223.0",
