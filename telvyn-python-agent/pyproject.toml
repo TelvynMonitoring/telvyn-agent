@@ -7,16 +7,37 @@ name = "telvyn-python-agent"
 version = "0.1.0"
 description = "Telvyn OpenTelemetry distribution for Python applications"
 requires-python = ">=3.10"
-dependencies = ["opentelemetry-distro==0.66b1", "opentelemetry-exporter-otlp-proto-http==1.45.1", "opentelemetry-instrumentation-flask==0.66b1"]
+dependencies = [
+    "wrapt>=1.0.0,<3.0.0",
+    "opentelemetry-distro==0.66b1", "opentelemetry-exporter-otlp-proto-http==1.45.1",
+    "opentelemetry-instrumentation-flask==0.66b1", "opentelemetry-instrumentation-django==0.66b1",
+    "opentelemetry-instrumentation-fastapi==0.66b1", "opentelemetry-instrumentation-starlette==0.66b1",
+    "opentelemetry-instrumentation-aiohttp-server==0.66b1", "opentelemetry-instrumentation-tornado==0.66b1",
+    "opentelemetry-instrumentation-falcon==0.66b1", "opentelemetry-instrumentation-pyramid==0.66b1",
+    "opentelemetry-instrumentation-asgi==0.66b1", "opentelemetry-instrumentation-wsgi==0.66b1",
+    "opentelemetry-instrumentation-psycopg2==0.66b1", "opentelemetry-instrumentation-psycopg==0.66b1",
+    "opentelemetry-instrumentation-asyncpg==0.66b1", "opentelemetry-instrumentation-pymysql==0.66b1",
+    "opentelemetry-instrumentation-mysqlclient==0.66b1", "opentelemetry-instrumentation-sqlite3==0.66b1",
+]
 
 [project.scripts]
 telvyn-python = "telvyn_python_agent:main"
 
+[project.optional-dependencies]
+allocation = ["memray==1.19.1; sys_platform == 'linux' or sys_platform == 'darwin'"]
+
 [project.entry-points.opentelemetry_distro]
 telvyn = "telvyn_python_agent:TelvynDistro"
+
+[project.entry-points.opentelemetry_configurator]
+telvyn = "telvyn_python_agent:TelvynConfigurator"
 
 [project.entry-points.opentelemetry_traces_exporter]
 telvyn = "telvyn_python_agent:QuerySafeExporter"
 
 [tool.setuptools]
-py-modules = ["telvyn_python_agent"]
+py-modules = ["telvyn_python_agent", "telvyn_runtime", "telvyn_context", "telvyn_privacy", "telvyn_profiler", "telvyn_allocation", "telvyn_security", "telvyn_debugger"]
+packages = ["telvyn_python_data"]
+
+[tool.setuptools.package-data]
+telvyn_python_data = ["security-rules.json"]
