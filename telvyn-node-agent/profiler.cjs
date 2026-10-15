@@ -26,10 +26,11 @@ const relativeSource = file => {
   return SOURCE_FILE.test(relative) && !relative.split('/').includes('..') ? relative : '';
 };
 // Function start positions go through the source map; a result outside the source root keeps the compiled file.
-function mappedFile(file, line, column) {
+// The line comes with the file: a position that resolves to another file keeps its own line (-1 when the map has none).
+function mappedPosition(file, line, column) {
   const key = `${file}:${line}:${column}`;
   if (mappedFiles.has(key)) return mappedFiles.get(key);
-  let result = file;
+  let result = {file, line};
   try {
     // With the IAST on, application modules run rewritten: V8 positions belong to that code, and the rewriter keeps
     // the way back (to the compiled file, or to the original source when it chains a source map).
@@ -37,16 +38,18 @@ function mappedFile(file, line, column) {
     if (process.env.TELVYN_IAST_ENABLED === 'true') {
       try { original = require('@datadog/wasm-js-rewriter/js/source-map').getSourcePathAndLineFromSourceMaps(file, line, column) || original; } catch (_) { /* IAST unavailable */ }
     }
-    if (original.path && original.path !== file) { if (path.isAbsolute(original.path) && relativeSource(original.path)) result = original.path; }
+    if (original.path && original.path !== file) { if (path.isAbsolute(original.path) && relativeSource(original.path)) result = {file: original.path, line: original.line > 0 ? original.line : -1}; }
     else {
-      const info = sourceMapper.mappingInfo({file, line: original.line > 0 ? original.line : line, column: original.column > 0 ? original.column : column});
-      if (info?.file && path.isAbsolute(info.file) && relativeSource(info.file)) result = info.file;
+      const info = sourceMapper?.mappingInfo({file, line: original.line > 0 ? original.line : line, column: original.column > 0 ? original.column : column});
+      if (info?.file && path.isAbsolute(info.file) && relativeSource(info.file)) result = {file: info.file, line: info.line > 0 ? info.line : -1};
+      else if (original.line > 0) result = {file, line: original.line};
     }
-  } catch (_) { /* keep the compiled file */ }
+  } catch (_) { /* keep the compiled position */ }
   if (mappedFiles.size >= 20000) mappedFiles.clear();
   mappedFiles.set(key, result);
   return result;
 }
+function mappedFile(file, line, column) { return mappedPosition(file, line, column).file; }
 // Frame line and column are 1-based here.
 function sourceFile(frame) {
   if (!process.env.TELVYN_PROFILE_SOURCE_ROOT || !frame.url?.startsWith('file:')) return '';
@@ -55,6 +58,39 @@ function sourceFile(frame) {
     if (sourceMapper && frame.line > 0) file = mappedFile(file, frame.line, frame.column > 0 ? frame.column : 1);
     return relativeSource(file);
   } catch (_) { return ''; }
+}
+// Executed line (1-based) of a frame, -1 when it cannot be tied to the source file the frame name carries.
+// V8 reports lines of the compiled code, and the source maps give the way back. With the IAST on the code runs rewritten and
+// V8 reports a line without a column, which the rewriter cannot map back reliably (measured: lines of neighbouring statements),
+// so no executed line is recorded then; file names still come from the function start position.
+function frameLine(frame, line) {
+  if (!(line > 0) || !process.env.TELVYN_PROFILE_SOURCE_ROOT || !frame.url?.startsWith('file:')) return -1;
+  try {
+    if (process.env.TELVYN_IAST_ENABLED === 'true') return -1;
+    const file = fileURLToPath(frame.url);
+    const position = sourceMapper ? mappedPosition(file, line, 1) : {file, line};
+    const named = sourceFile(frame);
+    return named && named === relativeSource(position.file) && position.line > 0 ? position.line : -1;
+  } catch (_) { return -1; }
+}
+// Observed line weights, stack by stack. The ingest keeps only weights that fit the preserved stack and ignores the rest.
+const MAX_LINE_STACKS = 4096, MAX_LINE_STACK_FRAMES = 256, MAX_LINE_STACK_CHARS = 250000;
+function lineStacksDetails(entries) {
+  const stacks = new Map();
+  for (const {folded, lines, weight} of entries) {
+    if (!(weight >= 1) || lines.length > MAX_LINE_STACK_FRAMES || !lines.some(line => line > 0)) continue;
+    const key = `${folded}\n${lines.join(',')}`;
+    const known = stacks.get(key);
+    if (known) known.weight += weight; else stacks.set(key, {folded, weight, lines});
+  }
+  const kept = [];
+  let chars = 0;
+  for (const origin of [...stacks.values()].sort((a, b) => b.weight - a.weight)) {
+    chars += JSON.stringify(origin).length + 1;
+    if (kept.length >= MAX_LINE_STACKS || chars > MAX_LINE_STACK_CHARS) break;
+    kept.push(origin);
+  }
+  return kept.length ? {line_stacks: kept} : undefined;
 }
 // Reads the source maps found under the source root, once. Disable with TELVYN_PROFILE_SOURCE_MAPS=false.
 async function loadSourceMapper() {
@@ -93,7 +129,9 @@ function heapProfile(profile) {
   return [...stacks].map(([stack, size]) => `${stack} ${size}`).join('\n');
 }
 
-function wallSamples(profile) {
+// withLines: only the native profiler started with lineNumbers records executed lines; with trace context it reports the
+// line where the function starts, which would read as an executed line, so those are left unrecorded.
+function wallSamples(profile, withLines = false) {
   const strings = profile.stringTable.strings;
   const index = profile.sampleType.findIndex(type => strings[type.type] === 'wall' && strings[type.unit] === 'nanoseconds');
   if (index < 0) throw new Error('Native wall profile unit unavailable');
@@ -103,15 +141,18 @@ function wallSamples(profile) {
   for (const sample of profile.sample) {
     const weight = sample.value[index];
     if (!Number.isSafeInteger(weight) || weight <= 0) continue;
-    const frames = sample.locationId.slice().reverse().flatMap(id => (locations.get(id)?.line || []).map(line => {
+    // Without trace context the native profiler records the line of every frame (call site, or the running line for the last one).
+    const located = sample.locationId.slice().reverse().flatMap(id => (locations.get(id)?.line || []).map(line => {
       const fn = functions.get(line.functionId);
-      if (!fn) return '';
+      if (!fn) return null;
       const filename = strings[fn.filename];
-      return frameName({url: filename && path.isAbsolute(filename) ? pathToFileURL(filename).href : '', functionName: strings[fn.name], line: Number(fn.startLine) || Number(line.line) || 0, column: 1});
-    })).filter(Boolean);
+      const frame = {url: filename && path.isAbsolute(filename) ? pathToFileURL(filename).href : '', functionName: strings[fn.name], line: Number(fn.startLine) || Number(line.line) || 0, column: 1};
+      return {name: frameName(frame), line: withLines ? frameLine(frame, Number(line.line)) : -1};
+    })).filter(frame => frame?.name);
+    const frames = located.map(frame => frame.name);
     if (!frames.length) continue;
     const labels = Object.fromEntries((sample.label || []).map(label => [strings[label.key], strings[label.str]]));
-    samples.push({stack: frames.join(';'), weight, trace: labels[profileContext.TRACE_LABEL], span: labels[profileContext.SPAN_LABEL]});
+    samples.push({stack: frames.join(';'), weight, lines: located.map(frame => frame.line), trace: labels[profileContext.TRACE_LABEL], span: labels[profileContext.SPAN_LABEL]});
   }
   return samples;
 }
@@ -146,13 +187,19 @@ function allocationProfiles(root) {
 }
 
 // Keep actual sample counts: V8 intervals are not exact CPU durations.
-function foldedProfile(profile) {
+// V8 gives the executed lines only for the node that was running (positionTicks), so only the last frame of a stack
+// carries a line; the callers' call-site lines are not part of this profile and stay unrecorded.
+function cpuProfile(profile) {
   const nodes = new Map(profile.nodes.map(node => [node.id, node]));
   const parents = new Map();
   for (const node of profile.nodes) for (const child of node.children || []) parents.set(child, node.id);
-  const stacks = new Map();
+  const counts = new Map();
   for (const id of profile.samples || []) {
     if (nodes.get(id)?.callFrame.functionName === '(idle)') continue;
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  const stacks = new Map(), lineEntries = [];
+  for (const [id, count] of counts) {
     const frames = [];
     let current = id;
     const seen = new Set();
@@ -165,12 +212,33 @@ function foldedProfile(profile) {
       }
       current = parents.get(current);
     }
-    if (frames.length) {
-      const stack = frames.join(';');
-      stacks.set(stack, (stacks.get(stack) || 0) + 1);
+    if (!frames.length) continue;
+    const stack = frames.join(';');
+    stacks.set(stack, (stacks.get(stack) || 0) + count);
+    const node = nodes.get(id), ticks = node.positionTicks;
+    if (!ticks?.length) continue;
+    const frame = {url: node.callFrame.url, line: node.callFrame.lineNumber + 1, column: node.callFrame.columnNumber + 1};
+    let used = 0;
+    for (const {line, ticks: weight} of [...ticks].sort((a, b) => b.ticks - a.ticks)) {
+      const mapped = frameLine(frame, line);
+      const share = Math.min(weight, count - used);
+      if (mapped < 1 || share < 1) continue;
+      used += share;
+      lineEntries.push({folded: stack, weight: share, lines: [...Array(frames.length - 1).fill(-1), mapped]});
     }
   }
-  return [...stacks].map(([stack, count]) => `${stack} ${count}`).join('\n');
+  return {folded: [...stacks].map(([stack, count]) => `${stack} ${count}`).join('\n'), details: lineStacksDetails(lineEntries)};
+}
+function foldedProfile(profile) { return cpuProfile(profile).folded; }
+
+// Same names, ranges and fallback as the Javaagent (JfrCpuProfiler.intConf): an out-of-range integer is clamped,
+// anything that is not a 32-bit integer uses the default.
+function intSetting(name, fallback, min, max) {
+  const raw = process.env[name]?.trim();
+  if (!raw || !/^[+-]?\d+$/.test(raw)) return fallback;
+  const value = Number(raw);
+  if (value < -2147483648 || value > 2147483647) return fallback;
+  return Math.max(min, Math.min(max, value));
 }
 
 function startProfiler() {
@@ -192,6 +260,8 @@ function startProfiler() {
     if (!/^https:\/\/(github\.com|gitlab\.com)\/[\w.-]+(?:\/[\w.-]+)+$/.test(repository || '') || !/^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$/.test(revision || '') || !/^(?:[\w$.-]+\/)*[\w$.-]*$/.test(sourceRoot) || sourceRoot.split('/').includes('..')) throw new Error('Invalid profile build identity');
     build = {repository_url: repository, commit_sha: revision, source_root: sourceRoot};
   }
+  const periodMs = intSetting('TELVYN_PROFILING_PERIOD_MS', 10, 1, 1000);
+  const flushMs = intSetting('TELVYN_PROFILING_FLUSH_SEC', 15, 2, 600) * 1000;
   const session = inspectorSession();
   session.connect();
   let wall, wallContexts = false;
@@ -199,13 +269,13 @@ function startProfiler() {
     try {
       wall = require('@datadog/pprof').time;
       // Span context needs V8 continuation-preserved data; otherwise Wall Time starts without it.
-      try { wall.start({intervalMicros: 10000, withContexts: true, useCPED: true}); wallContexts = true; }
-      catch (_) { wall.start({intervalMicros: 10000, lineNumbers: true}); }
+      try { wall.start({intervalMicros: periodMs * 1000, withContexts: true, useCPED: true}); wallContexts = true; }
+      catch (_) { wall.start({intervalMicros: periodMs * 1000, lineNumbers: true}); }
     } catch (_) { wall = undefined; console.warn('[Telvyn] Native wall profiler unavailable; CPU/heap remain enabled.'); }
     if (wallContexts) profileContext.enable(wall).then(supported => {
       if (supported) return;
       wallContexts = false;
-      try { wall.stop(); wall.start({intervalMicros: 10000, lineNumbers: true}); }
+      try { wall.stop(); wall.start({intervalMicros: periodMs * 1000, lineNumbers: true}); }
       catch (_) { wall = undefined; console.warn('[Telvyn] Native wall profiler unavailable; CPU/heap remain enabled.'); }
     });
   }
@@ -223,7 +293,7 @@ function startProfiler() {
     await session.post('Profiler.start');
     startedAt = Date.now();
     if (stopped) return;
-    timer = setTimeout(() => { rotating = rotate(); }, 15000); timer.unref();
+    timer = setTimeout(() => { rotating = rotate(); }, flushMs); timer.unref();
   }
   async function rotate() {
     try {
@@ -232,11 +302,12 @@ function startProfiler() {
       const seconds = Math.max(1, Math.round((Date.now() - from) / 1000));
       if (stopped) return;
       await begin();
-      const uploads = [upload('cpu', foldedProfile(profile), from, seconds, 10)];
+      const cpu = cpuProfile(profile);
+      const uploads = [upload('cpu', cpu.folded, from, seconds, periodMs, [], cpu.details)];
       if (wall) {
         try {
-          const samples = wallSamples(wallContexts ? wall.stop(true, profileContext.generateLabels) : wall.stop(true));
-          uploads.push(upload('wall', foldWall(samples), from, seconds, 0, wallContexts ? profileContext.links(samples) : []));
+          const samples = wallSamples(wallContexts ? wall.stop(true, profileContext.generateLabels) : wall.stop(true), !wallContexts);
+          uploads.push(upload('wall', foldWall(samples), from, seconds, 0, wallContexts ? profileContext.links(samples) : [], lineStacksDetails(samples.map(sample => ({folded: sample.stack, lines: sample.lines, weight: sample.weight})))));
         }
         catch (_) { warn(); }
       }
@@ -258,13 +329,13 @@ function startProfiler() {
       for (const result of await Promise.allSettled(uploads)) if (result.status === 'rejected') warn();
     } catch (_) {
       warn();
-      if (!stopped) { timer = setTimeout(() => { rotating = rotate(); }, 15000); timer.unref(); }
+      if (!stopped) { timer = setTimeout(() => { rotating = rotate(); }, flushMs); timer.unref(); }
     }
   }
-  async function upload(type, folded, from, seconds, period, links = []) {
+  async function upload(type, folded, from, seconds, period, links = [], details) {
       if (!folded) return;
       const body = JSON.stringify({service, runtime: 'nodejs', source: 'v8', profile_instance: instance, build_metadata: build, profile_type: type, period_ms: period,
-        window_start_unix_ms: from, window_seconds: seconds, folded, ...(links.length ? {sample_links: links} : {}),
+        window_start_unix_ms: from, window_seconds: seconds, folded, ...(links.length ? {sample_links: links} : {}), ...(details ? {details} : {}),
         env: attributes['deployment.environment.name'] || attributes['deployment.environment'], version: attributes['service.version'],
         namespace: process.env.POD_NAMESPACE || process.env.TELVYN_POD_NAMESPACE || attributes['k8s.namespace.name'] || '', pod: process.env.POD_NAME || process.env.TELVYN_POD_NAME || attributes['k8s.pod.name'] || os.hostname()});
       if (Buffer.byteLength(body) > 4 * 1024 * 1024) throw new Error('Profile too large');
@@ -275,7 +346,7 @@ function startProfiler() {
   }
   // The first window waits (briefly) for the maps so one function keeps one file name across windows.
   const mapsReady = Promise.race([loadSourceMapper(), new Promise(resolve => setTimeout(resolve, 10000).unref())]);
-  const ready = mapsReady.then(() => session.post('Profiler.enable')).then(() => session.post('Profiler.setSamplingInterval', {interval: 10000}))
+  const ready = mapsReady.then(() => session.post('Profiler.enable')).then(() => session.post('Profiler.setSamplingInterval', {interval: periodMs * 1000}))
     .then(async () => {
       if (allocation) return;
       await session.post('HeapProfiler.startSampling', {samplingInterval: 524288});
@@ -284,4 +355,4 @@ function startProfiler() {
     }).then(begin).catch(() => { warn(); session.disconnect(); });
   return { stop: async () => { stopped = true; await ready; clearTimeout(timer); await rotating; try { await session.post('Profiler.stop'); if (allocation) allocation.stop(); else await session.post('HeapProfiler.stopSampling'); } catch (_) {} try { liveHeap?.stop(); } catch (_) {} profileContext.disable(); try { if (wall?.isStarted()) wall.stop(); } catch (_) {} session.disconnect(); } };
 }
-module.exports = { startProfiler, foldedProfile, heapProfile, wallProfile, wallSamples, allocationProfiles };
+module.exports = { startProfiler, cpuProfile, foldedProfile, heapProfile, wallProfile, wallSamples, allocationProfiles };
