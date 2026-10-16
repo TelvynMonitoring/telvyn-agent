@@ -3,7 +3,7 @@ const { randomUUID } = require('node:crypto');
 const os = require('node:os');
 
 // Findings that need no input (weak algorithms, cookie attributes) have their own rule set.
-const FLAW_RULES = new Set(['WEAK_HASH', 'WEAK_CIPHER', 'INSECURE_COOKIE', 'NO_HTTPONLY_COOKIE', 'NO_SAMESITE_COOKIE']);
+const FLAW_RULES = new Set(['WEAK_HASH', 'WEAK_CIPHER', 'INSECURE_COOKIE', 'NO_HTTPONLY_COOKIE', 'NO_SAMESITE_COOKIE', 'WEAK_RANDOMNESS', 'HSTS_HEADER_MISSING', 'XCONTENTTYPE_HEADER_MISSING', 'HARDCODED_SECRET', 'HARDCODED_PASSWORD']);
 
 // Only explicitly selected routes and q are inspected; reports never contain input values.
 function startSecurity() {
