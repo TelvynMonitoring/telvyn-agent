@@ -8,13 +8,19 @@ public final class ProfileEndpointContext {
     private record Span(String parent, String endpoint) {}
     private static final LinkedHashMap<String,Span> SPANS = new LinkedHashMap<>();
 
+    /** OpenTelemetry API type: the application's own, or the copy the OpenTelemetry Java agent relocates. */
+    static Class<?> api(String suffix, ClassLoader loader) throws ClassNotFoundException {
+        try { return Class.forName("io.opentelemetry." + suffix, false, loader); }
+        catch (ClassNotFoundException absent) { return Class.forName("io.opentelemetry.javaagent.shaded.io.opentelemetry." + suffix, false, loader); }
+    }
+
     public static void observe(Object span) {
         if (span == null) return;
         try {
             var loader=span.getClass().getClassLoader();
             var readable=Class.forName("io.opentelemetry.sdk.trace.ReadableSpan",false,loader);
             if(!readable.isInstance(span))return;
-            var contextType=Class.forName("io.opentelemetry.api.trace.SpanContext",false,loader);
+            var contextType=api("api.trace.SpanContext",loader);
             var context=readable.getMethod("getSpanContext").invoke(span);
             String trace=(String)contextType.getMethod("getTraceId").invoke(context);
             String id=(String)contextType.getMethod("getSpanId").invoke(context);
@@ -23,7 +29,7 @@ public final class ProfileEndpointContext {
             String endpoint=null;
             if("SERVER".equals(String.valueOf(readable.getMethod("getKind").invoke(span)))) {
                 parentId=null; // An unknown local server route must not inherit another server's endpoint.
-                var keyType=Class.forName("io.opentelemetry.api.common.AttributeKey",false,loader);
+                var keyType=api("api.common.AttributeKey",loader);
                 var stringKey=keyType.getMethod("stringKey",String.class);
                 var get=readable.getMethod("getAttribute",keyType);
                 String route=(String)get.invoke(span,stringKey.invoke(null,"http.route"));

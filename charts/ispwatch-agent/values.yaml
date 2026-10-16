@@ -117,7 +117,7 @@ webhook:
   # Helm creates and renews TLS on upgrades; cert-manager remains available
   # for installations that already manage automatic certificate renewal.
   certificateProvider: helm
-  runtimeBundleImageRef: ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.1
+  runtimeBundleImageRef: ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.2
   # Imagem referenciada nos initContainers injetados pelos pods alvo
   # (precisa estar disponível em todos os nós onde os pods alvo rodam).
   # Default usa a mesma do DaemonSet.

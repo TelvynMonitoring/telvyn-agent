@@ -4,6 +4,11 @@ import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.asm.Advice;
 import net.bytebuddy.matcher.ElementMatchers;
 import java.lang.instrument.Instrumentation;
+import java.nio.file.Files;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.jar.JarOutputStream;
+import system.monitoring.debugger.bootstrap.ContextBridge;
 import java.time.Instant;
 import java.util.*;
 
@@ -29,15 +34,41 @@ public final class ProfilerTraceContext {
         catch(ReflectiveOperationException failure) {throw new IllegalStateException("thread identity unavailable",failure);}
     }
 
-    public static synchronized void install(Instrumentation instrumentation) {
+    public static synchronized void install(Instrumentation instrumentation) throws Exception {
         if (installed) return;
+        // The advice runs inside OpenTelemetry classes of any loader (the OpenTelemetry Java agent keeps its context in
+        // the bootstrap and its SDK in a loader that cannot see this agent), so it calls a bridge every loader sees.
+        String name = "system.monitoring.debugger.bootstrap.ContextBridge";
+        String resource = name.replace('.', '/') + ".class";
+        var file = Files.createTempFile("telvyn-profile-context-", ".jar");
+        file.toFile().deleteOnExit();
+        try (var input = ProfilerTraceContext.class.getClassLoader().getResourceAsStream(resource);
+             var output = new JarOutputStream(Files.newOutputStream(file))) {
+            if (input == null) throw new IllegalStateException("Missing profile context bridge");
+            output.putNextEntry(new JarEntry(resource));
+            input.transferTo(output);
+            output.closeEntry();
+        }
+        instrumentation.appendToBootstrapClassLoaderSearch(new JarFile(file.toFile()));
+        Class<?> bridge = Class.forName(name, true, null);
+        if (bridge.getClassLoader() != null) throw new IllegalStateException("Profile context bridge not loaded by the bootstrap class loader");
+        bridge.getMethod("install", java.util.function.BiConsumer.class, java.util.function.Consumer.class, java.util.function.Consumer.class).invoke(null,
+            (java.util.function.BiConsumer<Object, Object>) ProfilerTraceContext::attached,
+            (java.util.function.Consumer<Object>) ProfilerTraceContext::closed,
+            (java.util.function.Consumer<Object>) ProfileEndpointContext::observe);
         new AgentBuilder.Default().disableClassFormatChanges()
             .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
-            .type(ElementMatchers.hasSuperType(ElementMatchers.named("io.opentelemetry.context.ContextStorage"))
+            // Classes the OpenTelemetry Java agent appends to the bootstrap are found through the system loader's resources.
+            .with(AgentBuilder.LocationStrategy.ForClassLoader.STRONG.withFallbackTo(net.bytebuddy.dynamic.ClassFileLocator.ForClassLoader.ofSystemLoader()))
+            .ignore(ElementMatchers.nameStartsWith("net.bytebuddy.").or(ElementMatchers.nameStartsWith("system.monitoring.debugger.")))
+            // Plain names for an application OpenTelemetry SDK; relocated ones inside the OpenTelemetry Java agent.
+            .type(ElementMatchers.hasSuperType(ElementMatchers.named("io.opentelemetry.context.ContextStorage")
+                    .or(ElementMatchers.named("io.opentelemetry.javaagent.shaded.io.opentelemetry.context.ContextStorage")))
                 .and(ElementMatchers.not(ElementMatchers.isInterface())))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(AttachAdvice.class)
                 .on(ElementMatchers.named("attach").and(ElementMatchers.takesArguments(1)))))
-            .type(ElementMatchers.hasSuperType(ElementMatchers.named("io.opentelemetry.context.Scope"))
+            .type(ElementMatchers.hasSuperType(ElementMatchers.named("io.opentelemetry.context.Scope")
+                    .or(ElementMatchers.named("io.opentelemetry.javaagent.shaded.io.opentelemetry.context.Scope")))
                 .and(ElementMatchers.not(ElementMatchers.isInterface())))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(CloseAdvice.class)
                 .on(ElementMatchers.named("close").and(ElementMatchers.takesArguments(0)))))
@@ -103,12 +134,12 @@ public final class ProfilerTraceContext {
         if (context == null) return null;
         try {
             ClassLoader loader = context.getClass().getClassLoader();
-            Class<?> span = Class.forName("io.opentelemetry.api.trace.Span", false, loader);
-            Class<?> contextType = Class.forName("io.opentelemetry.context.Context", false, loader);
+            Class<?> span = ProfileEndpointContext.api("api.trace.Span", loader);
+            Class<?> contextType = ProfileEndpointContext.api("context.Context", loader);
             Object value = span.getMethod("fromContext", contextType).invoke(null, context);
             ProfileEndpointContext.observe(value);
             Object spanContext = span.getMethod("getSpanContext").invoke(value);
-            Class<?> spanContextType = Class.forName("io.opentelemetry.api.trace.SpanContext", false, loader);
+            Class<?> spanContextType = ProfileEndpointContext.api("api.trace.SpanContext", loader);
             String trace = (String)spanContextType.getMethod("getTraceId").invoke(spanContext);
             String id = (String)spanContextType.getMethod("getSpanId").invoke(spanContext);
             if (!trace.matches("[0-9a-f]{32}") || trace.equals("0".repeat(32)) || !id.matches("[0-9a-f]{16}") || id.equals("0".repeat(16))) return null;
@@ -117,14 +148,14 @@ public final class ProfilerTraceContext {
     }
     public static class AttachAdvice {
         @Advice.OnMethodExit(suppress = Throwable.class)
-        public static void exit(@Advice.Argument(0) Object context, @Advice.Return Object scope) { ProfilerTraceContext.attached(context, scope); }
+        public static void exit(@Advice.Argument(0) Object context, @Advice.Return Object scope) { ContextBridge.attached(context, scope); }
     }
     public static class EndAdvice {
         @Advice.OnMethodEnter(suppress = Throwable.class)
-        public static void enter(@Advice.This Object span) { ProfileEndpointContext.observe(span); }
+        public static void enter(@Advice.This Object span) { ContextBridge.ended(span); }
     }
     public static class CloseAdvice {
         @Advice.OnMethodExit(suppress = Throwable.class)
-        public static void exit(@Advice.This Object scope) { ProfilerTraceContext.closed(scope); }
+        public static void exit(@Advice.This Object scope) { ContextBridge.closed(scope); }
     }
 }
