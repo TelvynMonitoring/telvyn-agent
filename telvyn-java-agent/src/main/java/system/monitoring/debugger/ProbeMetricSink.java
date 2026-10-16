@@ -1,8 +1,5 @@
 package system.monitoring.debugger;
 import com.google.gson.Gson;
-import java.net.URI;
-import java.net.http.*;
-import java.time.Duration;
 import java.util.*;
 /** Bounded interval aggregates independent of snapshot throttling. Never blocks the application. */
 final class ProbeMetricSink {
@@ -19,11 +16,11 @@ final class ProbeMetricSink {
   VALUES.computeIfAbsent(key,ignored->new Values()).add(duration);
   if(!started){started=true;var thread=new Thread(ProbeMetricSink::loop,"telvyn-debugger-metrics");thread.setDaemon(true);thread.start();}
  }
- private static void loop(){var http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();while(true){try{Thread.sleep(10000);flush(http);}catch(InterruptedException stopped){Thread.currentThread().interrupt();return;}catch(Exception ignored){}}}
- private static void flush(HttpClient http)throws Exception{
+ private static void loop(){while(true){try{Thread.sleep(10000);flush();}catch(InterruptedException stopped){Thread.currentThread().interrupt();return;}catch(Exception ignored){}}}
+ private static void flush()throws Exception{
   Map<Key,Values> batch;long begin,end=System.currentTimeMillis();synchronized(ProbeMetricSink.class){if(VALUES.isEmpty())return;batch=new LinkedHashMap<>(VALUES);VALUES.clear();begin=start;start=end;}
   boolean accepted=false;
-  try{String url=SnapshotSink.configUrl().replaceFirst("/debug/config$","/metrics");var req=HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(10)).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(payload(batch,begin,end))).build();accepted=http.send(req,HttpResponse.BodyHandlers.discarding()).statusCode()/100==2;}
+  try{String url=SnapshotSink.configUrl().replaceFirst("/debug/config$","/metrics");accepted=CollectorHttp.post(url,payload(batch,begin,end),10000).status()/100==2;}
   finally{if(!accepted)synchronized(ProbeMetricSink.class){start=Math.min(start,begin);batch.forEach((key,value)->{if(VALUES.containsKey(key)||VALUES.size()<400)VALUES.computeIfAbsent(key,ignored->new Values()).merge(value);});}}
  }
  static String payload(Map<Key,Values> batch,long begin,long end){

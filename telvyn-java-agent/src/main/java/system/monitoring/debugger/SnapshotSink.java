@@ -1,11 +1,5 @@
 package system.monitoring.debugger;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
@@ -63,7 +57,6 @@ public final class SnapshotSink {
     private static final String URL;       // endpoint completo no coletor
     private static final String SERVICE;
     private static final String HOST;
-    private static final HttpClient HTTP;
     private static final LinkedBlockingQueue<String> QUEUE = new LinkedBlockingQueue<>(QUEUE_MAX);
 
     // ---- padrões de VALOR sensível (compilados uma vez) -------------------
@@ -104,7 +97,6 @@ public final class SnapshotSink {
         } catch (Throwable ignore) {
             // redação nunca pode derrubar o boot
         }
-        HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
         System.out.println("[telvyn-debugger] enviando fotos pra " + URL + " (service=" + SERVICE + ")");
         Thread t = new Thread(SnapshotSink::senderLoop, "telvyn-debugger-sender");
         t.setDaemon(true);
@@ -341,12 +333,7 @@ public final class SnapshotSink {
             sb.append(snapshots.get(i));
         }
         sb.append("]}");
-        HttpRequest req = HttpRequest.newBuilder(URI.create(URL))
-                .timeout(Duration.ofSeconds(10))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(sb.toString(), StandardCharsets.UTF_8))
-                .build();
-        HTTP.send(req, HttpResponse.BodyHandlers.discarding());
+        CollectorHttp.post(URL, sb.toString(), 10000);
     }
 
     // ---- render seguro ----------------------------------------------------

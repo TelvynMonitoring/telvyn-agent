@@ -4,13 +4,8 @@ import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.agent.builder.ResettableClassFileTransformer;
 
 import java.lang.instrument.Instrumentation;
-import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -31,7 +26,6 @@ final class ConfigPoller {
     private final String url;       // .../v1/debug/config (coletor)
     private final String service;
     private final long intervalSeconds;
-    private final HttpClient http;
 
     private volatile ResettableClassFileTransformer current;
     private volatile String appliedSig;
@@ -45,7 +39,6 @@ final class ConfigPoller {
         this.intervalSeconds = Math.max(3, intervalSeconds);
         this.current = initial;
         this.appliedSig = initialSig;
-        this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     }
 
     void start() {
@@ -71,12 +64,8 @@ final class ConfigPoller {
         String u = url + (url.contains("?") ? "&" : "?") + "service=" + enc(service);
         if(ProbeMetricSink.environment()!=null)u+="&env="+enc(ProbeMetricSink.environment());
         if(ProbeMetricSink.version()!=null)u+="&version="+enc(ProbeMetricSink.version());
-        HttpRequest req = HttpRequest.newBuilder(URI.create(u))
-                .timeout(Duration.ofSeconds(10))
-                .GET()
-                .build();
-        HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
-        if (res.statusCode() / 100 != 2) return;
+        CollectorHttp.Response res = CollectorHttp.get(u, 10000);
+        if (res.status() / 100 != 2) return;
 
         var body=com.google.gson.JsonParser.parseString(res.body()).getAsJsonObject();
         var probeSpecs=strings(body.get("probes"));var excPrefixes=strings(body.get("exceptions"));
@@ -103,8 +92,7 @@ final class ConfigPoller {
 
     private void acknowledge(String version) throws Exception {
         var report=new com.google.gson.JsonObject();report.addProperty("service",service);report.addProperty("host",SnapshotSink.host());report.addProperty("session",session);report.addProperty("config_version",version);report.addProperty("environment",ProbeMetricSink.environment());report.addProperty("service_version",ProbeMetricSink.version());report.add("statuses",com.google.gson.JsonParser.parseString(ProbeApplicationStatus.json()));String body=report.toString();
-        HttpRequest request=HttpRequest.newBuilder(URI.create(url+"/applied")).timeout(Duration.ofSeconds(10)).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(body,StandardCharsets.UTF_8)).build();
-        http.send(request,HttpResponse.BodyHandlers.discarding());
+        CollectorHttp.post(url+"/applied",body,10000);
     }
     private static List<String> strings(com.google.gson.JsonElement value){if(value==null||!value.isJsonArray()||value.getAsJsonArray().size()>200)throw new IllegalArgumentException();var result=new ArrayList<String>();for(var entry:value.getAsJsonArray()){if(!entry.isJsonPrimitive()||!entry.getAsJsonPrimitive().isString()||entry.getAsString().length()>512)throw new IllegalArgumentException();result.add(entry.getAsString());}return result;}
 

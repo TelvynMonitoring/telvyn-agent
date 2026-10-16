@@ -126,12 +126,13 @@ public final class SpringMvcSecurity {
         }catch(ReflectiveOperationException|RuntimeException|LinkageError failure){SecuritySensorState.iastFailed();LocalAttackReporter.reportLoss("reactive integration unavailable");return new ReactiveScope(previous,null,false);}
     }
     private static String[] trace(){
-        try{
-            var loader=Thread.currentThread().getContextClassLoader();var span=Class.forName("io.opentelemetry.api.trace.Span",false,loader);
-            var context=Class.forName("io.opentelemetry.api.trace.SpanContext",false,loader);
+        // The application's OpenTelemetry API first; without it, the copy the OpenTelemetry Java agent keeps in the bootstrap.
+        for(String prefix:new String[]{"io.opentelemetry.","io.opentelemetry.javaagent.shaded.io.opentelemetry."})try{
+            var loader=prefix.startsWith("io.opentelemetry.javaagent.")?null:Thread.currentThread().getContextClassLoader();var span=Class.forName(prefix+"api.trace.Span",false,loader);
+            var context=Class.forName(prefix+"api.trace.SpanContext",false,loader);
             Object current=span.getMethod("getSpanContext").invoke(span.getMethod("current").invoke(null));
             if(Boolean.TRUE.equals(context.getMethod("isValid").invoke(current)))return new String[]{(String)context.getMethod("getTraceId").invoke(current),(String)context.getMethod("getSpanId").invoke(current)};
-        }catch(ReflectiveOperationException|LinkageError unavailable){ /* No valid application trace context. */ }
+        }catch(ReflectiveOperationException|LinkageError unavailable){ /* No valid trace context from this source. */ }
         return new String[]{null,null};
     }
     public static void jdbc(String sql,String sink){

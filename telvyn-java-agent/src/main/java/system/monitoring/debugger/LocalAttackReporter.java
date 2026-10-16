@@ -3,8 +3,6 @@ package system.monitoring.debugger;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.net.URI;
-import java.net.http.*;
-import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
 
@@ -31,11 +29,9 @@ public final class LocalAttackReporter implements AutoCloseable {
         for(String identity:java.util.Arrays.asList(service,host,environment))if(identity==null||identity.isBlank()||identity.length()>255)throw new IllegalArgumentException("invalid service identity");
         if(version!=null&&version.length()>255)throw new IllegalArgumentException("invalid service version");
         this.service=service;this.host=host;this.environment=environment;this.version=version;this.rulesVersion=rulesVersion;
-        var client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
         sender=new Thread(()->{while(!Thread.currentThread().isInterrupted())try {
             String report=queue.take();
-            var request=HttpRequest.newBuilder(destination).timeout(Duration.ofSeconds(5)).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(report)).build();
-            int status=client.send(request,HttpResponse.BodyHandlers.discarding()).statusCode();
+            int status=CollectorHttp.post(endpoint,report,5000).status();
             if(status<200||status>=300)reportLoss("export HTTP "+status);
         }catch(InterruptedException interrupted){Thread.currentThread().interrupt();}catch(Exception failed){reportLoss("export failure");}},"telvyn-security-export");
         sender.setDaemon(true);sender.start();
