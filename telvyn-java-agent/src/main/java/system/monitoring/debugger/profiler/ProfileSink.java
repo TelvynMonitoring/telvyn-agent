@@ -34,9 +34,9 @@ final class ProfileSink {
     static ProfileSink fromEnv() {
         String service = firstNonBlank(env("TELVYN_SERVICE"), env("OTEL_SERVICE_NAME"), "java-app");
         String namespace = firstNonBlank(env("TELVYN_NAMESPACE"), env("TELVYN_POD_NAMESPACE"),
-                env("K8S_NAMESPACE"), env("MY_POD_NAMESPACE"), "");
+                env("K8S_NAMESPACE"), env("MY_POD_NAMESPACE"), env("POD_NAMESPACE"), "");
         String pod = firstNonBlank(env("TELVYN_POD"), env("TELVYN_POD_NAME"),
-                env("K8S_POD_NAME"), env("MY_POD_NAME"), hostname());
+                env("K8S_POD_NAME"), env("MY_POD_NAME"), env("POD_NAME"), hostname());
         String profileUrl=firstNonBlank(prop("telvyn.profile.ingest.url"),env("TELVYN_PROFILE_INGEST_URL"));
         String url = profileUrl != null ? profileUrl : system.monitoring.debugger.Collector.url() + "/v1/profile";
         return new ProfileSink(url, service, namespace, pod);
