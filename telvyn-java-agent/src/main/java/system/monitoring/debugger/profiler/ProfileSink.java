@@ -1,11 +1,5 @@
 package system.monitoring.debugger.profiler;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.List;
 
 /**
@@ -29,14 +23,12 @@ final class ProfileSink {
     private final String service;
     private final String namespace;
     private final String pod;
-    private final HttpClient http;
 
     private ProfileSink(String url, String service, String namespace, String pod) {
         this.url = url;
         this.service = service;
         this.namespace = namespace;
         this.pod = pod;
-        this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     }
 
     static ProfileSink fromEnv() {
@@ -82,14 +74,9 @@ final class ProfileSink {
                 var emitted=new ProfileDetails.Window(details.observed_events(),details.events(),details.allocated_types(),details.stack_groups(),origins,details.window_metrics());
                 body=body.substring(0,body.length()-1)+",\"details\":"+new com.google.gson.Gson().toJson(emitted)+"}";
             }
-            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
-                    .timeout(Duration.ofSeconds(10))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                    .build();
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() / 100 != 2) {
-                System.err.println("[telvyn-profiler] ingest HTTP " + resp.statusCode() + ": " + cap(resp.body(), 200));
+            var resp = system.monitoring.debugger.CollectorHttp.post(url, body, 10000);
+            if (resp.status() / 100 != 2) {
+                System.err.println("[telvyn-profiler] ingest HTTP " + resp.status() + ": " + cap(resp.body(), 200));
             }
         } catch (Throwable t) {
             System.err.println("[telvyn-profiler] envio falhou (app segue normal): " + t);

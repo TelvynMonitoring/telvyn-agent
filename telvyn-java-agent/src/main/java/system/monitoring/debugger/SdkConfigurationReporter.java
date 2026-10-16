@@ -2,9 +2,6 @@ package system.monitoring.debugger;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import java.net.URI;
-import java.net.http.*;
-import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Reports only explicitly supported, non-secret settings; never enumerates the environment. */
@@ -26,7 +23,6 @@ final class SdkConfigurationReporter {
     static void start() {
         if(!STARTED.compareAndSet(false,true))return;
         Thread thread=new Thread(()->{
-            HttpClient http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
             boolean firstReport=true;
             while(!Thread.currentThread().isInterrupted()) {
                 try {
@@ -40,7 +36,7 @@ final class SdkConfigurationReporter {
                     if(!firstReport){settings.add(sensor("attack",SecuritySensorState.attack()));settings.add(sensor("iast",SecuritySensorState.iast()));}
                     firstReport=false;
                     String url=SnapshotSink.configUrl().replace("/debug/config","/sdk/configuration");
-                    http.send(HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(10)).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(report.toString())).build(),HttpResponse.BodyHandlers.discarding());
+                    CollectorHttp.post(url,report.toString(),10000);
                 }catch(Exception ignored){ /* Telemetry must not interrupt the application. */ }
                 try{Thread.sleep(60000);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();}
             }
