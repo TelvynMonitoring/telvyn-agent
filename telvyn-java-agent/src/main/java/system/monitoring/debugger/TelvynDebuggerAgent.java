@@ -44,6 +44,11 @@ public final class TelvynDebuggerAgent {
     }
 
     // Why an installation step failed, in one short line, so the operator can act on it; never more than the error class and message.
+    // Startup failures keep the application running; every sensor gets its own single-line reason, like the Node SDK.
+    private static void startupFailure(String sensor, Throwable failure) {
+        System.err.println("[telvyn] " + sensor + " sensor could not start; application startup continues." + reason(failure));
+    }
+
     private static String reason(Throwable failure) {
         String message = failure.getMessage() == null ? "" : failure.getMessage().replaceAll("\\s+", " ");
         if (message.length() > 160) message = message.substring(0, 160);
@@ -53,8 +58,8 @@ public final class TelvynDebuggerAgent {
     /** Blindagem: qualquer falha na instalação NUNCA pode impedir o app de subir. */
     private static void safeInstall(String args, Instrumentation inst) {
         if("iast-only".equals(args)) {
-            try { IastInstrumentation.install(inst); } catch(Throwable failure) { SecuritySensorState.iastFailed();LocalAttackReporter.reportLoss("IAST installation failure"+reason(failure)); }
-            try { IastJdk.install(inst); } catch(Throwable failure) { LocalAttackReporter.reportLoss("IAST JDK installation failure"+reason(failure)); }
+            try { IastInstrumentation.install(inst); } catch(Throwable failure) { SecuritySensorState.iastFailed();startupFailure("IAST",failure); }
+            try { IastJdk.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDK classes)",failure); }
             return;
         }
         try {
@@ -65,11 +70,11 @@ public final class TelvynDebuggerAgent {
     }
 
     private static void install(String args, Instrumentation inst) {
-        try { SpringMvcSecurity.install(inst); } catch(Throwable failure) { LocalAttackReporter.reportLoss("Spring installation failure"+reason(failure)); }
-        try { IastInstrumentation.install(inst); } catch(Throwable failure) { SecuritySensorState.iastFailed();LocalAttackReporter.reportLoss("IAST installation failure"+reason(failure)); }
-        try { ServletIast.install(inst); } catch(Throwable failure) { LocalAttackReporter.reportLoss("Servlet installation failure"+reason(failure)); }
-        try { JdbcIast.install(inst); } catch(Throwable failure) { LocalAttackReporter.reportLoss("JDBC installation failure"+reason(failure)); }
-        try { IastJdk.install(inst); } catch(Throwable failure) { LocalAttackReporter.reportLoss("IAST JDK installation failure"+reason(failure)); }
+        try { SpringMvcSecurity.install(inst); } catch(Throwable failure) { SecuritySensorState.attackFailed();startupFailure("Spring security",failure); }
+        try { IastInstrumentation.install(inst); } catch(Throwable failure) { SecuritySensorState.iastFailed();startupFailure("IAST",failure); }
+        try { ServletIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (servlet)",failure); }
+        try { JdbcIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDBC)",failure); }
+        try { IastJdk.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDK classes)",failure); }
         try { SdkConfigurationReporter.start(); } catch (Throwable ignored) { /* Configuration reporting cannot disable instrumentation. */ }
         // 1) bootstrap local (env/sysprop/arg) — vale até a primeira busca remota.
         final List<Probe> probes = Probe.parse(firstNonBlank(

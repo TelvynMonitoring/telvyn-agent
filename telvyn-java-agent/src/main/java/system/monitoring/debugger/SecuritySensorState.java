@@ -16,8 +16,9 @@ public final class SecuritySensorState {
         return new ConcurrentHashMap<>();
     }
     public static Map<String,String> registry(){return state;}
-    public static void attack(boolean enabled){state.put("attack",enabled?"active":"disabled");}
+    public static void attack(boolean enabled){if(!"error".equals(state.get("attack")))state.put("attack",enabled?"active":"disabled");}
     public static void attackStopped(){state.put("attack","absent");}
+    public static void attackFailed(){state.put("attack","error");}
     public static void iastInstalled(){state.put("iastInstalled","true");}
     public static void iastFailed(){state.put("iastFailed","true");}
     public static void iastIntegration(boolean registered){state.put("iastIntegration",Boolean.toString(registered));}

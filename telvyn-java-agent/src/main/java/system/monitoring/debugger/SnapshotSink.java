@@ -124,6 +124,7 @@ public final class SnapshotSink {
             sb.append("{\"phase\":\"enter\",\"method\":");
             quote(sb, method);
             sb.append(",\"captured_unix_ms\":").append(System.currentTimeMillis());
+            appendTrace(sb);
             sb.append(",\"payload\":[");
             if (args != null) {
                 for (int i = 0; i < args.length; i++) {
@@ -146,6 +147,7 @@ public final class SnapshotSink {
             sb.append("{\"phase\":\"exit\",\"method\":");
             quote(sb, method);
             sb.append(",\"captured_unix_ms\":").append(System.currentTimeMillis());
+            appendTrace(sb);
             sb.append(",\"duration_ms\":").append(durationNanos / 1_000_000.0);
             if (thrown != null) {
                 sb.append(",\"error\":");
@@ -178,6 +180,7 @@ public final class SnapshotSink {
             sb.append("{\"phase\":\"call\",\"method\":");
             quote(sb, method);
             sb.append(",\"captured_unix_ms\":").append(System.currentTimeMillis());
+            appendTrace(sb);
             sb.append(",\"duration_ms\":").append(durationNanos / 1_000_000.0);
             if (thrown != null) {
                 sb.append(",\"error\":");
@@ -226,6 +229,7 @@ public final class SnapshotSink {
             sb.append("{\"phase\":\"exception\",\"method\":");
             quote(sb, method);
             sb.append(",\"captured_unix_ms\":").append(System.currentTimeMillis());
+            appendTrace(sb);
             // Mesmo objeto de exceção sobe por vários métodos → mesmo error_id
             // liga os degraus de UM erro (pro "caminho do erro" na tela).
             sb.append(",\"error_id\":");
@@ -246,6 +250,16 @@ public final class SnapshotSink {
         } catch (Throwable ignore) {
             // nunca derruba o app
         }
+    }
+
+    /** Trace da requisição em que a foto foi tirada, para abrir o snapshot a partir do trace e vice-versa. */
+    private static void appendTrace(StringBuilder sb) {
+        String[] ids = SpringMvcSecurity.trace();
+        if (ids[0] == null || ids[1] == null) return;
+        sb.append(",\"trace_id\":");
+        quote(sb, ids[0]);
+        sb.append(",\"span_id\":");
+        quote(sb, ids[1]);
     }
 
     /** Entrega a foto: enfileira (não-bloqueante). */
