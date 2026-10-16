@@ -1,8 +1,8 @@
 # Agente Telvyn para Node.js
 
-## SDK 0.4.0 — bundle público
+## SDK 0.4.1 — bundle público
 
-O mesmo pacote oferece CPU/heap V8, workers, origem de arquivo/revisão, Debugger e segurança. Está distribuído em `ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.4.0` (linux/amd64); a imagem 0.3.0 não contém as mudanças posteriores (spans de `mysql` e `mariadb`, consultas fora de requisição como traces próprios, reescrita IAST de arrow concisa e sink `mariadb`). O coletor precisa dos contratos da release 0.4.42, cuja publicação é separada. As verificações abaixo distinguem conferências pontuais de aceite no painel.
+O mesmo pacote oferece CPU/heap V8, workers, origem de arquivo/revisão, Debugger e segurança. Está distribuído em `ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.5` (linux/amd64); a 0.4.1 corrige linhas de perfil atribuídas pelo *inlining* do V8 à função errada e o início repetido do SDK na thread interna de hooks ESM. A imagem 0.3.0 não contém as mudanças posteriores (spans de `mysql` e `mariadb`, consultas fora de requisição como traces próprios, reescrita IAST de arrow concisa e sink `mariadb`). O coletor precisa dos contratos da release 0.4.44, cuja publicação é separada. As verificações abaixo distinguem conferências pontuais de aceite no painel.
 
 | Configuração explícita | Comportamento da candidata |
 | --- | --- |

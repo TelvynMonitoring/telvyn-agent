@@ -20,7 +20,7 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
   catch (error) { console.warn('[Telvyn] Security sensor could not start; application startup continues.' + why(error)); }
   let iast;
   try {
-    if (process.env.TELVYN_IAST_ENABLED === 'true' && !security?.reportIast) throw new Error('IAST reporter unavailable');
+    if (process.env.TELVYN_IAST_ENABLED === 'true' && !security?.reportIast) throw new Error('IAST needs the security reporter, which did not start');
     iast = require('./iast.cjs').startIast((finding, elapsed) => security.reportIast(finding, elapsed, trace.getActiveSpan()));
   } catch (error) { console.warn('[Telvyn] IAST sensor could not start; application startup continues.' + why(error)); }
   let loaderPort;

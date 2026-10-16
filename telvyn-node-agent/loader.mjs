@@ -6,8 +6,7 @@ const require = createRequire(import.meta.url);
 let rewriter, root, port, blockTopLevelArrows;
 
 export async function initialize(options) {
-  // The loader thread inherits preloads but is not an application worker.
-  void require('./register.cjs').stop?.();
+  // The loader thread inherits preloads but is not an application worker; bootstrap.cjs never starts the SDK here.
   port = options?.port; port?.unref();
   if (options?.iast && options.sourceRoot) {
     try {
