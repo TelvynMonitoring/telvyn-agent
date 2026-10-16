@@ -45,6 +45,15 @@ public final class SpringMvcSecurity {
     }
     static synchronized void start(){
         if(started)return;started=true;
+        // Runs on the first request; a failure keeps the application running and reports its reason once, like the Node SDK.
+        try{startSensors();}
+        catch(RuntimeException|LinkageError failure){
+            SecuritySensorState.attackFailed();if(Boolean.getBoolean("telvyn.iast.enabled"))SecuritySensorState.iastFailed();
+            System.err.println("[telvyn] Spring security sensor could not start; application startup continues."+TelvynDebuggerAgent.reason(failure));
+            throw failure;
+        }
+    }
+    private static void startSensors(){
         var configured=new HashSet<String>();
         for(String entry:setting("query-routes","").split(",",-1)){
             String route=entry.trim();if(route.isEmpty())continue;

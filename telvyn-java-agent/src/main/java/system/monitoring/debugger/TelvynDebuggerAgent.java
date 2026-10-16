@@ -49,7 +49,7 @@ public final class TelvynDebuggerAgent {
         System.err.println("[telvyn] " + sensor + " sensor could not start; application startup continues." + reason(failure));
     }
 
-    private static String reason(Throwable failure) {
+    static String reason(Throwable failure) {
         String message = failure.getMessage() == null ? "" : failure.getMessage().replaceAll("\\s+", " ");
         if (message.length() > 160) message = message.substring(0, 160);
         return " (" + failure.getClass().getSimpleName() + (message.isEmpty() ? "" : ": " + message) + ")";

@@ -393,6 +393,18 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, javaAgentImage, otlpEnvV
 			}
 		}
 
+		// Same identity tags as the other runtimes: the Telvyn agent needs the environment to report security data.
+		attributes := []string{"k8s.namespace.name=$(POD_NAMESPACE)", "k8s.pod.name=$(POD_NAME)", "k8s.container.name=" + c.Name}
+		for _, tag := range []struct{ key, value string }{
+			{"k8s.cluster.name", pod.clusterName},
+			{"deployment.environment", pod.Metadata.Labels["tags.datadoghq.com/env"]},
+			{"service.version", pod.Metadata.Labels["tags.datadoghq.com/version"]},
+		} {
+			if tag.value != "" && !strings.ContainsAny(tag.value, ",=\r\n") {
+				attributes = append(attributes, tag.key+"="+tag.value)
+			}
+		}
+
 		// Env vars OTel (sem JAVA_TOOL_OPTIONS — tratado à parte acima).
 		envs := []envVar{
 			{Name: "NODE_IP", ValueFrom: fieldRef("status.hostIP")},
@@ -401,7 +413,7 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, javaAgentImage, otlpEnvV
 			{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: otlpEnvValue},
 			{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: otlpProtocol},
 			{Name: "OTEL_SERVICE_NAME", Value: serviceName},
-			{Name: "OTEL_RESOURCE_ATTRIBUTES", Value: "k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.name=$(POD_NAME)"},
+			{Name: "OTEL_RESOURCE_ATTRIBUTES", Value: strings.Join(attributes, ",")},
 			{Name: "OTEL_LOGS_EXPORTER", Value: "none"},
 			{Name: "OTEL_METRICS_EXPORTER", Value: "none"},
 			{Name: "OTEL_TRACES_EXPORTER", Value: "otlp"},
