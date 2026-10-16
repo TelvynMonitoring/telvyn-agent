@@ -1,6 +1,6 @@
 {
   "name": "@telvyn/node-agent",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Telvyn HTTP, Express and database instrumentation through the existing OTLP collector",
   "main": "register.cjs",
   "exports": {
