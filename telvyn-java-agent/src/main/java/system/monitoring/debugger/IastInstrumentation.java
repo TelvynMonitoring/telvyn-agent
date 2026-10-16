@@ -81,7 +81,7 @@ public final class IastInstrumentation {
     public static void install(Instrumentation instrumentation) {
         if(!Boolean.getBoolean("telvyn.iast.enabled"))return;
         String prefix=System.getProperty("telvyn.iast.application-package","");
-        if(!prefix.matches("[a-zA-Z_$][\\w$]*(\\.[a-zA-Z_$][\\w$]*)+\\.")||prefix.startsWith("java.")||prefix.startsWith("system.monitoring.debugger."))throw new IllegalArgumentException("explicit IAST application package ending in dot required");
+        if(!prefix.matches("[a-zA-Z_$][\\w$]*(\\.[a-zA-Z_$][\\w$]*)+\\.")||prefix.startsWith("java.")||prefix.startsWith("system.monitoring.debugger."))throw new IllegalArgumentException("IAST application package must have at least two segments and end in a dot, e.g. com.company.");
         new AgentBuilder.Default().disableClassFormatChanges().with(new AgentBuilder.Listener.Adapter(){
             @Override public void onError(String name,ClassLoader loader,net.bytebuddy.utility.JavaModule module,boolean loaded,Throwable error){SecuritySensorState.iastFailed();LocalAttackReporter.reportLoss("IAST transformation failure");}
         }).type(nameStartsWith(prefix).and(not(nameStartsWith("system.monitoring.debugger."))).and(not(nameStartsWith("system.monitoring.security.")))

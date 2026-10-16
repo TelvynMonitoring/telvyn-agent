@@ -125,7 +125,7 @@ public final class SpringMvcSecurity {
             if(method!=null){selected.set(method);selectedRoute.set(new String[]{verb,route});}return new ReactiveScope(previous,method,true);
         }catch(ReflectiveOperationException|RuntimeException|LinkageError failure){SecuritySensorState.iastFailed();LocalAttackReporter.reportLoss("reactive integration unavailable");return new ReactiveScope(previous,null,false);}
     }
-    private static String[] trace(){
+    static String[] trace(){
         // The application's OpenTelemetry API first; without it, the copy the OpenTelemetry Java agent keeps in the bootstrap.
         for(String prefix:new String[]{"io.opentelemetry.","io.opentelemetry.javaagent.shaded.io.opentelemetry."})try{
             var loader=prefix.startsWith("io.opentelemetry.javaagent.")?null:Thread.currentThread().getContextClassLoader();var span=Class.forName(prefix+"api.trace.Span",false,loader);
