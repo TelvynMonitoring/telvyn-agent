@@ -10,6 +10,32 @@ const rewriterMethods = [{src: 'plusOperator', operator: true}, {src: 'tplOperat
   ...['concat', 'slice', 'substring', 'substr', 'trim', 'trimEnd', 'replace'].map(src => ({src})),
   {src: 'toUpperCase', dst: 'stringCase'}, {src: 'toLowerCase', dst: 'stringCase'}];
 
+// The rewriter only instruments code inside a function with a block body, where it declares its temporaries. An arrow
+// with an expression body outside any such function (`app.get('/x', (req, res) => db.query('...' + req.query.q))` at
+// module level) is left as is, so its operations lose the mark. Those bodies get braces first: `{ return <body> }`.
+// Text is only inserted, never a line break, so lines stay where they were; if the source does not parse, it is unchanged.
+function blockTopLevelArrows(source, sourceType) {
+  if (!source.includes('=>')) return source;
+  let tree;
+  try {
+    tree = require('acorn').parse(source, {ecmaVersion: 'latest', sourceType, preserveParens: true, allowHashBang: true,
+      allowReturnOutsideFunction: sourceType === 'script', allowAwaitOutsideFunction: true});
+  } catch (_) { return source; }
+  const bodies = [];
+  (function visit(node, enclosed) {
+    const expressionArrow = node.type === 'ArrowFunctionExpression' && node.expression;
+    if (expressionArrow && !enclosed) bodies.push(node.body);
+    const inside = enclosed || expressionArrow || (/Function/.test(node.type) && node.body?.type === 'BlockStatement');
+    for (const key of Object.keys(node)) {
+      const value = node[key];
+      for (const child of Array.isArray(value) ? value : [value]) if (child && typeof child.type === 'string') visit(child, inside);
+    }
+  })(tree, false);
+  let code = source;
+  for (const {start, end} of bodies.sort((a, b) => b.start - a.start)) code = code.slice(0, start) + '{ return ' + code.slice(start, end) + ' }' + code.slice(end);
+  return code;
+}
+
 function startIast(report) {
   if (process.env.TELVYN_IAST_ENABLED !== 'true') return { state: 'disabled', request() {}, stop() {} };
   const root = process.env.TELVYN_PROFILE_SOURCE_ROOT;
@@ -25,7 +51,7 @@ function startIast(report) {
   if (!works) throw new Error('Native taint tracking unavailable');
   const { Rewriter } = require('@datadog/wasm-js-rewriter');
   const { cacheRewrittenSourceMap, getSourcePathAndLineFromSourceMaps } = require('@datadog/wasm-js-rewriter/js/source-map');
-  const rewriter = new Rewriter({csiMethods: rewriterMethods, literals: false, chainSourceMap: true});
+  const rewriter = new Rewriter({csiMethods: rewriterMethods, literals: true, chainSourceMap: true});
   if (!rewriter.rewrite('function check(a){return a+"x"}', '/check.cjs', ['iast']).content?.includes('_ddiast.plusOperator')) throw new Error('IAST rewriter unavailable');
   const storage = new AsyncLocalStorage();
   const active = new Set();
@@ -99,10 +125,44 @@ function startIast(report) {
     }
     return frames;
   }
+  // Hardcoded credentials, judged when the module loads. The literal is only read here: the finding names the file and the line, never the value.
+  const SECRET_FORMATS = [/^(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}$/, /^(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{50,255})$/, /^xox[abprs]-[A-Za-z0-9-]{10,}$/,
+    /^[sr]k_live_[A-Za-z0-9]{16,}$/, /^AIza[0-9A-Za-z_-]{35}$/, /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/, /^npm_[A-Za-z0-9]{36}$/, /^SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}$/];
+  // The name says it is a password: the word itself, or pass/pwd as a whole word once camelCase, _ and - are split.
+  const passwordName = ident => /password|passwd/i.test(ident) || /\b(?:pass|passphrase|pwd)\b/i.test(ident.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_.-]+/g, ' '));
+  const PLACEHOLDER = /^(?:\*+|x+|\.+|-+|<[^>]*>|\$\{[^}]*\}|\{\{[^}]*\}\}|%[sd]|changeme|change[-_ ]me|password|passwd|your[-_ ]?password|example|sample|test|secret|placeholder|null|none|undefined)$/i;
+  function entropy(text) {
+    const counts = new Map();
+    for (const character of text) counts.set(character, (counts.get(character) || 0) + 1);
+    let bits = 0;
+    for (const count of counts.values()) { const share = count / text.length; bits -= share * Math.log2(share); }
+    return bits;
+  }
+  function inspectLiterals({literals}, filename) {
+    const file = relativeFile(filename, COMPILED_FILE);
+    if (!file || stopped || !Array.isArray(literals)) return;
+    let found = 0;
+    for (const {value, locations} of literals) {
+      if (typeof value !== 'string' || value.length < 8 || value.length > 4096) continue;
+      const secret = SECRET_FORMATS.some(format => format.test(value));
+      for (const {ident, line} of locations || []) {
+        // A password is a literal whose variable or property name says so; placeholders and low-variety text are not.
+        const password = !secret && typeof ident === 'string' && passwordName(ident) && value.length <= 256 && !/\s/.test(value) && !PLACEHOLDER.test(value) && entropy(value) >= 2.5;
+        if (!secret && !password || !(line >= 1) || found >= 32) continue;
+        found++;
+        report({rule_id: secret ? 'HARDCODED_SECRET' : 'HARDCODED_PASSWORD', code_method: `${file}#module`, code_line: line}, 0);
+      }
+    }
+  }
   Module.prototype._compile = function (source, filename) {
     let code = source;
     if (!stopped && relativeFile(filename, COMPILED_FILE)) {
-      try { code = rewriter.rewrite(source, filename, ['iast']).content || source; if (code !== source) cacheRewrittenSourceMap(filename, code); }
+      try {
+        const result = rewriter.rewrite(blockTopLevelArrows(source, 'script'), filename, ['iast']);
+        code = result.content || source;
+        if (code !== source) cacheRewrittenSourceMap(filename, code);
+        if (result.literalsResult) inspectLiterals(result.literalsResult, filename);
+      }
       catch (_) { console.warn('[Telvyn] IAST could not instrument an application module.'); }
     }
     return originalCompile.call(this, code, filename);
@@ -195,14 +255,15 @@ function startIast(report) {
   }
   // Findings that need no input: the unsafe call itself. Only inside a request of a selected route, like every other finding.
   // `direct`: the unsafe call must come from application code itself; a library using a weak algorithm internally
-  // (Express computes ETags with SHA-1) is not the application's finding.
+  // (Express computes ETags with SHA-1) is not the application's finding. Only the agent's own files are skipped: its
+  // dependencies are libraries too (OpenTelemetry draws span ids with Math.random while the application calls a driver).
   function inspectFlaw(rule, sink, direct = false) {
     const scope = storage.getStore();
     if (stopped || !scope || !active.has(scope.id)) return;
     try {
       const stack = new Error().stack || '';
       if (direct) {
-        const caller = stack.split('\n').slice(1).map(line => line.match(/^\s*at (?:(.*?) \()?([^()]+):(\d+):(\d+)\)?$/)).find(match => match && !match[2].startsWith('node:') && !match[2].startsWith(__dirname));
+        const caller = stack.split('\n').slice(1).map(line => line.match(/^\s*at (?:(.*?) \()?([^()]+):(\d+):(\d+)\)?$/)).find(match => match && !match[2].startsWith('node:') && !(match[2].startsWith(__dirname) && !match[2].includes('node_modules')));
         if (!caller || !relativeFile(caller[2].startsWith('file:') ? fileURLToPath(caller[2]) : caller[2])) return;
       }
       reportAt(scope, rule, sink, process.hrtime.bigint(), stack);
@@ -217,12 +278,22 @@ function startIast(report) {
       if (done.has(method) || typeof prototype[method] !== 'function') continue;
       done.add(method);
       const query = prototype[method];
-      prototype[method] = function (...args) {
-        // pg takes `text`, mysql2 takes `sql`.
-        const sql = typeof args[0] === 'string' ? args[0] : args[0]?.text ?? args[0]?.sql;
+      const wrapper = function (...args) {
+        // pg takes `text`, mysql2 and mysql take `sql`, sequelize takes `query`.
+        const sql = typeof args[0] === 'string' ? args[0] : args[0]?.text ?? args[0]?.sql ?? args[0]?.query;
         if (typeof sql === 'string') inspectSink('SQL_INJECTION', `${driver}.${method}`, [sql], sql);
         return query.apply(this, args);
       };
+      // OpenTelemetry wraps pg twice (pg/lib/client.js, then pg), unwrapping its own layer first. Over a wrapped
+      // method this one keeps the same markers, and unwrapping puts the check back on the original: one span per query.
+      if (query.__wrapped === true && typeof query.__original === 'function') {
+        Object.assign(wrapper, {__wrapped: true, __original: query.__original, __unwrap() {
+          done.delete(method);
+          prototype[method] = query.__original;
+          patchQuery(prototype, driver, [method]);
+        }});
+      }
+      prototype[method] = wrapper;
     }
   }
   // mysql2 prepared statements (`execute`) take the SQL text too; `mysql2/promise` wraps the core connection.
@@ -231,6 +302,16 @@ function startIast(report) {
       patchQuery(holder?.Connection?.prototype, 'mysql2', ['query', 'execute']);
       patchQuery(holder?.Pool?.prototype, 'mysql2', ['query', 'execute']);
     }
+  }
+  // The classic `mysql` package keeps its classes in lib/: a connection, and a pool that hands the call to one.
+  function patchMysqlClassic(loadFile) {
+    for (const file of ['Connection', 'Pool']) { try { patchQuery(loadFile(file)?.prototype, 'mysql', ['query']); } catch (_) { /* class unavailable in this version */ } }
+  }
+  // Sequelize builds its own text before the driver: the mark only exists at its entry call.
+  // mariadb: the classes are internal; the factories expose them (see mariadb.cjs).
+  function patchMariadb(library) { require('./mariadb.cjs').watch(library, prototype => patchQuery(prototype, 'mariadb', ['query', 'execute', 'batch', 'queryStream'])); }
+  function patchSequelize(library) {
+    for (const holder of [library?.Sequelize, library?.default?.Sequelize, library]) patchQuery(holder?.prototype, 'sequelize', ['query']);
   }
   // Non-SQL sinks. Only strings passed directly to the call are inspected; values rebuilt by a library lose the mark.
   const ours = new WeakSet();
@@ -307,6 +388,23 @@ function startIast(report) {
     if (!has('httponly')) inspectFlaw('NO_HTTPONLY_COOKIE', 'http.ServerResponse.setHeader');
     if (!has('samesite')) inspectFlaw('NO_SAMESITE_COOKIE', 'http.ServerResponse.setHeader');
   }
+  function inspectHeaders(response, status, rest) {
+    const code = Number(typeof status === 'number' ? status : response.statusCode);
+    if (!(code >= 200 && code < 300)) return;
+    const given = {};
+    const extra = rest.find(value => value && typeof value === 'object');
+    if (Array.isArray(extra)) { for (let i = 0; i < extra.length; i++) { if (Array.isArray(extra[i])) given[String(extra[i][0]).toLowerCase()] = extra[i][1]; else if (i % 2 === 0) given[String(extra[i]).toLowerCase()] = extra[i + 1]; } }
+    else if (extra) for (const key of Object.keys(extra)) given[key.toLowerCase()] = extra[key];
+    const header = name => { const value = response.getHeader(name) ?? given[name]; return Array.isArray(value) ? value.join(', ') : value == null ? undefined : String(value); };
+    if (!/^(?:text\/html|application\/xhtml\+xml)/i.test(header('content-type') || '')) return;
+    if ((header('x-content-type-options') || '').trim().toLowerCase() !== 'nosniff') inspectFlaw('XCONTENTTYPE_HEADER_MISSING', 'http.ServerResponse.writeHead');
+    const request = response.req;
+    const forwarded = String(request?.headers?.['x-forwarded-proto'] ?? '').split(',')[0].trim();
+    if (request?.socket?.encrypted === true || /^https$/i.test(forwarded)) {
+      const age = /max-age\s*=\s*(\d+)/i.exec(header('strict-transport-security') || '');
+      if (!age || Number(age[1]) < 15552000) inspectFlaw('HSTS_HEADER_MISSING', 'http.ServerResponse.writeHead');
+    }
+  }
   function patchBuiltins() {
     const childProcess = require('node:child_process'), fs = require('node:fs'), http = require('node:http'), vm = require('node:vm');
     for (const name of ['exec', 'execSync']) wrap(childProcess, name, 'COMMAND_INJECTION', `child_process.${name}`, first);
@@ -322,7 +420,20 @@ function startIast(report) {
     wrapOutgoing();
     for (const name of ['runInThisContext', 'runInNewContext', 'runInContext', 'compileFunction']) wrap(vm, name, 'CODE_INJECTION', `vm.${name}`, first);
     patchFlaws(require('node:crypto'));
+    // Math.random in application code; only the first calls of a request are looked at, so a hot loop costs nothing.
+    const random = Math.random;
+    Math.random = function () {
+      const scope = storage.getStore();
+      if (scope && (scope.randoms = (scope.randoms || 0) + 1) <= 8) { try { inspectFlaw('WEAK_RANDOMNESS', 'Math.random', true); } catch (_) { /* never alters the call */ } }
+      return random.call(this);
+    };
     const response = http.ServerResponse.prototype;
+    const writeHead = response.writeHead;
+    // An HTML answer without X-Content-Type-Options: nosniff, and, over HTTPS, without a Strict-Transport-Security of at least 180 days.
+    response.writeHead = function (status, ...rest) {
+      try { inspectHeaders(this, status, rest); } catch (_) { /* never alters the call */ }
+      return writeHead.call(this, status, ...rest);
+    };
     const setHeader = response.setHeader;
     response.setHeader = function (name, value, ...rest) {
       try {
@@ -410,6 +521,24 @@ function startIast(report) {
       try { if (typeof namespace[key] === 'function') namespace[key] = clientProxy(namespace[key], sink); } catch (_) { /* read-only export */ }
     }
   }
+  // LDAP: the distinguished name or the filter of a call is built from request input.
+  function patchLdap(library) {
+    const prototype = (library?.Client ? library : library?.default)?.Client?.prototype;
+    wrap(prototype, 'search', 'LDAP_INJECTION', 'ldap.Client.search', args => [args[0], typeof args[1] === 'string' ? args[1] : args[1]?.filter]);
+    for (const name of ['bind', 'add', 'compare', 'del', 'modify', 'modifyDN']) wrap(prototype, name, 'LDAP_INJECTION', `ldap.Client.${name}`, first);
+  }
+  // E-mail: the HTML body of a message is built from request input. Every transport made by the application is watched.
+  function patchNodemailer(library) {
+    const holder = typeof library?.createTransport === 'function' ? library : library?.default;
+    const create = holder?.createTransport;
+    if (typeof create !== 'function' || ours.has(create)) return;
+    const replacement = function (...args) {
+      const transporter = create.apply(this, args);
+      wrap(transporter, 'sendMail', 'EMAIL_HTML_INJECTION', 'nodemailer.sendMail', call => [call[0]?.html]);
+      return transporter;
+    };
+    try { holder.createTransport = replacement; ours.add(replacement); } catch (_) { /* not wrappable here */ }
+  }
   function patchExpress(framework) { wrap((framework?.default ?? framework)?.response, 'redirect', 'UNVALIDATED_REDIRECT', 'express.redirect', strings); }
   const load = Module._load;
   Module._load = function (name, ...args) {
@@ -419,13 +548,23 @@ function startIast(report) {
     else if (name === 'mongodb') patchMongo(exported);
     else if (name === 'axios') return patchAxios(exported);
     else if (name === 'mysql2') patchMysql2(exported);
+    else if (name === 'mysql') patchMysqlClassic(file => load.call(this, `mysql/lib/${file}`, ...args));
+    else if (name === 'sequelize') patchSequelize(exported);
+    else if (name === 'mariadb' || name === 'mariadb/callback') patchMariadb(exported);
+    else if (name === 'ldapjs' || name === 'ldapts') patchLdap(exported);
+    else if (name === 'nodemailer') patchNodemailer(exported);
     else if (name === 'mysql2/promise') { try { patchMysql2(load.call(this, 'mysql2', ...args)); } catch (_) { /* core package unavailable */ } }
     return exported;
   };
   const { Hook } = require('import-in-the-middle');
-  const sqlHook = new Hook(['pg', 'mysql2', 'mysql2/promise', 'express', 'mongodb', 'axios', 'got'], (exported, name, baseDir) => {
+  const sqlHook = new Hook(['pg', 'mysql2', 'mysql2/promise', 'express', 'mongodb', 'axios', 'got', 'ldapjs', 'ldapts', 'nodemailer', 'mysql', 'sequelize', 'mariadb', 'mariadb/callback'], (exported, name, baseDir) => {
+    if (name.startsWith('mariadb')) { patchMariadb(exported); return; }
     if (name === 'express') { patchExpress(exported); return; }
     if (name === 'mongodb') { patchMongo(exported); return; }
+    if (name === 'ldapjs' || name === 'ldapts') { patchLdap(exported); return; }
+    if (name === 'nodemailer') { patchNodemailer(exported); return; }
+    if (name === 'sequelize') { patchSequelize(exported); return; }
+    if (name === 'mysql') { patchMysqlClassic(file => Module._load(path.join(baseDir, 'lib', file), module)); return; }
     if (name === 'axios' || name === 'got') { patchClientModule(exported, name); return; }
     if (name === 'pg') { patchQuery(exported.Client?.prototype, 'pg'); patchQuery(exported.Pool?.prototype, 'pg'); patchQuery(exported.default?.Client?.prototype, 'pg'); return; }
     patchMysql2(exported);
@@ -462,4 +601,4 @@ function startIast(report) {
     stop() { stopped = true; sqlHook.unhook(); for (const id of active) { try { native.removeTransaction(id); } catch (_) { console.warn('[Telvyn] IAST transaction cleanup failed.'); } } active.clear(); },
   };
 }
-module.exports = { startIast, rewriterMethods };
+module.exports = { startIast, rewriterMethods, blockTopLevelArrows };

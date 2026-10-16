@@ -7,17 +7,22 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
   const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http');
   const { ExpressInstrumentation } = require('@opentelemetry/instrumentation-express');
   const FastifyOtelInstrumentation = require('@fastify/otel');
+  const { PgInstrumentation } = require('@opentelemetry/instrumentation-pg');
+  const { MySQL2Instrumentation } = require('@opentelemetry/instrumentation-mysql2');
+  const { MySQLInstrumentation } = require('@opentelemetry/instrumentation-mysql');
   const { PeriodicExportingMetricReader } = require('@opentelemetry/sdk-metrics');
   const { OTLPMetricExporter } = require('@opentelemetry/exporter-metrics-otlp-proto');
   const { ServerResponse, IncomingMessage } = require('node:http');
+  // Startup failures keep the application running; the reason is short and single-line so the operator can act on it.
+  const why = error => ` (${String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 160)})`;
   let security;
   try { security = require('./security.cjs').startSecurity(); }
-  catch (_) { console.warn('[Telvyn] Security sensor could not start; application startup continues.'); }
+  catch (error) { console.warn('[Telvyn] Security sensor could not start; application startup continues.' + why(error)); }
   let iast;
   try {
     if (process.env.TELVYN_IAST_ENABLED === 'true' && !security?.reportIast) throw new Error('IAST reporter unavailable');
     iast = require('./iast.cjs').startIast((finding, elapsed) => security.reportIast(finding, elapsed, trace.getActiveSpan()));
-  } catch (_) { console.warn('[Telvyn] IAST sensor could not start; application startup continues.'); }
+  } catch (error) { console.warn('[Telvyn] IAST sensor could not start; application startup continues.' + why(error)); }
   let loaderPort;
   if (require('node:worker_threads').isMainThread && typeof require('node:module').register === 'function') {
     try {
@@ -29,9 +34,21 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
       });
       port1.unref();
       require('node:module').register(require('node:url').pathToFileURL(require('node:path').join(__dirname, 'loader.mjs')), {data: {sourceRoot: process.env.TELVYN_PROFILE_SOURCE_ROOT, iast: iast?.state === 'active', port: port2}, transferList: [port2]});
-    } catch (_) { console.warn('[Telvyn] ESM instrumentation could not start.'); loaderPort?.close(); }
+    } catch (error) { console.warn('[Telvyn] ESM instrumentation could not start.' + why(error)); loaderPort?.close(); }
   }
 
+  // The collector and backend read the older database attribute names; the instrumentation emits the current ones.
+  // The collector obfuscates only the copy it uses for statistics; the span relayed to the backend stays as exported, so literals are removed here.
+  // Query strings keep the parameter names and lose every value, the same rule the collector applies to all languages.
+  const redactPairs = query => query.split('&').map(part => part.includes('=') ? part.slice(0, part.indexOf('=')) + '=<redacted>' : part).join('&');
+  const redactQuery = target => {
+    const mark = target.indexOf('?');
+    if (mark < 0) return target;
+    const query = target.slice(mark + 1).split('#')[0];
+    return query ? target.slice(0, mark) + '?' + redactPairs(query) : target.slice(0, mark);
+  };
+  const obfuscateSql = text => text.replace(/'(?:[^']|'')*'|(?<![\w$.])\d+(?:\.\d+)?(?![\w$])/g, '?');
+  const databaseAliases = {'db.system.name': 'db.system', 'db.query.text': 'db.statement', 'db.namespace': 'db.name'};
   class QuerySafeExporter extends OTLPTraceExporter {
     export(spans, callback) {
       for (const span of spans) {
@@ -39,14 +56,68 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
         span.attributes['telvyn.sdk.version'] = require('./package.json').version;
         span.attributes['process.runtime.version'] = process.version;
         for (const key of ['http.url', 'http.target', 'url.full']) {
-          if (typeof span.attributes[key] === 'string') span.attributes[key] = span.attributes[key].split('?')[0];
+          if (typeof span.attributes[key] === 'string') span.attributes[key] = redactQuery(span.attributes[key]);
         }
-        delete span.attributes['url.query'];
+        if (typeof span.attributes['url.query'] === 'string') span.attributes['url.query'] = redactPairs(span.attributes['url.query']);
+        for (const [current, legacy] of Object.entries(databaseAliases)) {
+          if (span.attributes[current] != null && span.attributes[legacy] == null) span.attributes[legacy] = span.attributes[current];
+        }
+        for (const key of ['db.statement', 'db.query.text']) {
+          if (typeof span.attributes[key] === 'string') span.attributes[key] = obfuscateSql(span.attributes[key]);
+        }
       }
       super.export(spans, callback);
     }
   }
 
+  // mariadb has no OpenTelemetry instrumentation: one client span per call, with the attributes the pg and mysql2 spans carry.
+  // Calls outside a request (startup, jobs) are traces of their own, as in Datadog; a pool call that runs on one of its
+  // connections is one span, not two.
+  function startMariadbSpans() {
+    const { context, createContextKey, SpanKind, SpanStatusCode } = require('@opentelemetry/api');
+    const mariadb = require('./mariadb.cjs'), inside = createContextKey('telvyn.mariadb'), tracer = trace.getTracer('telvyn-mariadb');
+    const patched = new WeakSet();
+    const patchPrototype = prototype => {
+      if (!prototype || patched.has(prototype)) return;
+      patched.add(prototype);
+      for (const method of ['query', 'execute', 'batch']) {
+        const original = prototype[method];
+        if (typeof original !== 'function') continue;
+        prototype[method] = function (...args) {
+          const sql = mariadb.sqlOf(args), active = context.active();
+          if (typeof sql !== 'string' || active.getValue(inside)) return original.apply(this, args);
+          const { host, port, database } = mariadb.optionsOf(this);
+          const span = tracer.startSpan(`mariadb.${method}`, {kind: SpanKind.CLIENT, attributes: {
+            'db.system.name': 'mariadb', 'db.query.text': sql, 'db.operation.name': sql.trim().split(/\s+/)[0].toUpperCase(),
+            ...(database ? {'db.namespace': database} : {}), 'server.address': host || 'localhost', 'server.port': port || 3306}}, active);
+          // The driver's message appends the SQL text and the parameter values; `text` is the server message alone.
+          const finish = error => {
+            if (error) {
+              const message = String(error.text ?? String(error.message ?? error).split('\n')[0]).slice(0, 512);
+              span.recordException({name: error.name, code: error.code, message}); span.setStatus({code: SpanStatusCode.ERROR, message});
+            }
+            span.end();
+          };
+          const callback = typeof args.at(-1) === 'function' ? args.length - 1 : -1;
+          if (callback >= 0) { const done = args[callback]; args[callback] = function (error, ...rest) { finish(error); return done.call(this, error, ...rest); }; }
+          let result;
+          try { result = context.with(trace.setSpan(active, span).setValue(inside, true), () => original.apply(this, args)); }
+          catch (error) { finish(error); throw error; }
+          if (callback < 0 && typeof result?.then === 'function') result.then(() => finish(), finish);
+          else if (callback < 0) finish();
+          return result;
+        };
+      }
+    };
+    const Module = require('node:module'), load = Module._load;
+    Module._load = function (name, ...args) {
+      const exported = load.call(this, name, ...args);
+      if (name === 'mariadb' || name === 'mariadb/callback') mariadb.watch(exported, patchPrototype);
+      return exported;
+    };
+    const { Hook } = require('import-in-the-middle');
+    new Hook(['mariadb', 'mariadb/callback'], exported => { mariadb.watch(exported, patchPrototype); });
+  }
   const sdk = new NodeSDK({
     contextManager: new (profileContext.contextManager(AsyncLocalStorageContextManager))(),
     traceExporter: new QuerySafeExporter(),
@@ -61,20 +132,23 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
         console.log(JSON.stringify({service: process.env.OTEL_SERVICE_NAME, level: response.statusCode >= 500 ? 'error' : 'info', message: 'HTTP request completed', method: request.method, status: response.statusCode, trace_id: traceId, span_id: spanId}));
       },
     }), new ExpressInstrumentation({requestHook(span, info) { iast?.request(info.request); }}),
+    new PgInstrumentation({ignoreConnectSpans: true}), new MySQL2Instrumentation({maskStatement: true}), new MySQLInstrumentation(),
     new FastifyOtelInstrumentation({registerOnInitialization: true, recordExceptions: false,
       requestHook(span, request) { iast?.request(request); }})],
   });
   sdk.start();
+  try { startMariadbSpans(); }
+  catch (error) { console.warn('[Telvyn] mariadb spans could not start.' + why(error)); }
   let transport, debuggerAgent, stopConfiguration;
   try {
     const { runtimeTransport, reportConfiguration } = require('./runtime.cjs');
     transport = runtimeTransport();
     if (require('node:worker_threads').isMainThread) stopConfiguration = reportConfiguration(transport, security, iast);
     debuggerAgent = require('./debugger.cjs').startDebugger(transport);
-  } catch (_) { console.warn('[Telvyn] Runtime configuration or Debugger could not start.'); }
+  } catch (error) { console.warn('[Telvyn] Runtime configuration or Debugger could not start.' + why(error)); }
   let profiler;
   try { profiler = require('./profiler.cjs').startProfiler(); }
-  catch (_) { console.warn('[Telvyn] CPU profiling could not start.'); }
+  catch (error) { console.warn('[Telvyn] CPU profiling could not start.' + why(error)); }
   let shutdown;
   module.exports.stop = () => {
     if (shutdown) return shutdown;
