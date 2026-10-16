@@ -173,7 +173,7 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return true
 	} // backend anterior ao contrato de entitlement
 	switch signal {
-	case "traces", "apm/stats", "apm/usage", "profile", "security/events", "security/iast", "sdk/configuration", "debug", "debug/config", "debug/config/applied":
+	case "traces", "apm/stats", "apm/usage", "profile", "security/events", "security/iast", "security/lab", "sdk/configuration", "debug", "debug/config", "debug/config/applied":
 		return modules["APM"]
 	case "logs":
 		return modules["LOGS"]
@@ -234,7 +234,7 @@ func (e *IngestExporter) PostRaw(ctx context.Context, signal, contentType string
 		return nil
 	}
 	if !e.signalAllowed(signal) {
-		if signal == "security/events" || signal == "security/iast" || signal == "sdk/configuration" || signal == "debug" || signal == "debug/config/applied" {
+		if signal == "security/events" || signal == "security/iast" || signal == "security/lab" || signal == "sdk/configuration" || signal == "debug" || signal == "debug/config/applied" {
 			return fmt.Errorf("APM signal disabled")
 		}
 		return nil
