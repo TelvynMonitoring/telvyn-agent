@@ -203,7 +203,7 @@ func (s *Server) decide(req *AdmissionRequest) *AdmissionResponse {
 		return out
 	}
 
-	patch := buildPatch(pod, javaContainers, s.cfg.AgentImage, s.cfg.OtlpEndpointEnv, s.cfg.OtlpProtocol, workload)
+	patch := buildPatch(pod, javaContainers, s.cfg.AgentImage, s.cfg.JavaAgentImage, s.cfg.OtlpEndpointEnv, s.cfg.OtlpProtocol, workload)
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
 		s.cfg.Log.Warn("webhook patch marshal failed", "err", err)
@@ -306,7 +306,9 @@ func podDisplayName(p podMeta) string {
 //  3. adiciona volumeMount nos containers Java
 //  4. adiciona env vars OTel + JAVA_TOOL_OPTIONS nos containers Java
 //     (sem sobrescrever se cliente já tem JAVA_TOOL_OPTIONS — append)
-func buildPatch(pod podMeta, javaIdx []int, agentImage, otlpEnvValue, otlpProtocol, serviceName string) []patchOp {
+//  5. com javaAgentImage, faz o mesmo com o agente Java Telvyn do bundle
+//     (/opt/telvyn/java), como o Datadog injeta o dd-java-agent
+func buildPatch(pod podMeta, javaIdx []int, agentImage, javaAgentImage, otlpEnvValue, otlpProtocol, serviceName string) []patchOp {
 	ops := []patchOp{}
 
 	// Volume
@@ -320,6 +322,9 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, otlpEnvValue, otlpProtoc
 			Op: "add", Path: "/spec/volumes/-",
 			Value: volume{Name: "ispwatch-otel", EmptyDir: map[string]interface{}{}},
 		})
+	}
+	if javaAgentImage != "" {
+		ops = append(ops, patchOp{Op: "add", Path: "/spec/volumes/-", Value: volume{Name: "telvyn-java-agent", EmptyDir: map[string]interface{}{}}})
 	}
 
 	// initContainer
@@ -338,6 +343,17 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, otlpEnvValue, otlpProtoc
 		ops = append(ops, patchOp{Op: "add", Path: "/spec/initContainers", Value: []interface{}{initCt}})
 	} else {
 		ops = append(ops, patchOp{Op: "add", Path: "/spec/initContainers/-", Value: initCt})
+	}
+	if javaAgentImage != "" {
+		ops = append(ops, patchOp{Op: "add", Path: "/spec/initContainers/-", Value: map[string]interface{}{
+			"name": "telvyn-java-agent", "image": javaAgentImage, "imagePullPolicy": "IfNotPresent",
+			"command":      []string{"sh", "-c", "cp -R /opt/telvyn/java/. /target/"},
+			"volumeMounts": []volumeMount{{Name: "telvyn-java-agent", MountPath: "/target"}},
+			"resources": map[string]interface{}{
+				"requests": map[string]string{"cpu": "10m", "memory": "16Mi"},
+				"limits":   map[string]string{"cpu": "100m", "memory": "64Mi"},
+			},
+		}})
 	}
 
 	// Para cada container Java: volumeMount + env vars
@@ -359,10 +375,16 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, otlpEnvValue, otlpProtoc
 				Value: mount,
 			})
 		}
+		if javaAgentImage != "" {
+			ops = append(ops, patchOp{Op: "add", Path: containerPath(idx, "/volumeMounts/-"), Value: volumeMount{Name: "telvyn-java-agent", MountPath: "/opt/telvyn/java", ReadOnly: true}})
+		}
 
 		// JAVA_TOOL_OPTIONS: se o container já define, faz REPLACE anexando o
 		// -javaagent (não sobrescreve o que o cliente pôs); senão entra no add.
-		const agentOpt = "-javaagent:/otel/javaagent.jar"
+		agentOpt := "-javaagent:/otel/javaagent.jar"
+		if javaAgentImage != "" {
+			agentOpt += " -javaagent:/opt/telvyn/java/telvyn-javaagent.jar"
+		}
 		jtoIdx := -1
 		for i, e := range c.Env {
 			if e.Name == "JAVA_TOOL_OPTIONS" {

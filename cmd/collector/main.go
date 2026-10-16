@@ -216,6 +216,7 @@ func main() {
 			DotnetAgentImage: os.Getenv("TELVYN_DOTNET_AGENT_IMAGE"),
 			RubyAgentImage:   os.Getenv("TELVYN_RUBY_AGENT_IMAGE"),
 			PhpAgentImage:    os.Getenv("TELVYN_PHP_AGENT_IMAGE"),
+			JavaAgentImage:   os.Getenv("TELVYN_JAVA_AGENT_IMAGE"),
 			OtlpEndpointEnv:  getenvOr("ISPWATCH_OTLP_ENDPOINT", "http://$(NODE_IP):4318"),
 			OtlpProtocol:     getenvOr("ISPWATCH_OTLP_PROTOCOL", "http/protobuf"),
 			Log:              whLog,
