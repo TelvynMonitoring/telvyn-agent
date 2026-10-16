@@ -11,6 +11,8 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 	signal := "security/events"
 	if r.URL.Path == "/v1/security/iast" {
 		signal = "security/iast"
+	} else if r.URL.Path == "/v1/security/lab" {
+		signal = "security/lab"
 	}
 	h.serveOTLP(w, r, "/v1/"+signal, func(body []byte, ct, clientIP string) (int, error) {
 		if ct != "application/json" {
