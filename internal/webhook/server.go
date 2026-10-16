@@ -66,6 +66,7 @@ type Config struct {
 	DotnetAgentImage string
 	RubyAgentImage   string
 	PhpAgentImage    string
+	JavaAgentImage   string // agente Java Telvyn (bundle); vazio injeta só o OpenTelemetry
 	OtlpEndpointEnv  string // valor de OTEL_EXPORTER_OTLP_ENDPOINT injetado
 	OtlpProtocol     string // valor de OTEL_EXPORTER_OTLP_PROTOCOL injetado
 	Log              *slog.Logger

@@ -105,6 +105,8 @@ spec:
               value: {{ .Values.webhook.rubyAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
             - name: TELVYN_PHP_AGENT_IMAGE
               value: {{ .Values.webhook.phpAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
+            - name: TELVYN_JAVA_AGENT_IMAGE
+              value: {{ .Values.webhook.javaAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
             - name: ISPWATCH_OTLP_ENDPOINT
               value: {{ .Values.webhook.otlpEndpoint | quote }}
             - name: ISPWATCH_OTLP_PROTOCOL

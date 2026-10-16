@@ -31,7 +31,7 @@ jobs:
             echo 'Version already exists; choose a new version.' >&2
             exit 1
           fi
-          for runtime in node python dotnet ruby php; do
+          for runtime in node python dotnet ruby php java; do
             docker build --platform linux/amd64 -f "telvyn-$runtime-agent/Dockerfile" -t "telvyn-$runtime-agent:bundle" .
           done
           docker build --platform linux/amd64 -f infra/runtime-agents/Dockerfile \
@@ -39,6 +39,7 @@ jobs:
             --build-arg PYTHON_IMAGE=telvyn-python-agent:bundle \
             --build-arg DOTNET_IMAGE=telvyn-dotnet-agent:bundle \
             --build-arg RUBY_IMAGE=telvyn-ruby-agent:bundle \
+            --build-arg JAVA_IMAGE=telvyn-java-agent:bundle \
             --build-arg PHP_IMAGE=telvyn-php-agent:bundle \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \

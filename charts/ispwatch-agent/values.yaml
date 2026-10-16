@@ -117,7 +117,7 @@ webhook:
   # Helm creates and renews TLS on upgrades; cert-manager remains available
   # for installations that already manage automatic certificate renewal.
   certificateProvider: helm
-  runtimeBundleImageRef: ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.4.0
+  runtimeBundleImageRef: ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.0
   # Imagem referenciada nos initContainers injetados pelos pods alvo
   # (precisa estar disponível em todos os nós onde os pods alvo rodam).
   # Default usa a mesma do DaemonSet.
@@ -128,6 +128,8 @@ webhook:
   dotnetAgentImageRef: ""
   rubyAgentImageRef: ""
   phpAgentImageRef: ""
+  # Agente Java Telvyn (profiling, IAST, debugger), injetado ao lado do OpenTelemetry.
+  javaAgentImageRef: ""
   # OTLP endpoint que o javaagent injetado vai usar. $(NODE_IP) é
   # expandido pelo K8s downward API no pod alvo. Em modo ingest o agent só
   # sobe o receptor OTLP/HTTP na :4318 (gRPC :4317 só no modo server-driven).
