@@ -73,6 +73,57 @@ function frameLine(frame, line) {
     return named && named === relativeSource(position.file) && position.line > 0 ? position.line : -1;
   } catch (_) { return -1; }
 }
+// Line ranges of the functions in a compiled file (1-based, inclusive), read once per file. Optimized code reports the lines
+// of functions inlined into a caller on the caller's node, so a line outside the caller's own range is not its executed line.
+const functionRanges = new Map();
+// Looked up by the position V8 gives (line and column) or, when only the function name is known, by that name.
+function functionRange(url, line, column) {
+  if (!url?.startsWith('file:')) return undefined;
+  let ranges = functionRanges.get(url);
+  if (ranges === undefined) {
+    ranges = null;
+    try {
+      const file = fileURLToPath(url), fs = require('node:fs');
+      if (fs.statSync(file).size <= 5 * 1024 * 1024) {
+        const source = fs.readFileSync(file, 'utf8');
+        let tree;
+        for (const sourceType of ['module', 'script']) {
+          try { tree = require('acorn').parse(source, {ecmaVersion: 'latest', sourceType, locations: true, allowHashBang: true, allowReturnOutsideFunction: sourceType === 'script', allowAwaitOutsideFunction: true}); break; }
+          catch (_) { /* try the other module type */ }
+        }
+        if (tree) {
+          ranges = [];
+          (function visit(node, name) {
+            // The name V8 gives a function: its own, or the variable, property or method it is assigned to.
+            if (/Function/.test(node.type) && node.loc) ranges.push({loc: node.loc, name: node.id?.name || name});
+            const named = node.type === 'VariableDeclarator' ? node.id?.name
+              : ['Property', 'MethodDefinition', 'PropertyDefinition'].includes(node.type) ? node.key?.name : undefined;
+            for (const key of Object.keys(node)) {
+              const value = node[key];
+              const childName = named && (key === 'init' || key === 'value') ? named : undefined;
+              if (Array.isArray(value)) { for (const item of value) if (item && typeof item.type === 'string') visit(item); }
+              else if (value && typeof value.type === 'string') visit(value, childName);
+            }
+          })(tree);
+        }
+      }
+    } catch (_) { ranges = null; }
+    if (functionRanges.size >= 2000) functionRanges.clear();
+    functionRanges.set(url, ranges);
+  }
+  if (!ranges) return undefined;
+  if (typeof line === 'string') {
+    // Only the name is known (native wall profiler): the one function with that name in the file, none when ambiguous.
+    const named = ranges.filter(range => range.name === line.split('.').pop());
+    return named.length === 1 ? {start: named[0].loc.start.line, end: named[0].loc.end.line} : undefined;
+  }
+  // V8 places a function at a position inside its own node (the parameter list); the innermost enclosing function is it.
+  const inside = loc => (line > loc.start.line || line === loc.start.line && column - 1 >= loc.start.column) && (line < loc.end.line || line === loc.end.line && column - 1 <= loc.end.column);
+  let best;
+  for (const {loc} of ranges) if (inside(loc) && (!best || loc.start.line > best.start.line || loc.start.line === best.start.line && loc.start.column >= best.start.column)) best = loc;
+  return best && {start: best.start.line, end: best.end.line};
+}
+
 // Observed line weights, stack by stack. The ingest keeps only weights that fit the preserved stack and ignores the rest.
 const MAX_LINE_STACKS = 4096, MAX_LINE_STACK_FRAMES = 256, MAX_LINE_STACK_CHARS = 250000;
 function lineStacksDetails(entries) {
@@ -147,7 +198,10 @@ function wallSamples(profile, withLines = false) {
       if (!fn) return null;
       const filename = strings[fn.filename];
       const frame = {url: filename && path.isAbsolute(filename) ? pathToFileURL(filename).href : '', functionName: strings[fn.name], line: Number(fn.startLine) || Number(line.line) || 0, column: 1};
-      return {name: frameName(frame), line: withLines ? frameLine(frame, Number(line.line)) : -1};
+      const executed = Number(line.line), range = withLines && frame.functionName ? functionRange(frame.url, frame.functionName) : undefined;
+      // Same inlining guard as the CPU profile: a line outside the function's own range is not recorded.
+      const own = range && executed >= range.start && executed <= range.end;
+      return {name: frameName(frame), line: own ? frameLine(frame, executed) : -1};
     })).filter(frame => frame?.name);
     const frames = located.map(frame => frame.name);
     if (!frames.length) continue;
@@ -218,8 +272,12 @@ function cpuProfile(profile) {
     const node = nodes.get(id), ticks = node.positionTicks;
     if (!ticks?.length) continue;
     const frame = {url: node.callFrame.url, line: node.callFrame.lineNumber + 1, column: node.callFrame.columnNumber + 1};
-    let used = 0;
+    let used = 0, range;
     for (const {line, ticks: weight} of [...ticks].sort((a, b) => b.ticks - a.ticks)) {
+      // Optimized code reports the lines of functions inlined into this one on this node (measured: an inlined callee's
+      // line attributed to its caller); without the function's range the line is not recorded.
+      if (range === undefined) range = functionRange(node.callFrame.url, frame.line, frame.column) || null;
+      if (!range || line < range.start || line > range.end) continue;
       const mapped = frameLine(frame, line);
       const share = Math.min(weight, count - used);
       if (mapped < 1 || share < 1) continue;
