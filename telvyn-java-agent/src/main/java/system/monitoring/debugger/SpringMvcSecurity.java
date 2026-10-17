@@ -8,7 +8,7 @@ import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.asm.Advice;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
-/** Spring MVC hooks; no Spring dependency and no request body/header inspection. */
+/** Spring MVC hooks (no Spring dependency): attack detection and blocking over the whole request, IAST sources. */
 public final class SpringMvcSecurity {
     private static final ThreadLocal<Method> selected=new ThreadLocal<>();
     private static final ThreadLocal<String[]> selectedRoute=new ThreadLocal<>();
@@ -21,6 +21,13 @@ public final class SpringMvcSecurity {
     private static LocalAttackReporter iast;
     private static volatile LocalAttackDetection detector;
     private static volatile ThreadPoolExecutor worker;
+    /** Eventos das regras completas (conjunto recomendado do Datadog). */
+    private static volatile LocalAttackReporter waf;
+    private static final String STATE="telvyn.security.waf";
+    /** Bloqueio decidido no corpo: interrompe o handler; a resposta de bloqueio já foi escrita. */
+    public static final class BlockedRequestException extends RuntimeException {
+        public BlockedRequestException(){super("request blocked by Telvyn",null,false,false);}
+    }
     private SpringMvcSecurity() {}
     public static Object selection(){return selected.get();}
     public static void selection(Object method){if(method instanceof Method value)selected.set(value);else selected.remove();}
@@ -31,10 +38,15 @@ public final class SpringMvcSecurity {
             .type(named("org.springframework.web.servlet.mvc.method.AbstractHandlerMethodAdapter"))
             .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(Dispatch.class).on(named("handle").and(takesArguments(3)))))
             .installOn(instrumentation);
-        // Bloqueio por IP antes de qualquer handler (como o Datadog, vale para toda requisição Spring MVC).
+        // Início e fim de toda requisição Spring MVC: IP, usuário, cabeçalhos, cookies, query, endereço; status da resposta.
         new AgentBuilder.Default().disableClassFormatChanges()
             .type(named("org.springframework.web.servlet.DispatcherServlet"))
-            .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(IpBlock.class).on(named("doDispatch").and(takesArguments(2)))))
+            .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(RequestPhase.class).on(named("doDispatch").and(takesArguments(2)))))
+            .installOn(instrumentation);
+        // Corpo (@RequestBody) depois de convertido, antes do controller.
+        new AgentBuilder.Default().disableClassFormatChanges()
+            .type(named("org.springframework.web.servlet.mvc.method.annotation.AbstractMessageConverterMethodArgumentResolver"))
+            .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(BodyPhase.class).on(named("readWithMessageConverters").and(takesArguments(3)))))
             .installOn(instrumentation);
         if(Boolean.getBoolean("telvyn.iast.enabled"))new AgentBuilder.Default().disableClassFormatChanges()
             .type(named("org.springframework.jdbc.core.JdbcTemplate"))
@@ -44,6 +56,12 @@ public final class SpringMvcSecurity {
             .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(ReactiveDispatch.class).on(named("handle").and(takesArguments(2)))))
             .installOn(instrumentation);
         FunctionalWebFluxSecurity.install(instrumentation);
+        new AgentBuilder.Default().disableClassFormatChanges().type(named("org.springframework.web.reactive.function.server.support.HandlerFunctionAdapter"))
+            .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(FunctionalDispatch.class).on(named("handle").and(takesArguments(2)))))
+            .installOn(instrumentation);
+        new AgentBuilder.Default().disableClassFormatChanges().type(named("org.springframework.web.reactive.result.method.annotation.AbstractMessageReaderArgumentResolver"))
+            .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(ReactiveBody.class).on(named("readBody").and(takesArguments(5)))))
+            .installOn(instrumentation);
         if(Boolean.getBoolean("telvyn.iast.enabled"))new AgentBuilder.Default().disableClassFormatChanges().type(named("org.springframework.web.context.request.async.WebAsyncTask"))
             .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(WebTaskInterceptor.class).on(named("getInterceptor").and(takesArguments(0))))).installOn(instrumentation);
         if(Boolean.getBoolean("telvyn.iast.enabled"))new AgentBuilder.Default().disableClassFormatChanges().type(named("org.springframework.web.context.request.async.DeferredResult"))
@@ -84,6 +102,8 @@ public final class SpringMvcSecurity {
     private static synchronized void startAttack(){
         if(worker!=null)return;
         attacks=reporter("events");detector=new LocalAttackDetection();
+        waf=new LocalAttackReporter(Collector.url()+"/v1/security/events",SnapshotSink.service(),SnapshotSink.host(),ProbeMetricSink.environment(),ProbeMetricSink.version(),WafInspector.RULES_VERSION);
+        try{WafInspector.engine();}catch(Exception|LinkageError failure){System.err.println("[telvyn] WAF rules could not load; attack detection stays on the legacy query rules."+TelvynDebuggerAgent.reason(failure));waf=null;}
         worker=new ThreadPoolExecutor(1,1,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(64),r->{var t=new Thread(r,"telvyn-spring-security");t.setDaemon(true);return t;},new ThreadPoolExecutor.AbortPolicy());
     }
     /** Configuração remota: liga ou desliga a detecção de ataques com a aplicação rodando. */
@@ -91,8 +111,9 @@ public final class SpringMvcSecurity {
         if("error".equals(SecuritySensorState.attack()))return;
         if(enabled)startAttack();
         else if(worker!=null){
-            var stoppedWorker=worker;var stoppedAttacks=attacks;var stoppedDetector=detector;
-            worker=null;attacks=null;detector=null;
+            var stoppedWorker=worker;var stoppedAttacks=attacks;var stoppedDetector=detector;var stoppedWaf=waf;
+            worker=null;attacks=null;detector=null;waf=null;
+            if(stoppedWaf!=null)stoppedWaf.close();
             stoppedWorker.shutdownNow();if(stoppedAttacks!=null)stoppedAttacks.close();if(stoppedDetector!=null)stoppedDetector.close();
         }
         SecuritySensorState.attack(enabled);
@@ -106,27 +127,111 @@ public final class SpringMvcSecurity {
         for(String route:routes)if(route.endsWith("/**")&&route.startsWith(verb+" ")&&(path+"/").startsWith(route.substring(verb.length()+1,route.length()-2)))return true;
         return false;
     }
-    /** IP da lista de bloqueio: responde e pula o processamento do Spring. */
-    public static boolean blockIp(Object request,Object response){
-        start();
-        if(worker==null||!JavaProtection.allowBlocking())return false;
-        String ip=JavaProtection.clientIp(request);
-        if(!JavaProtection.denied(ip))return false;
+    private static Object attribute(Object request,String name){try{return request.getClass().getMethod("getAttribute",String.class).invoke(request,name);}catch(ReflectiveOperationException|RuntimeException unavailable){return null;}}
+    private static void attribute(Object request,String name,Object value){try{request.getClass().getMethod("setAttribute",String.class,Object.class).invoke(request,name,value);}catch(ReflectiveOperationException|RuntimeException unavailable){ /* sem estado: só o início é inspecionado */ }}
+    /** Usuário logado como o Datadog no Java: Spring Security (exceto anônimo); senão o principal do servlet. */
+    static String loggedUser(Object request){
+        try{
+            var holder=Class.forName("org.springframework.security.core.context.SecurityContextHolder",false,Thread.currentThread().getContextClassLoader());
+            Object context=holder.getMethod("getContext").invoke(null);
+            Object auth=context==null?null:context.getClass().getMethod("getAuthentication").invoke(context);
+            if(auth!=null&&!auth.getClass().getName().endsWith("AnonymousAuthenticationToken")&&Boolean.TRUE.equals(auth.getClass().getMethod("isAuthenticated").invoke(auth))){
+                Object name=auth.getClass().getMethod("getName").invoke(auth);
+                if(name instanceof String value&&!value.isBlank())return value;
+            }
+        }catch(ReflectiveOperationException|RuntimeException|LinkageError unavailable){ /* sem Spring Security */ }
+        try{
+            Object principal=request.getClass().getMethod("getUserPrincipal").invoke(request);
+            Object name=principal==null?null:principal.getClass().getMethod("getName").invoke(principal);
+            return name instanceof String value&&!value.isBlank()?value:null;
+        }catch(ReflectiveOperationException|RuntimeException unavailable){return null;}
+    }
+    /** Reporta as regras novas da fase e decide o bloqueio por regra. */
+    static LocalAttackReporter wafReporter(){start();return waf;}
+    static boolean decide(WafInspector.State state,WafInspector.Evaluation evaluation,LocalAttackReporter reporter){
+        if(!"match".equals(evaluation.outcome())){
+            if(("timeout".equals(evaluation.outcome())&&!state.timeoutReported)||"error".equals(evaluation.outcome())){
+                state.timeoutReported|="timeout".equals(evaluation.outcome());
+                reporter.reportWaf(evaluation.outcome(),null,null,evaluation.elapsedUs(),WafInspector.engineVersion(),state.ip,state.method,state.path,state.userAgent,state.user,null,state.trace[0],state.trace[1]);
+            }
+            return false;
+        }
+        boolean block=!state.blocked&&JavaProtection.allowBlocking()&&!JavaProtection.passed(state.ip)&&evaluation.matches().stream().anyMatch(m->"blocking".equals(JavaProtection.ruleMode(m.rule())));
+        for(var match:evaluation.matches())reporter.reportWaf("match",match.rule(),match.address(),evaluation.elapsedUs(),WafInspector.engineVersion(),state.ip,state.method,state.path,state.userAgent,state.user,block&&"blocking".equals(JavaProtection.ruleMode(match.rule()))?"rule":null,state.trace[0],state.trace[1]);
+        return block;
+    }
+    private static boolean block(WafInspector.State state,Object request,Object response,String by,LocalAttackReporter reporter){
         if(JavaProtection.respond(request,response)==null)return false;
-        var ids=trace();var reporter=attacks;
-        if(reporter!=null)reporter.reportBlockedIp(new LocalAttackReporter.Request(ip,requestMethod(request),requestPath(request),Set.of()),ids[0],ids[1]);
+        state.blocked=true;
+        if(!"rule".equals(by))reporter.reportWaf("blocked",null,null,0,WafInspector.engineVersion(),state.ip,state.method,state.path,state.userAgent,state.user,by,state.trace[0],state.trace[1]);
         return true;
+    }
+    /** Início da requisição (DispatcherServlet): devolve true quando bloqueou e respondeu. */
+    public static boolean requestStart(Object request,Object response){
+        start();
+        var reporter=waf;
+        if(reporter==null||attribute(request,STATE)!=null)return false;
+        try{
+            String ip=JavaProtection.clientIp(request);
+            Object agent=request.getClass().getMethod("getHeader",String.class).invoke(request,"User-Agent");
+            var state=WafInspector.open(ip,requestMethod(request),requestPath(request),agent instanceof String value?value:null,trace());
+            attribute(request,STATE,state);
+            state.user=loggedUser(request);
+            if(JavaProtection.allowBlocking()&&JavaProtection.denied(ip))return block(state,request,response,"ip",reporter);
+            if(state.user!=null&&JavaProtection.allowBlocking()&&JavaProtection.userBlocked(state.user)&&!JavaProtection.passed(ip))return block(state,request,response,"user",reporter);
+            var data=WafInspector.requestStart(request);
+            if(ip!=null)data.put("http.client_ip",ip);
+            if(state.user!=null)data.put("usr.id",state.user);
+            return decide(state,WafInspector.run(state,data),reporter)&&block(state,request,response,"rule",reporter);
+        }catch(Exception|LinkageError failure){LocalAttackReporter.reportLoss("request inspection failure");return false;}
+    }
+    /** Fim da requisição: status da resposta e liberação do contexto. */
+    public static void requestEnd(Object request,Object response){
+        if(!(attribute(request,STATE) instanceof WafInspector.State state))return;
+        try{
+            var reporter=waf;
+            Object status=response.getClass().getMethod("getStatus").invoke(response);
+            if(reporter!=null&&!state.blocked)decide(state,WafInspector.run(state,Map.of("server.response.status",String.valueOf(status))),reporter);
+        }catch(ReflectiveOperationException|RuntimeException|LinkageError ignored){ /* status indisponível */ }
+        finally{WafInspector.close(state);}
+    }
+    /** Fase de rota (handler): parâmetros de rota e formulário. */
+    static boolean routePhase(Object request,Object response){
+        var reporter=waf;
+        if(reporter==null||!(attribute(request,STATE) instanceof WafInspector.State state)||state.blocked||state.routeInspected)return false;
+        state.routeInspected=true;
+        try{
+            Map<String,Object> data=new java.util.LinkedHashMap<>();
+            if(attribute(request,"org.springframework.web.servlet.HandlerMapping.uriTemplateVariables") instanceof Map<?,?> params&&!params.isEmpty())data.put("server.request.path_params",WafInspector.introspect(params));
+            Object contentType=request.getClass().getMethod("getContentType").invoke(request);
+            if(contentType instanceof String type&&type.toLowerCase(Locale.ROOT).startsWith("application/x-www-form-urlencoded")){
+                Object form=request.getClass().getMethod("getParameterMap").invoke(request);
+                if(form instanceof Map<?,?> fields&&!fields.isEmpty())data.put("server.request.body",WafInspector.introspect(fields));
+            }
+            return decide(state,WafInspector.run(state,data),reporter)&&block(state,request,response,"rule",reporter);
+        }catch(Exception|LinkageError failure){LocalAttackReporter.reportLoss("route inspection failure");return false;}
+    }
+    /** Fase do corpo (@RequestBody convertido): devolve true quando bloqueou e respondeu. */
+    public static boolean bodyPhase(Object webRequest,Object body){
+        var reporter=waf;
+        if(reporter==null||body==null)return false;
+        try{
+            // A conversão chega aqui com o NativeWebRequest ou com a mensagem HTTP; a requisição atual vem do Spring.
+            var holder=Class.forName("org.springframework.web.context.request.RequestContextHolder",false,webRequest.getClass().getClassLoader());
+            Object attributes=holder.getMethod("getRequestAttributes").invoke(null);
+            if(attributes==null)return false;
+            Object request=JavaProtection.call(attributes,"getRequest",new Class<?>[]{});
+            Object response=JavaProtection.call(attributes,"getResponse",new Class<?>[]{});
+            if(request==null||response==null||!(attribute(request,STATE) instanceof WafInspector.State state)||state.blocked||state.bodyInspected)return false;
+            state.bodyInspected=true;
+            return decide(state,WafInspector.run(state,Map.of("server.request.body",WafInspector.introspect(body))),reporter)&&block(state,request,response,"rule",reporter);
+        }catch(Exception|LinkageError failure){LocalAttackReporter.reportLoss("body inspection failure");return false;}
     }
     private static String requestMethod(Object request){try{return (String)request.getClass().getMethod("getMethod").invoke(request);}catch(ReflectiveOperationException|RuntimeException unavailable){return null;}}
     private static String requestPath(Object request){try{return (String)request.getClass().getMethod("getRequestURI").invoke(request);}catch(ReflectiveOperationException|RuntimeException unavailable){return null;}}
-    /** Regras desligadas na tela não contam como detecção. */
-    private static LocalAttackDetection.Result enabledRules(LocalAttackDetection.Result result){
-        if(!"match".equals(result.outcome()))return result;
-        var rules=result.rules().stream().filter(rule->!"disabled".equals(JavaProtection.ruleMode(rule))).toList();
-        return new LocalAttackDetection.Result(rules.isEmpty()?"no_match":"match",rules,result.engine_version(),result.elapsed_us());
-    }
     public static boolean enterHandle(Object request,Object response,Object handler){
         blockedRequest.remove();
+        if(response!=null&&routePhase(request,response)){previousSelection.get().push(Optional.ofNullable(selected.get()));return true;}
         Method previous=open(request,response,handler);
         previousSelection.get().push(Optional.ofNullable(previous));
         return Boolean.TRUE.equals(blockedRequest.get());
@@ -147,27 +252,6 @@ public final class SpringMvcSecurity {
             Object pattern=requestType.getMethod("getAttribute",String.class).invoke(request,"org.springframework.web.servlet.HandlerMapping.bestMatchingPattern");
             if(!(pattern instanceof String route)||!routes.contains(verb+" "+route))return previous;
             Method method=(Method)handler.getClass().getMethod("getMethod").invoke(handler);
-            String query=(String)requestType.getMethod("getQueryString").invoke(request);
-            var ids=trace();long began=System.nanoTime();
-            try{
-                var values=LocalAttackDetection.permittedQuery(query,Set.of("q"));
-                if(worker!=null&&!values.isEmpty()){
-                    String ip=JavaProtection.clientIp(request);String path=requestPath(request);
-                    // Com regra em modo bloquear, a análise roda na thread da requisição para decidir antes do controller.
-                    if(response!=null&&JavaProtection.anyBlocking()&&JavaProtection.allowBlocking()&&!JavaProtection.passed(ip)){
-                        var result=enabledRules(detector.inspectPermittedQuery(values));
-                        Set<String> blocking=new HashSet<>();for(String rule:result.rules())if("blocking".equals(JavaProtection.ruleMode(rule)))blocking.add(rule);
-                        boolean blocked=!blocking.isEmpty()&&JavaProtection.respond(request,response)!=null;
-                        attacks.report(result,ids[0],ids[1],new LocalAttackReporter.Request(ip,verb,path,blocked?blocking:Set.of()));
-                        if(blocked){blockedRequest.set(true);return previous;}
-                    }else{
-                        var reporter=attacks;var inspector=detector;
-                        worker.execute(()->{try{reporter.report(enabledRules(inspector.inspectPermittedQuery(values)),ids[0],ids[1],new LocalAttackReporter.Request(ip,verb,path,Set.of()));}catch(RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("Spring analysis failure");}});
-                    }
-                }
-            }catch(LocalAttackDetection.InputLimitException limit){if(attacks!=null)attacks.report(new LocalAttackDetection.Result("limit",List.of(),null,(System.nanoTime()-began)/1000),ids[0],ids[1]);return previous;}
-            catch(IllegalArgumentException invalid){if(attacks!=null)attacks.report(new LocalAttackDetection.Result("error",List.of(),null,(System.nanoTime()-began)/1000),ids[0],ids[1]);return previous;}
-            catch(RejectedExecutionException full){LocalAttackReporter.reportLoss("Spring analysis queue full");}
             selected.set(method);selectedRoute.set(new String[]{verb,route});
         }catch(ReflectiveOperationException|RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("Spring integration unavailable");}
         return previous;
@@ -177,7 +261,7 @@ public final class SpringMvcSecurity {
     public static ReactiveScope reactive(Object exchange,Object handler){
         Method previous=selected.get();selected.remove();
         try{
-            start();if(worker==null&&!Boolean.getBoolean("telvyn.iast.enabled"))return new ReactiveScope(previous,null,false);
+            start();WebFluxWaf.start(exchange);if(!Boolean.getBoolean("telvyn.iast.enabled"))return new ReactiveScope(previous,null,false);
             var loader=Thread.currentThread().getContextClassLoader();if(Boolean.getBoolean("telvyn.iast.enabled"))ReactorIast.install(loader);
             var exchangeApi=Class.forName("org.springframework.web.server.ServerWebExchange",false,loader);
             Object request=exchangeApi.getMethod("getRequest").invoke(exchange);
@@ -189,14 +273,6 @@ public final class SpringMvcSecurity {
             String route=pattern instanceof String value?value:(String)Class.forName("org.springframework.web.util.pattern.PathPattern",false,loader).getMethod("getPatternString").invoke(pattern);
             if(!routes.contains(verb+" "+route))return new ReactiveScope(previous,null,false);
             Method method=handler==null?null:(Method)Class.forName("org.springframework.web.method.HandlerMethod",false,loader).getMethod("getMethod").invoke(handler);
-            String query=((java.net.URI)requestApi.getMethod("getURI").invoke(request)).getRawQuery();
-            var ids=trace();long began=System.nanoTime();
-            try{
-                var values=LocalAttackDetection.permittedQuery(query,Set.of("q"));
-                if(worker!=null&&!values.isEmpty())worker.execute(()->{try{attacks.report(detector.inspectPermittedQuery(values),ids[0],ids[1]);}catch(RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("reactive analysis failure");}});
-            }catch(LocalAttackDetection.InputLimitException limit){if(attacks!=null)attacks.report(new LocalAttackDetection.Result("limit",List.of(),null,(System.nanoTime()-began)/1000),ids[0],ids[1]);return new ReactiveScope(previous,null,false);}
-            catch(IllegalArgumentException invalid){if(attacks!=null)attacks.report(new LocalAttackDetection.Result("error",List.of(),null,(System.nanoTime()-began)/1000),ids[0],ids[1]);return new ReactiveScope(previous,null,false);}
-            catch(RejectedExecutionException full){LocalAttackReporter.reportLoss("reactive analysis queue full");}
             if(method!=null){selected.set(method);selectedRoute.set(new String[]{verb,route});}return new ReactiveScope(previous,method,true);
         }catch(ReflectiveOperationException|RuntimeException|LinkageError failure){SecuritySensorState.iastFailed();LocalAttackReporter.reportLoss("reactive integration unavailable");return new ReactiveScope(previous,null,false);}
     }
@@ -217,17 +293,31 @@ public final class SpringMvcSecurity {
     public static class Dispatch {
         // Requisição bloqueada: o handler do controller não roda (retorno nulo = resposta já tratada).
         @Advice.OnMethodEnter(skipOn=Advice.OnNonDefaultValue.class,suppress=Throwable.class) public static boolean enter(@Advice.Argument(0)Object request,@Advice.Argument(1)Object response,@Advice.Argument(2)Object handler){return enterHandle(request,response,handler);}
-        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(){exitHandle();}
+        // Bloqueio no corpo: a exceção interrompe o controller e não chega aos tratadores de erro do Spring.
+        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(@Advice.Thrown(readOnly=false)Throwable thrown){exitHandle();if(thrown instanceof BlockedRequestException)thrown=null;}
     }
-    public static class IpBlock {
-        @Advice.OnMethodEnter(skipOn=Advice.OnNonDefaultValue.class,suppress=Throwable.class) public static boolean enter(@Advice.Argument(0)Object request,@Advice.Argument(1)Object response){return blockIp(request,response);}
+    public static class RequestPhase {
+        @Advice.OnMethodEnter(skipOn=Advice.OnNonDefaultValue.class,suppress=Throwable.class) public static boolean enter(@Advice.Argument(0)Object request,@Advice.Argument(1)Object response){return requestStart(request,response);}
+        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(@Advice.Argument(0)Object request,@Advice.Argument(1)Object response){requestEnd(request,response);}
+    }
+    public static class BodyPhase {
+        @Advice.OnMethodExit(onThrowable=Throwable.class) public static void exit(@Advice.Argument(0)Object webRequest,@Advice.Return Object body,@Advice.Thrown Throwable thrown){if(thrown==null&&bodyPhase(webRequest,body))throw new BlockedRequestException();}
     }
     public static class Jdbc {
         @Advice.OnMethodEnter(suppress=Throwable.class) public static void enter(@Advice.Argument(0)String sql,@Advice.Origin("#t.#m")String origin){jdbc(sql,origin);}
     }
     public static class ReactiveDispatch {
         @Advice.OnMethodEnter(suppress=Throwable.class) public static ReactiveScope enter(@Advice.Argument(0)Object exchange,@Advice.Argument(1)Object handler){return reactive(exchange,handler);}
-        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(@Advice.Enter ReactiveScope scope,@Advice.Return(readOnly=false,typing=net.bytebuddy.implementation.bytecode.assign.Assigner.Typing.DYNAMIC)Object result){if(scope!=null){if(scope.method()!=null&&result!=null)result=ReactorIast.dispatch(result,scope.method());close(scope.previous());}}
+        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(@Advice.Argument(0)Object exchange,@Advice.Enter ReactiveScope scope,@Advice.Return(readOnly=false,typing=net.bytebuddy.implementation.bytecode.assign.Assigner.Typing.DYNAMIC)Object result){if(scope!=null){if(scope.method()!=null&&result!=null)result=ReactorIast.dispatch(result,scope.method());close(scope.previous());}result=WebFluxWaf.wrap(exchange,result);}
+    }
+    /** Endpoints funcionais do WebFlux: mesma fase de início e mesmo bloqueio. */
+    public static class FunctionalDispatch {
+        @Advice.OnMethodEnter(suppress=Throwable.class) public static void enter(@Advice.Argument(0)Object exchange){start();WebFluxWaf.start(exchange);}
+        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(@Advice.Argument(0)Object exchange,@Advice.Return(readOnly=false,typing=net.bytebuddy.implementation.bytecode.assign.Assigner.Typing.DYNAMIC)Object result){result=WebFluxWaf.wrap(exchange,result);}
+    }
+    /** Corpo do WebFlux (@RequestBody): inspecionado quando o valor é lido; bloqueio vira erro tratado no wrap. */
+    public static class ReactiveBody {
+        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(@Advice.Argument(4)Object exchange,@Advice.Return(readOnly=false,typing=net.bytebuddy.implementation.bytecode.assign.Assigner.Typing.DYNAMIC)Object result){result=WebFluxWaf.body(exchange,result);}
     }
     public static class AsyncTask {
         @Advice.OnMethodEnter(suppress=Throwable.class) public static void enter(@Advice.Argument(value=0,readOnly=false,typing=net.bytebuddy.implementation.bytecode.assign.Assigner.Typing.DYNAMIC)Object task){task=IastAsync.callable(task,IastRuntime.capture());}

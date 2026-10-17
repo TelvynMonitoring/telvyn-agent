@@ -26,6 +26,7 @@ public final class JavaProtection {
     private static volatile String redirect;
     private static volatile List<Range> deny = List.of(), pass = List.of();
     private static volatile Map<String, String> rules = Map.of();
+    private static volatile Map<String, Long> users = Map.of();
 
     private JavaProtection() {}
 
@@ -43,6 +44,14 @@ public final class JavaProtection {
         status = List.of(200, 403, 404, 301, 302).contains(code) ? code : 403;
         redirect = response.has("redirect_url") && !response.get("redirect_url").isJsonNull() ? response.get("redirect_url").getAsString() : null;
         deny = ranges(protection.get("denylist"));
+        Map<String, Long> blockedUsers = new ConcurrentHashMap<>();
+        if (protection.has("blocked_users") && protection.get("blocked_users").isJsonArray()) for (var item : protection.getAsJsonArray("blocked_users")) {
+            try {
+                var user = item.getAsJsonObject();
+                blockedUsers.put(user.get("id").getAsString(), user.has("expires_at_ms") && !user.get("expires_at_ms").isJsonNull() ? user.get("expires_at_ms").getAsLong() : Long.MAX_VALUE);
+            } catch (RuntimeException invalid) { /* entrada inválida é ignorada */ }
+        }
+        users = blockedUsers;
         pass = ranges(protection.get("passlist"));
         revision = next;
     }
@@ -106,6 +115,8 @@ public final class JavaProtection {
     static boolean allowBlocking() { return allow; }
     static boolean denied(String ip) { byte[] address = literal(ip); return matches(deny, address) && !matches(pass, address); }
     static boolean passed(String ip) { return matches(pass, literal(ip)); }
+    /** Usuário logado bloqueado na tela (com prazo). */
+    static boolean userBlocked(String user) { Long expires = user == null ? null : users.get(user); return expires != null && expires > System.currentTimeMillis(); }
     /** Modo da regra; sem escolha na tela, a regra só monitora (padrão do Datadog). */
     static String ruleMode(String rule) {
         String mode = rules.get(rule);
@@ -118,12 +129,22 @@ public final class JavaProtection {
 
     /** IP de origem como o Datadog: o primeiro público nos cabeçalhos de proxy; senão o da conexão. */
     static String clientIp(Object request) {
+        return clientIp(name -> {
+            try { return call(request, "getHeader", new Class<?>[]{String.class}, name) instanceof String value ? value : null; }
+            catch (ReflectiveOperationException | RuntimeException unavailable) { return null; }
+        }, () -> {
+            try { return call(request, "getRemoteAddr", new Class<?>[]{}) instanceof String value ? value : null; }
+            catch (ReflectiveOperationException | RuntimeException unavailable) { return null; }
+        });
+    }
+
+    /** Mesma regra para qualquer modelo (servlet ou reativo): cabeçalho por nome e endereço da conexão. */
+    static String clientIp(java.util.function.Function<String, String> header, java.util.function.Supplier<String> remote) {
         String fallback = null;
         try {
-            var getHeader = request.getClass().getMethod("getHeader", String.class);
             for (String name : HEADERS) {
-                Object header = getHeader.invoke(request, name);
-                if (!(header instanceof String value)) continue;
+                String value = header.apply(name);
+                if (value == null) continue;
                 for (String part : value.split(",")) {
                     String ip = part.trim();
                     if (ip.matches("\\d+\\.\\d+\\.\\d+\\.\\d+:\\d+")) ip = ip.substring(0, ip.indexOf(':'));
@@ -135,10 +156,9 @@ public final class JavaProtection {
                 }
             }
             if (fallback != null) return fallback;
-            Object remote = request.getClass().getMethod("getRemoteAddr").invoke(request);
-            byte[] address = remote instanceof String value ? literal(value) : null;
+            byte[] address = literal(remote.get());
             return address == null ? null : InetAddress.getByAddress(address).getHostAddress();
-        } catch (ReflectiveOperationException | RuntimeException | java.net.UnknownHostException unavailable) { return fallback; }
+        } catch (RuntimeException | java.net.UnknownHostException unavailable) { return fallback; }
     }
 
     private static boolean isPrivate(byte[] ip) {
@@ -151,35 +171,59 @@ public final class JavaProtection {
         return loopback && ip[15] == 1 || (ip[0] & 0xfe) == 0xfc || (ip[0] & 0xff) == 0xfe && (ip[1] & 0xc0) == 0x80;
     }
 
+    /**
+     * Chama um método pela classe ou interface pública que o declara. Respostas e requisições costumam vir
+     * embrulhadas por classes internas (Spring Security), cujos métodos não podem ser invocados direto.
+     */
+    static Object call(Object target, String name, Class<?>[] types, Object... args) throws ReflectiveOperationException {
+        for (Class<?> type = target.getClass(); type != null; type = type.getSuperclass()) {
+            if (java.lang.reflect.Modifier.isPublic(type.getModifiers())) {
+                try { return type.getMethod(name, types).invoke(target, args); } catch (NoSuchMethodException absent) { /* próximo */ }
+            }
+            for (Class<?> contract : type.getInterfaces()) {
+                if (!java.lang.reflect.Modifier.isPublic(contract.getModifiers())) continue;
+                try { return contract.getMethod(name, types).invoke(target, args); } catch (NoSuchMethodException absent) { /* próximo */ }
+            }
+        }
+        throw new NoSuchMethodException(name);
+    }
+
     private static final String TITLE = "You've been blocked";
     private static final String DETAIL = "Sorry, you cannot access this page. Please contact the customer service team. Security provided by Telvyn.";
 
-    /** Escreve a resposta de bloqueio. Devolve o id da resposta, ou null se não foi possível responder. */
-    static String respond(Object request, Object response) {
+    /** Resposta de bloqueio: status, tipo, corpo (vazio no redirecionamento) e destino do redirecionamento. */
+    record BlockResponse(String id, int status, String contentType, byte[] body, String location) {}
+
+    /** Monta a resposta conforme a configuração da tela: HTML quando o navegador pede HTML, JSON nos demais casos. */
+    static BlockResponse blockResponse(String accept) {
         String id = UUID.randomUUID().toString();
+        if ((status == 301 || status == 302) && redirect != null)
+            return new BlockResponse(id, status, null, new byte[0], redirect + (redirect.contains("?") ? "&" : "?") + "security_response_id=" + id);
+        boolean html = accept != null && accept.toLowerCase(java.util.Locale.ROOT).contains("text/html");
+        String body = html
+                ? "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>" + TITLE + "</title></head><body><h1>" + TITLE + "</h1><p>" + DETAIL + "</p><p>Security Response ID: " + id + "</p></body></html>"
+                : "{\"errors\":[{\"title\":\"" + TITLE + "\",\"detail\":\"" + DETAIL + "\"}],\"security_response_id\":\"" + id + "\"}";
+        return new BlockResponse(id, status, html ? "text/html;charset=UTF-8" : "application/json", body.getBytes(StandardCharsets.UTF_8), null);
+    }
+
+    /** Escreve a resposta de bloqueio no servlet. Devolve o id da resposta, ou null se não foi possível responder. */
+    static String respond(Object request, Object response) {
         try {
-            var type = response.getClass();
-            if (Boolean.TRUE.equals(type.getMethod("isCommitted").invoke(response))) return null;
-            type.getMethod("reset").invoke(response);
-            if ((status == 301 || status == 302) && redirect != null) {
-                String target = redirect + (redirect.contains("?") ? "&" : "?") + "security_response_id=" + id;
-                type.getMethod("setStatus", int.class).invoke(response, status);
-                type.getMethod("setHeader", String.class, String.class).invoke(response, "Location", target);
-                return id;
+            Class<?>[] none = {};
+            if (Boolean.TRUE.equals(call(response, "isCommitted", none))) return null;
+            call(response, "reset", none);
+            Object accept = call(request, "getHeader", new Class<?>[]{String.class}, "Accept");
+            var block = blockResponse(accept instanceof String value ? value : null);
+            call(response, "setStatus", new Class<?>[]{int.class}, block.status());
+            if (block.location() != null) {
+                call(response, "setHeader", new Class<?>[]{String.class, String.class}, "Location", block.location());
+                return block.id();
             }
-            Object accept = request.getClass().getMethod("getHeader", String.class).invoke(request, "Accept");
-            boolean html = accept instanceof String value && value.toLowerCase(java.util.Locale.ROOT).contains("text/html");
-            String body = html
-                    ? "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>" + TITLE + "</title></head><body><h1>" + TITLE + "</h1><p>" + DETAIL + "</p><p>Security Response ID: " + id + "</p></body></html>"
-                    : "{\"errors\":[{\"title\":\"" + TITLE + "\",\"detail\":\"" + DETAIL + "\"}],\"security_response_id\":\"" + id + "\"}";
-            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-            type.getMethod("setStatus", int.class).invoke(response, status);
-            type.getMethod("setContentType", String.class).invoke(response, html ? "text/html;charset=UTF-8" : "application/json");
-            type.getMethod("setContentLength", int.class).invoke(response, bytes.length);
-            Object out = type.getMethod("getOutputStream").invoke(response);
-            out.getClass().getMethod("write", byte[].class).invoke(out, (Object) bytes);
-            type.getMethod("flushBuffer").invoke(response);
-            return id;
-        } catch (ReflectiveOperationException | RuntimeException failure) { return null; }
+            call(response, "setContentType", new Class<?>[]{String.class}, block.contentType());
+            call(response, "setContentLength", new Class<?>[]{int.class}, block.body().length);
+            ((java.io.OutputStream) call(response, "getOutputStream", none)).write(block.body());
+            call(response, "flushBuffer", none);
+            return block.id();
+        } catch (ReflectiveOperationException | RuntimeException | java.io.IOException failure) { return null; }
     }
 }

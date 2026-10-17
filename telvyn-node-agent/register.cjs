@@ -127,10 +127,13 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
         if (event === 'request' && request instanceof IncomingMessage && response instanceof ServerResponse) {
           try { if (security.guard(request, response, trace.getActiveSpan())) return true; }
           catch (_) { /* Protection never breaks the application. */ }
+          return security.within(request, () => emit.apply(this, arguments));
         }
         return emit.apply(this, arguments);
       };
     }
+    try { require('./frameworks.cjs').watchFrameworks(security); }
+    catch (error) { console.warn('[Telvyn] Route-level attack detection could not start.' + why(error)); }
   }
   const sdk = new NodeSDK({
     contextManager: new (profileContext.contextManager(AsyncLocalStorageContextManager))(),
@@ -175,6 +178,10 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
       if (typeof remote.security.attack === 'boolean') security?.setAttack?.(remote.security.attack);
     });
   } catch (error) { console.warn('[Telvyn] Remote configuration could not start.' + why(error)); }
+  // Public API, as Datadog's tracer.setUser / tracer.appsec.isUserBlocked / tracer.appsec.blockRequest.
+  module.exports.setUser = user => security?.setUser?.(user) ?? false;
+  module.exports.isUserBlocked = user => security?.isUserBlocked?.(user) ?? false;
+  module.exports.blockRequest = (request, response) => security?.blockRequest?.(request, response) ?? false;
   let shutdown;
   module.exports.stop = () => {
     if (shutdown) return shutdown;

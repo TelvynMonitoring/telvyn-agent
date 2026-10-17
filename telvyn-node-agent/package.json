@@ -4,6 +4,7 @@
   "description": "Telvyn HTTP, Express and database instrumentation through the existing OTLP collector",
   "main": "register.cjs",
   "exports": {
+    ".": "./register.cjs",
     "./register": "./register.cjs"
   },
   "files": [
@@ -17,8 +18,13 @@
     "debugger.cjs",
     "runtime.cjs",
     "loader.mjs",
-    "security-rules.json",
-    "README.md"
+    "README.md",
+    "mariadb.cjs",
+    "remote.cjs",
+    "protection.cjs",
+    "frameworks.cjs",
+    "waf-rules.json",
+    "WAF-RULES-NOTICE.md"
   ],
   "engines": {
     "node": "^18.19.0 || >=20"
