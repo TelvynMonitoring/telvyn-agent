@@ -1,8 +1,0 @@
-{
-  "version": "2.1",
-  "metadata": {"rules_version": "query-allowlist-1"},
-  "rules": [
-    {"id":"telvyn-lab-sqli-v1","name":"SQL injection em query permitida","tags":{"type":"sql_injection","category":"attack_attempt"},"conditions":[{"operator":"is_sqli","parameters":{"inputs":[{"address":"server.request.query","key_path":["q"]}]}}]},
-    {"id":"telvyn-lab-xss-v1","name":"XSS em query permitida","tags":{"type":"xss","category":"attack_attempt"},"conditions":[{"operator":"is_xss","parameters":{"inputs":[{"address":"server.request.query","key_path":["q"]}]}}]}
-  ]
-}
