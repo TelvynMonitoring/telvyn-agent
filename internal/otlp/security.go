@@ -33,7 +33,16 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		for field := range report {
 			switch field {
 			case "id", "service", "host", "environment", "service_version", "outcome", "rule_id", "rules_version", "engine_version", "elapsed_us", "trace_id", "span_id":
-			case "code_method", "code_line", "sink", "sql", "stack", "source", "request_method", "request_path", "user_agent":
+			case "request_method", "request_path", "user_agent":
+				// Attack events carry the request of a blocked or detected attack (as Datadog); code findings too.
+				if signal != "security/iast" && signal != "security/events" {
+					return http.StatusBadRequest, errors.New("unsupported security field")
+				}
+			case "client_ip", "blocked":
+				if signal != "security/events" {
+					return http.StatusBadRequest, errors.New("unsupported security field")
+				}
+			case "code_method", "code_line", "sink", "sql", "stack", "source":
 				if signal != "security/iast" {
 					return http.StatusBadRequest, errors.New("unsupported security field")
 				}
