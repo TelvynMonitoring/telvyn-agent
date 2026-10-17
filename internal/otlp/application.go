@@ -16,12 +16,25 @@ func (h *HTTPReceiver) SetDebugConfig(reader func(context.Context, string, strin
 	h.debugConfig = reader
 }
 
+func (h *HTTPReceiver) SetSDKRemoteConfig(reader func(context.Context, string, string, string) ([]byte, error)) {
+	h.sdkRemoteConfig = reader
+}
+
 func (e *IngestExporter) DebugConfig(ctx context.Context, service, env, version string) ([]byte, error) {
-	if !e.signalAllowed("debug/config") {
+	return e.applicationConfig(ctx, "debug/config", service, env, version)
+}
+
+// SDKRemoteConfig returns the remote configuration (profiling and security) of a service/env.
+func (e *IngestExporter) SDKRemoteConfig(ctx context.Context, service, env, version string) ([]byte, error) {
+	return e.applicationConfig(ctx, "sdk/remote-config", service, env, version)
+}
+
+func (e *IngestExporter) applicationConfig(ctx context.Context, signal, service, env, version string) ([]byte, error) {
+	if !e.signalAllowed(signal) {
 		return nil, errors.New("APM signal disabled")
 	}
 	query := url.Values{"service": {service}, "env": {env}, "version": {version}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.base+"/debug/config?"+query.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.base+"/"+signal+"?"+query.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -32,16 +45,24 @@ func (e *IngestExporter) DebugConfig(ctx context.Context, service, env, version 
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("debug configuration status %d", response.StatusCode)
+		return nil, fmt.Errorf("%s status %d", signal, response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
 	if err != nil || len(body) > 1<<20 || !json.Valid(body) {
-		return nil, errors.New("invalid debug configuration")
+		return nil, errors.New("invalid " + signal)
 	}
 	return body, nil
 }
 
 func (h *HTTPReceiver) handleDebugConfig(w http.ResponseWriter, r *http.Request) {
+	h.serveApplicationConfig(w, r, h.debugConfig)
+}
+
+func (h *HTTPReceiver) handleSDKRemoteConfig(w http.ResponseWriter, r *http.Request) {
+	h.serveApplicationConfig(w, r, h.sdkRemoteConfig)
+}
+
+func (h *HTTPReceiver) serveApplicationConfig(w http.ResponseWriter, r *http.Request, reader func(context.Context, string, string, string) ([]byte, error)) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -57,11 +78,11 @@ func (h *HTTPReceiver) handleDebugConfig(w http.ResponseWriter, r *http.Request)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	if h.debugConfig == nil {
+	if reader == nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	body, err := h.debugConfig(r.Context(), query.Get("service"), query.Get("env"), query.Get("version"))
+	body, err := reader(r.Context(), query.Get("service"), query.Get("env"), query.Get("version"))
 	if err != nil {
 		w.WriteHeader(http.StatusBadGateway)
 		return

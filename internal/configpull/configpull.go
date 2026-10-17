@@ -64,10 +64,13 @@ type Config struct {
 	ApplyAPMProcessing     func(processing.Policy) error
 	ApplyAPMSampling       func(float64, time.Duration) error
 	ApplyAPMSamplingPolicy func(sampler.Policy) error
-	Endpoint               string        // base URL do servidor (ex: https://quarkus:8444)
-	CollectorID            string        // UUID do collector (vai como query param + cert OU)
-	TenantID               string        // pra logging + query param + cert CN
-	PollInterval           time.Duration // entre pulls (default 10s)
+	// ApplyAPMRemoteConfig receives the per service/env sample rates and tags set in
+	// the Telvyn UI (Datadog remote configuration).
+	ApplyAPMRemoteConfig func([]sampler.ServiceRate, []processing.Rule) error
+	Endpoint             string        // base URL do servidor (ex: https://quarkus:8444)
+	CollectorID          string        // UUID do collector (vai como query param + cert OU)
+	TenantID             string        // pra logging + query param + cert CN
+	PollInterval         time.Duration // entre pulls (default 10s)
 
 	// Phase 5b — material mTLS. Quando ClientCert/ClientKey estão setados e
 	// HTTPClient é nil, o pacote constrói um *http.Client com tls.Config
@@ -155,6 +158,7 @@ type pullResponse struct {
 		Keys    []string `json:"keys"`
 	} `json:"apm_primary_tags"`
 	APMSampling    *samplingPolicy `json:"apm_sampling"`
+	APMRemote      *remoteConfig   `json:"apm_remote_config"`
 	Version        int64           `json:"version"`
 	AddedOrUpdated []pulledCheck   `json:"added_or_updated"`
 	DeletedIds     []string        `json:"deleted_ids"`
@@ -169,6 +173,16 @@ type pullResponse struct {
 	ShouldUpdate   bool             `json:"should_update"`
 	EnabledModules []string         `json:"enabled_modules"`
 	SnmpTests      []pulledSnmpTest `json:"snmp_tests"`
+}
+
+type remoteConfig struct {
+	Revision string `json:"revision"`
+	Services []struct {
+		Service    string   `json:"service"`
+		Env        string   `json:"env"`
+		SampleRate *float64 `json:"sample_rate"`
+		Tags       []string `json:"tags"`
+	} `json:"services"`
 }
 
 type samplingPolicy struct {
@@ -357,6 +371,47 @@ func pullOnce(
 		ackResp.Body.Close()
 		if ackResp.StatusCode >= 400 {
 			return fmt.Errorf("processing applied ACK returned %d", ackResp.StatusCode)
+		}
+	}
+
+	if r.APMRemote != nil && cfg.ApplyAPMRemoteConfig != nil {
+		p := r.APMRemote
+		if len(p.Revision) != 64 || strings.Trim(p.Revision, "0123456789abcdef") != "" || len(p.Services) > 1000 {
+			return fmt.Errorf("invalid remote configuration")
+		}
+		var rates []sampler.ServiceRate
+		var tags []processing.Rule
+		for _, item := range p.Services {
+			service, env := item.Service, item.Env
+			if item.SampleRate != nil {
+				rates = append(rates, sampler.ServiceRate{Service: service, Env: env, Rate: *item.SampleRate})
+			}
+			for _, tag := range item.Tags {
+				key, value, ok := strings.Cut(tag, ":")
+				if !ok || key == "" {
+					return fmt.Errorf("invalid remote tag")
+				}
+				svc, environment := service, env
+				tags = append(tags, processing.Rule{Name: "remote", Service: &svc, Env: &environment, Action: "set_attribute", Key: &key, Value: &value})
+			}
+		}
+		if err := cfg.ApplyAPMRemoteConfig(rates, tags); err != nil {
+			return err
+		}
+		payload, _ := json.Marshal(map[string]string{"revision": p.Revision})
+		ackURL := fmt.Sprintf("%s/api/collector/v1/config/apm-remote-config-applied?tenant_id=%s&collector_id=%s", strings.TrimRight(cfg.Endpoint, "/"), url.QueryEscape(cfg.TenantID), url.QueryEscape(cfg.CollectorID))
+		ack, err := http.NewRequestWithContext(ctx, http.MethodPost, ackURL, bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		ack.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(ack)
+		if err != nil {
+			return err
+		}
+		response.Body.Close()
+		if response.StatusCode >= 400 {
+			return fmt.Errorf("remote configuration applied ACK returned %d", response.StatusCode)
 		}
 	}
 

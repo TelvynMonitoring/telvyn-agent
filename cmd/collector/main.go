@@ -612,6 +612,7 @@ func runIngestMode(ingestURL string) {
 	}
 	rec.SetVerifiedHostTags(hostTags)
 	rec.SetDebugConfig(exporter.DebugConfig)
+	rec.SetSDKRemoteConfig(exporter.SDKRemoteConfig)
 	rec.SetForwardRaw(func(signal, ct string, body []byte) error {
 		if signal == "logs" {
 			if logsExp == nil {
@@ -1225,6 +1226,12 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 					ApplyAPMSampling:       apmSampler.Apply,
 					ApplyAPMSamplingPolicy: apmSampler.ApplyPolicy,
 					ApplyAPMProcessing:     apmProcessor.Update,
+					ApplyAPMRemoteConfig: func(rates []sampler.ServiceRate, tags []processing.Rule) error {
+						if err := apmSampler.ApplyServiceRates(rates); err != nil {
+							return err
+						}
+						return apmProcessor.UpdateRemote(tags)
+					},
 					ApplyAPMPrimaryTags: func(keys []string) error {
 						if err := receiver.ApplyPrimaryTags(keys); err != nil {
 							return err
