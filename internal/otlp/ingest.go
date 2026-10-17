@@ -173,7 +173,7 @@ func (e *IngestExporter) signalAllowed(signal string) bool {
 		return true
 	} // backend anterior ao contrato de entitlement
 	switch signal {
-	case "traces", "apm/stats", "apm/usage", "profile", "security/events", "security/iast", "security/lab", "sdk/configuration", "debug", "debug/config", "debug/config/applied":
+	case "traces", "apm/stats", "apm/usage", "profile", "security/events", "security/iast", "security/lab", "sdk/configuration", "sdk/remote-config", "debug", "debug/config", "debug/config/applied":
 		return modules["APM"]
 	case "logs":
 		return modules["LOGS"]

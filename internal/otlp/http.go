@@ -92,6 +92,7 @@ type HTTPReceiver struct {
 	// signal ∈ {"traces","metrics","logs"}.
 	forwardRaw                    func(signal, contentType string, body []byte) error
 	debugConfig                   func(context.Context, string, string, string) ([]byte, error)
+	sdkRemoteConfig               func(context.Context, string, string, string) ([]byte, error)
 	traceProcessor                func(contentType string, body []byte) ([]byte, error)
 	verifiedHost, verifiedCluster string
 	primaryMu                     sync.RWMutex
@@ -782,6 +783,7 @@ func (h *HTTPReceiver) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/sdk/configuration", h.handleApplicationReport)
 	mux.HandleFunc("/v1/debug", h.handleApplicationReport)
 	mux.HandleFunc("/v1/debug/config", h.handleDebugConfig)
+	mux.HandleFunc("/v1/sdk/remote-config", h.handleSDKRemoteConfig)
 	mux.HandleFunc("/v1/debug/config/applied", h.handleApplicationReport)
 	mux.HandleFunc("/v1/logs", h.handleLogs)
 	// Healthcheck simples — útil pro Helm chart probar antes de marcar pod

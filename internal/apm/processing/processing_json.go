@@ -77,6 +77,8 @@ func processJSON(body []byte, rules []Rule) ([]byte, error) {
 						span["attributes"] = setJSONAttribute(attrs, "resource.name", *rule.Value)
 					case "remove_attribute", "mask_attribute":
 						span["attributes"] = processJSONAttribute(attrs, *rule.Key, rule.Action)
+					case "set_attribute":
+						span["attributes"] = setJSONAttribute(attrs, *rule.Key, *rule.Value)
 					}
 				}
 			}

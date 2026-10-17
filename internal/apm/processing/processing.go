@@ -29,7 +29,29 @@ type Policy struct {
 	Rules   []Rule `json:"rules"`
 }
 
-type Processor struct{ policy atomic.Pointer[Policy] }
+type Processor struct {
+	policy atomic.Pointer[Policy]
+	// remote holds the tags set per service/env by remote configuration (Datadog DD_TAGS).
+	remote atomic.Pointer[[]Rule]
+}
+
+// UpdateRemote replaces the remote-configuration tags. Only set_attribute rules are accepted.
+func (p *Processor) UpdateRemote(rules []Rule) error {
+	if len(rules) > 500 {
+		return errors.New("invalid remote tags")
+	}
+	copied := make([]Rule, len(rules))
+	for i, rule := range rules {
+		if rule.Action != "set_attribute" || rule.Key == nil || !valid(*rule.Key, 256, false) || protected(*rule.Key) ||
+			rule.Value == nil || !valid(*rule.Value, 512, true) || !optionalValid(rule.Service, 255) || !optionalValid(rule.Env, 200) {
+			return errors.New("invalid remote tag")
+		}
+		rule.Service, rule.Env, rule.Key, rule.Value = copyString(rule.Service), copyString(rule.Env), copyString(rule.Key), copyString(rule.Value)
+		copied[i] = rule
+	}
+	p.remote.Store(&copied)
+	return nil
+}
 
 func (p *Processor) Update(policy Policy) error {
 	if policy.Version != 1 || len(policy.Rules) > 50 {
@@ -74,10 +96,17 @@ func (p *Processor) Update(policy Policy) error {
 }
 
 func (p *Processor) ProcessTraces(contentType string, body []byte) ([]byte, error) {
-	policy := p.policy.Load()
-	if policy == nil || len(policy.Rules) == 0 {
+	var rules []Rule
+	if policy := p.policy.Load(); policy != nil {
+		rules = append(rules, policy.Rules...)
+	}
+	if remote := p.remote.Load(); remote != nil {
+		rules = append(rules, (*remote)...)
+	}
+	if len(rules) == 0 {
 		return body, nil
 	}
+	policy := &Policy{Version: 1, Rules: rules}
 	request := &tracepb.ExportTraceServiceRequest{}
 	isJSON := strings.Contains(strings.ToLower(contentType), "json")
 	if isJSON {
@@ -127,6 +156,8 @@ func (p *Processor) ProcessTraces(contentType string, body []byte) ([]byte, erro
 						span.Attributes = setAttribute(span.Attributes, "resource.name", *rule.Value)
 					case "remove_attribute", "mask_attribute":
 						span.Attributes = processAttribute(span.Attributes, *rule.Key, rule.Action)
+					case "set_attribute":
+						span.Attributes = setAttribute(span.Attributes, *rule.Key, *rule.Value)
 					}
 				}
 			}

@@ -30,6 +30,31 @@ type Sampler struct {
 	mode          string
 	targetTPS     float64
 	adaptive      *adaptiveState
+	// serviceRates are per service/env rates set by remote configuration (Datadog
+	// DD_TRACE_SAMPLE_RATE): they override the collector policy for that scope.
+	serviceRates map[string]float64
+}
+
+// ServiceRate is a remote-configuration sample rate for one service and environment.
+type ServiceRate struct {
+	Service string
+	Env     string
+	Rate    float64
+}
+
+// ApplyServiceRates replaces the per service/env rates.
+func (s *Sampler) ApplyServiceRates(rates []ServiceRate) error {
+	next := make(map[string]float64, len(rates))
+	for _, rate := range rates {
+		if rate.Service == "" || len(rate.Service) > 255 || len(rate.Env) > 200 || math.IsNaN(rate.Rate) || rate.Rate < 0 || rate.Rate > 1 {
+			return fmt.Errorf("invalid service sample rate")
+		}
+		next[rate.Service+"|"+rate.Env] = rate.Rate
+	}
+	s.mu.Lock()
+	s.serviceRates = next
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Sampler) Apply(baseRate float64, slowThreshold time.Duration) error {
@@ -75,6 +100,13 @@ func (s *Sampler) KeepForService(traceID, service string, statusCode int32, dura
 func (s *Sampler) KeepForScope(traceID, service, env, resource string, statusCode, kind int32, durationNano int64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if rate, ok := s.serviceRates[service+"|"+env]; ok {
+		// Erros e lentos continuam sempre guardados; a taxa vale para os normais.
+		if statusCode == 2 || s.slowThreshold > 0 && durationNano >= s.slowThreshold {
+			return true
+		}
+		return rate >= 1 || rate > 0 && traceHash(traceID) < uint64(rate*float64(^uint64(0)))
+	}
 	if s.mode == "adaptive_monthly" {
 		return s.adaptive.keepMonthly(traceID, service, env, resource, kind, statusCode == 2 || s.slowThreshold > 0 && durationNano >= s.slowThreshold, s.baseRate, time.Now())
 	}
