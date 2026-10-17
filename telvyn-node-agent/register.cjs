@@ -118,14 +118,25 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
     const { Hook } = require('import-in-the-middle');
     new Hook(['mariadb', 'mariadb/callback'], exported => { mariadb.watch(exported, patchPrototype); });
   }
+  // Attack detection and blocking run before the application handles the request. Installed before the SDK so the
+  // OpenTelemetry server wrapper is outside: the request span is active and records the blocked response.
+  if (security?.guard) {
+    for (const module of [require('node:http'), require('node:https')]) {
+      const emit = module.Server.prototype.emit;
+      module.Server.prototype.emit = function (event, request, response) {
+        if (event === 'request' && request instanceof IncomingMessage && response instanceof ServerResponse) {
+          try { if (security.guard(request, response, trace.getActiveSpan())) return true; }
+          catch (_) { /* Protection never breaks the application. */ }
+        }
+        return emit.apply(this, arguments);
+      };
+    }
+  }
   const sdk = new NodeSDK({
     contextManager: new (profileContext.contextManager(AsyncLocalStorageContextManager))(),
     traceExporter: new QuerySafeExporter(),
     ...(process.env.TELVYN_DEBUGGER_ENABLED === 'true' ? {metricReader: new PeriodicExportingMetricReader({exporter: new OTLPMetricExporter(), exportIntervalMillis: 10000})} : {}),
     instrumentations: [new HttpInstrumentation({
-      requestHook(span, request) {
-        if (request instanceof IncomingMessage) security?.inspect(request, span);
-      },
       applyCustomAttributesOnSpan(span, request, response) {
         if (!(response instanceof ServerResponse) || !isSpanContextValid(span.spanContext())) return;
         const { traceId, spanId } = span.spanContext();
