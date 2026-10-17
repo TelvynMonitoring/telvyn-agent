@@ -14,9 +14,10 @@ public final class SpringMvcSecurity {
     private static final ThreadLocal<String[]> selectedRoute=new ThreadLocal<>();
     private static boolean started;
     private static Set<String> routes=Set.of();
-    private static LocalAttackReporter attacks,iast;
-    private static LocalAttackDetection detector;
-    private static ThreadPoolExecutor worker;
+    private static volatile LocalAttackReporter attacks;
+    private static LocalAttackReporter iast;
+    private static volatile LocalAttackDetection detector;
+    private static volatile ThreadPoolExecutor worker;
     private SpringMvcSecurity() {}
     public static Object selection(){return selected.get();}
     public static void selection(Object method){if(method instanceof Method value)selected.set(value);else selected.remove();}
@@ -62,18 +63,31 @@ public final class SpringMvcSecurity {
         }
         routes=Set.copyOf(configured);
         boolean enabled=Boolean.parseBoolean(setting("enabled","false"));
-        if(enabled){
-            attacks=reporter("events");detector=new LocalAttackDetection();
-            worker=new ThreadPoolExecutor(1,1,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(64),r->{var t=new Thread(r,"telvyn-spring-security");t.setDaemon(true);return t;},new ThreadPoolExecutor.AbortPolicy());
-        }
+        if(enabled)startAttack();
         SecuritySensorState.attack(enabled);
         if(Boolean.getBoolean("telvyn.iast.enabled")){
             iast=reporter("iast");IastRuntime.configureSources(method->method.equals(selected.get()));
             IastRuntime.configureTrace(SpringMvcSecurity::trace);
             IastRuntime.configureRequest(selectedRoute::get);
-            IastRuntime.configure(finding->{var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1]);});
+            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1]);});
         }
         Runtime.getRuntime().addShutdownHook(new Thread(()->{if(worker!=null)worker.shutdownNow();if(attacks!=null)attacks.close();if(iast!=null)iast.close();if(detector!=null)detector.close();},"telvyn-spring-security-stop"));
+    }
+    private static synchronized void startAttack(){
+        if(worker!=null)return;
+        attacks=reporter("events");detector=new LocalAttackDetection();
+        worker=new ThreadPoolExecutor(1,1,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(64),r->{var t=new Thread(r,"telvyn-spring-security");t.setDaemon(true);return t;},new ThreadPoolExecutor.AbortPolicy());
+    }
+    /** Configuração remota: liga ou desliga a detecção de ataques com a aplicação rodando. */
+    static synchronized void remoteAttack(boolean enabled){
+        if("error".equals(SecuritySensorState.attack()))return;
+        if(enabled)startAttack();
+        else if(worker!=null){
+            var stoppedWorker=worker;var stoppedAttacks=attacks;var stoppedDetector=detector;
+            worker=null;attacks=null;detector=null;
+            stoppedWorker.shutdownNow();if(stoppedAttacks!=null)stoppedAttacks.close();if(stoppedDetector!=null)stoppedDetector.close();
+        }
+        SecuritySensorState.attack(enabled);
     }
     private static LocalAttackReporter reporter(String channel){
         return new LocalAttackReporter(Collector.url()+"/v1/security/"+channel,SnapshotSink.service(),SnapshotSink.host(),ProbeMetricSink.environment(),ProbeMetricSink.version(),"query-allowlist-1");

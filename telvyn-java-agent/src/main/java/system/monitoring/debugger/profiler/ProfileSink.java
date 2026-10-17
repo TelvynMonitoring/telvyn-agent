@@ -62,6 +62,8 @@ final class ProfileSink {
         send(folded,windowStartMs,windowSeconds,periodMs,profileType,links,null);
     }
     void send(String folded, long windowStartMs, int windowSeconds, int periodMs, String profileType, List<LinkedProfileAccumulator.LinkStack> links, ProfileDetails.Window details) {
+        // Perfil desligado pela configuração remota: a janela é descartada, nada é enviado.
+        if (!system.monitoring.debugger.RemoteConfig.profileAllowed(profileType)) return;
         try {
             String body = buildJson(folded, windowStartMs, windowSeconds, periodMs, profileType, links);
             if(details!=null){

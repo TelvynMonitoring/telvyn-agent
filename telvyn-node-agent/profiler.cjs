@@ -299,8 +299,10 @@ function intSetting(name, fallback, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function startProfiler() {
-  if (process.env.TELVYN_PROFILING_ENABLED !== 'true' || isInternalThread === true) return { stop: async () => {} };
+// options override the environment when remote configuration turns a profile on (wall, alloc).
+function startProfiler(options = {}) {
+  const enabled = options.enabled ?? process.env.TELVYN_PROFILING_ENABLED === 'true';
+  if (!enabled || isInternalThread === true) return { running: false, stop: async () => {} };
   const instance = `${randomUUID()}:${threadId}`;
   const endpoint = new URL(process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4318');
   if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('Invalid collector endpoint');
@@ -323,7 +325,7 @@ function startProfiler() {
   const session = inspectorSession();
   session.connect();
   let wall, wallContexts = false;
-  if (process.env.TELVYN_PROFILE_WALL_ENABLED === 'true') {
+  if (options.wall ?? process.env.TELVYN_PROFILE_WALL_ENABLED === 'true') {
     try {
       wall = require('@datadog/pprof').time;
       // Span context needs V8 continuation-preserved data; otherwise Wall Time starts without it.
@@ -338,7 +340,7 @@ function startProfiler() {
     });
   }
   let allocation, allocationFrom, liveHeap;
-  if (process.env.TELVYN_PROFILE_ALLOCATION_ENABLED === 'true') {
+  if (options.alloc ?? process.env.TELVYN_PROFILE_ALLOCATION_ENABLED === 'true') {
     try {
       if (Number(process.versions.node.split('.')[0]) < 26) throw new Error('Allocation profiling requires Node.js 26 or newer');
       allocation = require('@datadog/pprof').heap;
@@ -391,7 +393,7 @@ function startProfiler() {
     }
   }
   async function upload(type, folded, from, seconds, period, links = [], details) {
-      if (!folded) return;
+      if (!folded || !require('./remote.cjs').profileAllowed(type)) return;
       const body = JSON.stringify({service, runtime: 'nodejs', source: 'v8', profile_instance: instance, build_metadata: build, profile_type: type, period_ms: period,
         window_start_unix_ms: from, window_seconds: seconds, folded, ...(links.length ? {sample_links: links} : {}), ...(details ? {details} : {}),
         env: attributes['deployment.environment.name'] || attributes['deployment.environment'], version: attributes['service.version'],
@@ -411,6 +413,6 @@ function startProfiler() {
       // The native heap profiler reads the sampler started above, which is where live object counts come from.
       try { liveHeap = require('@datadog/pprof').heap; liveHeap.start(524288, 64); } catch (_) { liveHeap = undefined; }
     }).then(begin).catch(() => { warn(); session.disconnect(); });
-  return { stop: async () => { stopped = true; await ready; clearTimeout(timer); await rotating; try { await session.post('Profiler.stop'); if (allocation) allocation.stop(); else await session.post('HeapProfiler.stopSampling'); } catch (_) {} try { liveHeap?.stop(); } catch (_) {} profileContext.disable(); try { if (wall?.isStarted()) wall.stop(); } catch (_) {} session.disconnect(); } };
+  return { running: true, wall: !!wall, alloc: !!allocation, stop: async () => { stopped = true; await ready; clearTimeout(timer); await rotating; try { await session.post('Profiler.stop'); if (allocation) allocation.stop(); else await session.post('HeapProfiler.stopSampling'); } catch (_) {} try { liveHeap?.stop(); } catch (_) {} profileContext.disable(); try { if (wall?.isStarted()) wall.stop(); } catch (_) {} session.disconnect(); } };
 }
 module.exports = { startProfiler, cpuProfile, foldedProfile, heapProfile, wallProfile, wallSamples, allocationProfiles };

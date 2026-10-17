@@ -99,6 +99,18 @@ public final class JfrCpuProfiler {
         }
     }
 
+    /** Liga o wall time com o perfil de CPU já rodando (configuração remota). Idempotente. */
+    static synchronized boolean startWall() {
+        JfrCpuProfiler p = instance;
+        if (p == null) return false;
+        if (p.wall != null) return true;
+        try { p.wall = new JvmWallProfiler(p.periodMs, p.flushSec, p.sink); return true; }
+        catch (RuntimeException failure) {
+            System.err.println("[telvyn-profiler] wall profiler unavailable: " + failure.getClass().getSimpleName());
+            return false;
+        }
+    }
+
     /** Para o profiler (usado em testes/self-check). */
     public static synchronized void stop() {
         JfrCpuProfiler p = instance;

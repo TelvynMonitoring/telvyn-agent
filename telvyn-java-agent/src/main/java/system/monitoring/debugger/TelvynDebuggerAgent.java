@@ -76,6 +76,7 @@ public final class TelvynDebuggerAgent {
         try { JdbcIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDBC)",failure); }
         try { IastJdk.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDK classes)",failure); }
         try { SdkConfigurationReporter.start(); } catch (Throwable ignored) { /* Configuration reporting cannot disable instrumentation. */ }
+        try { RemoteConfig.start(); } catch (Throwable ignored) { /* Remote configuration cannot disable instrumentation. */ }
         // 1) bootstrap local (env/sysprop/arg) — vale até a primeira busca remota.
         final List<Probe> probes = Probe.parse(firstNonBlank(
                 System.getProperty("telvyn.debug.probes"), System.getenv("TELVYN_DEBUG_PROBES"), args));
@@ -122,8 +123,9 @@ public final class TelvynDebuggerAgent {
             boolean profilingOn = "true".equalsIgnoreCase(firstNonBlank(
                     System.getProperty("telvyn.profiling.enabled"),
                     System.getenv("TELVYN_PROFILING_ENABLED"), "false"));
+            system.monitoring.debugger.profiler.ProfilerControl.init(inst);
             if (profilingOn) {
-                system.monitoring.debugger.profiler.JfrCpuProfiler.start(inst);
+                system.monitoring.debugger.profiler.ProfilerControl.startCpu();
             }
         } catch (Throwable t) {
             System.err.println("[telvyn-profiler] desligado (falha, app segue normal): " + t);
@@ -134,11 +136,7 @@ public final class TelvynDebuggerAgent {
                     System.getProperty("telvyn.profiling.exceptions.enabled"),
                     System.getenv("TELVYN_PROFILING_EXCEPTIONS_ENABLED"), "false"));
             if (exceptionsOn) {
-                system.monitoring.debugger.profiler.JfrGenericProfiler.start(
-                        "exceptions", "jdk.JavaExceptionThrow", settings -> settings.withStackTrace(),
-                        event -> 1L, (int) parseLong(firstNonBlank(
-                                System.getProperty("telvyn.profiling.flush.sec"),
-                                System.getenv("TELVYN_PROFILING_FLUSH_SEC")), 15));
+                system.monitoring.debugger.profiler.ProfilerControl.startExceptions();
             }
         } catch (Throwable t) {
             System.err.println("[telvyn-profiler] exceptions desligado (falha, app segue normal): " + t);
@@ -168,11 +166,7 @@ public final class TelvynDebuggerAgent {
                     System.getProperty("telvyn.profiling.alloc.enabled"),
                     System.getenv("TELVYN_PROFILING_ALLOC_ENABLED"), "false"));
             if (allocOn) {
-                system.monitoring.debugger.profiler.JfrGenericProfiler.start(
-                        "alloc", "jdk.ObjectAllocationSample",
-                        settings -> {}, // throttle default da JVM (~150/s) — já pensado pra baixo overhead
-                        event -> event.hasField("weight") ? event.getLong("weight") : 1L,
-                        flushSec);
+                system.monitoring.debugger.profiler.ProfilerControl.startAlloc();
             }
         } catch (Throwable t) {
             System.err.println("[telvyn-profiler] alloc desligado (falha, app segue normal): " + t);
@@ -182,14 +176,7 @@ public final class TelvynDebuggerAgent {
                     System.getProperty("telvyn.profiling.lock.enabled"),
                     System.getenv("TELVYN_PROFILING_LOCK_ENABLED"), "false"));
             if (lockOn) {
-                long thresholdMs = parseLong(firstNonBlank(
-                        System.getProperty("telvyn.profiling.lock.threshold.ms"),
-                        System.getenv("TELVYN_PROFILING_LOCK_THRESHOLD_MS")), 10);
-                system.monitoring.debugger.profiler.JfrGenericProfiler.start(
-                        "lock", "jdk.JavaMonitorEnter",
-                        settings -> settings.withThreshold(java.time.Duration.ofMillis(thresholdMs)),
-                        event -> event.getDuration().toNanos(),
-                        flushSec);
+                system.monitoring.debugger.profiler.ProfilerControl.startLock();
             }
         } catch (Throwable t) {
             System.err.println("[telvyn-profiler] lock desligado (falha, app segue normal): " + t);

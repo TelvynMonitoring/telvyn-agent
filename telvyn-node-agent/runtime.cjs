@@ -12,7 +12,7 @@ function runtimeTransport() {
   if (!identity.service) throw new Error('Runtime reporting requires service identity');
   const pending = new Set();
   function url(signal) {
-    if (!['sdk/configuration', 'debug', 'debug/config', 'debug/config/applied'].includes(signal)) throw new Error('Unsupported runtime signal');
+    if (!['sdk/configuration', 'sdk/remote-config', 'debug', 'debug/config', 'debug/config/applied'].includes(signal)) throw new Error('Unsupported runtime signal');
     const target = new URL(endpoint); target.pathname = target.pathname.replace(/\/$/, '') + '/v1/' + signal; return target;
   }
   return {
@@ -34,6 +34,15 @@ function runtimeTransport() {
       if (Buffer.byteLength(body) > 1024 * 1024) throw new Error('Debugger configuration too large');
       return JSON.parse(body);
     },
+    async remoteConfig() {
+      const target = url('sdk/remote-config');
+      target.searchParams.set('service', identity.service); target.searchParams.set('env', identity.environment || '');
+      const response = await fetch(target, {redirect: 'error', signal: AbortSignal.timeout(5000)});
+      if (!response.ok) throw new Error('Remote configuration unavailable');
+      const body = await response.text();
+      if (Buffer.byteLength(body) > 64 * 1024) throw new Error('Remote configuration too large');
+      return JSON.parse(body);
+    },
     stop: () => Promise.allSettled(pending),
   };
 }
@@ -47,18 +56,24 @@ function number(name, fallback) {
   return {value, source: 'environment'};
 }
 
-function flag(name) { return {value: String(process.env[name] === 'true'), source: process.env[name] === undefined ? 'default' : 'environment'}; }
+function flag(name, remoteKey) {
+  // An option set in the UI (remote configuration) wins over the local one and is reported as remote.
+  const remote = remoteKey && require('./remote.cjs').profiling(remoteKey);
+  if (typeof remote === 'boolean') return {value: String(remote), source: 'remote'};
+  return {value: String(process.env[name] === 'true'), source: process.env[name] === undefined ? 'default' : 'environment'};
+}
 
 function reportConfiguration(transport, security, iast) {
   const send = () => transport.send('sdk/configuration', {sdk_name: 'telvyn-node-agent', sdk_version: require('./package.json').version, runtime: process.version,
     configurations: [
-      {name: 'telvyn.profiling.enabled', ...flag('TELVYN_PROFILING_ENABLED')},
-      {name: 'telvyn.profiling.wall.enabled', ...flag('TELVYN_PROFILE_WALL_ENABLED')},
-      {name: 'telvyn.profiling.alloc.enabled', ...flag('TELVYN_PROFILE_ALLOCATION_ENABLED')},
+      {name: 'telvyn.profiling.enabled', ...flag('TELVYN_PROFILING_ENABLED', 'enabled')},
+      {name: 'telvyn.profiling.wall.enabled', ...flag('TELVYN_PROFILE_WALL_ENABLED', 'wall')},
+      {name: 'telvyn.profiling.alloc.enabled', ...flag('TELVYN_PROFILE_ALLOCATION_ENABLED', 'alloc')},
       {name: 'telvyn.profiling.period.ms', ...number('TELVYN_PROFILING_PERIOD_MS', 10)},
       {name: 'telvyn.profiling.flush.sec', ...number('TELVYN_PROFILING_FLUSH_SEC', 15)},
       {name: 'telvyn.security.attack.state', value: security?.state || (process.env.TELVYN_SECURITY_ENABLED === 'true' ? 'error' : 'disabled'), source: 'runtime'},
-      {name: 'telvyn.security.iast.state', value: iast?.state || (process.env.TELVYN_IAST_ENABLED === 'true' ? 'error' : 'disabled'), source: 'runtime'},
+      {name: 'telvyn.security.iast.state', value: require('./remote.cjs').security('iast') === false ? 'disabled' : iast?.state || (process.env.TELVYN_IAST_ENABLED === 'true' ? 'error' : 'disabled'), source: 'runtime'},
+      ...(require('./remote.cjs').state.revision > 0 ? [{name: 'telvyn.remote_config.revision', value: String(require('./remote.cjs').state.revision), source: 'remote'}] : []),
     ]});
   send(); const timer = setInterval(send, 60000); timer.unref();
   return () => clearInterval(timer);

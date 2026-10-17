@@ -8,7 +8,8 @@ const FLAW_RULES = new Set(['WEAK_HASH', 'WEAK_CIPHER', 'INSECURE_COOKIE', 'NO_H
 // Only explicitly selected routes and q are inspected; reports never contain input values.
 function startSecurity() {
   const enabled = process.env.TELVYN_SECURITY_ENABLED === 'true';
-  if (!enabled && process.env.TELVYN_IAST_ENABLED !== 'true') return { state: 'disabled', inspect() {}, stop() {} };
+  // With explicit routes, remote configuration can turn attack detection on later without a restart.
+  if (!enabled && process.env.TELVYN_IAST_ENABLED !== 'true' && !process.env.TELVYN_SECURITY_ROUTES) return { state: 'disabled', setAttack() {}, inspect() {}, stop() {} };
   const routes = require('./routes.cjs').compileRoutes(process.env.TELVYN_SECURITY_ROUTES);
   if (!routes.size) throw new Error('Explicit security routes required');
   const service = process.env.OTEL_SERVICE_NAME;
@@ -22,8 +23,12 @@ function startSecurity() {
   if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('Invalid collector endpoint');
   endpoint.pathname = endpoint.pathname.replace(/\/$/, '') + '/v1/security/events';
   const { DDWAF } = require('@datadog/native-appsec');
-  const waf = enabled ? new DDWAF(require('./security-rules.json'), 'telvyn-query') : null;
-  if (waf && (waf.diagnostics.rules?.loaded?.length !== 2 || waf.diagnostics.rules?.failed?.length)) { waf.dispose(); throw new Error('Security rules unavailable'); }
+  const createWaf = () => {
+    const created = new DDWAF(require('./security-rules.json'), 'telvyn-query');
+    if (created.diagnostics.rules?.loaded?.length !== 2 || created.diagnostics.rules?.failed?.length) { created.dispose(); throw new Error('Security rules unavailable'); }
+    return created;
+  };
+  let waf = enabled ? createWaf() : null;
   const pending = new Set();
   let stopped = false;
   function report(outcome, rule, elapsed, span, finding) {
@@ -43,7 +48,12 @@ function startSecurity() {
     pending.add(send);
   }
   return {
-    state: enabled ? 'active' : 'disabled',
+    get state() { return waf ? 'active' : 'disabled'; },
+    // Remote configuration: turns attack detection on or off while the application runs.
+    setAttack(on) {
+      if (on && !waf && !stopped) waf = createWaf();
+      else if (!on && waf) { const previous = waf; waf = null; previous.dispose(); }
+    },
     reportIast({rule_id: rule, ...finding}, elapsed, span) { if (!stopped) report('match', rule, elapsed, span, finding); },
     inspect(request, span) {
       if (stopped || !waf || typeof request.url !== 'string') return;
