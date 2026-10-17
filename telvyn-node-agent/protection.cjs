@@ -5,7 +5,7 @@
 const net = require('node:net');
 const { randomUUID } = require('node:crypto');
 
-const state = {revision: '', allow: true, status: 403, redirect: null, deny: new net.BlockList(), pass: new net.BlockList(), rules: {}};
+const state = {revision: '', allow: true, status: 403, redirect: null, deny: new net.BlockList(), pass: new net.BlockList(), users: new Map(), rules: {}};
 let entries = {deny: [], pass: []}, timer;
 
 function blockList(items) {
@@ -38,6 +38,7 @@ function update(protection, rules) {
   state.status = [200, 403, 404, 301, 302].includes(protection.response?.status) ? protection.response.status : 403;
   state.redirect = typeof protection.response?.redirect_url === 'string' ? protection.response.redirect_url : null;
   entries = {deny: Array.isArray(protection.denylist) ? protection.denylist : [], pass: Array.isArray(protection.passlist) ? protection.passlist : []};
+  state.users = new Map((Array.isArray(protection.blocked_users) ? protection.blocked_users : []).filter(u => typeof u?.id === 'string').map(u => [u.id, u.expires_at_ms ?? null]));
   rebuild();
 }
 
@@ -70,6 +71,8 @@ function clientIp(request) {
 const listed = (list, ip) => !!ip && list.check(ip, net.isIPv6(ip) ? 'ipv6' : 'ipv4');
 const denied = ip => listed(state.deny, ip) && !listed(state.pass, ip);
 const passed = ip => listed(state.pass, ip);
+// Logged-in user blocked in the UI (entries expire at their own time).
+const userBlocked = id => { if (!state.users.has(id)) return false; const expires = state.users.get(id); return expires == null || expires > Date.now(); };
 // Rule mode from the UI; without a choice a rule only monitors, as Datadog's default policy.
 const ruleMode = rule => ['monitoring', 'blocking', 'disabled'].includes(state.rules[rule]) ? state.rules[rule] : 'monitoring';
 
@@ -94,4 +97,4 @@ function respond(request, response) {
   return id;
 }
 
-module.exports = { state, update, clientIp, denied, passed, ruleMode, respond };
+module.exports = { state, update, clientIp, denied, passed, userBlocked, ruleMode, respond };

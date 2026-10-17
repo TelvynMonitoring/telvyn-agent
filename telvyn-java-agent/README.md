@@ -16,7 +16,7 @@ Build: `mvn -Dmaven.test.skip=true package` (gera `target/telvyn-debugger-<vers�
 
 O agente consulta o coletor a cada 30 s (`/v1/sdk/remote-config`) e aplica, sem reiniciar, o que foi definido na tela do serviço (cartão "SDK e configuração", por serviço e ambiente): ligar/desligar os perfis de CPU, wall, alocação, lock e exceções e a detecção de ataques (Spring); o IAST só pode ser desligado. Ligar a detecção de ataques exige `TELVYN_SECURITY_QUERY_ROUTES` definido na aplicação. Opção não definida na tela = vale a variável de ambiente. A revisão aplicada vai no relatório de configuração (`telvyn.remote_config.revision`).
 
-Bloqueio de ataques (como o Datadog), em Spring MVC: com a detecção de ataques ligada, o agente barra a requisição quando o IP está na lista de bloqueio (no `DispatcherServlet`) ou quando uma regra está em modo "bloquear" (antes do controller). Spring WebFlux segue só com detecção.
+Detecção e bloqueio de ataques (como o Datadog App and API Protection), em Spring MVC e Spring WebFlux: com a detecção ligada, o agente aplica o conjunto recomendado de regras do Datadog (`src/main/resources/telvyn/waf-rules.json`, ver `WAF-RULES-NOTICE.md`) a toda requisição — cabeçalhos, cookies, query, endereço, IP, parâmetros de rota, formulário, corpo do `@RequestBody`, status — e barra a requisição quando o IP ou o usuário (Spring Security, inclusive reativo) está bloqueado ou quando uma regra está em modo "bloquear".
 
 ## Fora do Kubernetes (Docker, Portainer, Compose, AWS ECS/EC2)
 

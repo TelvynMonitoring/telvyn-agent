@@ -52,6 +52,18 @@ public final class LocalAttackReporter implements AutoCloseable {
         if(request.method()!=null&&request.method().matches("[A-Z]{1,20}"))report.addProperty("request_method",request.method());
         if(request.path()!=null&&request.path().length()<=1024&&request.path().indexOf('?')<0)report.addProperty("request_path",request.path());
     }
+    /** Evento das regras completas (WafInspector): regra, onde encontrou, usuário e motivo do bloqueio. Nunca o valor. */
+    public boolean reportWaf(String outcome,String rule,String address,long elapsedUs,String engine,String ip,String method,String path,String userAgent,String user,String blockedBy,String trace,String span) {
+        var report=new JsonObject();report.addProperty("id",UUID.randomUUID().toString());report.addProperty("service",service);report.addProperty("host",host);report.addProperty("environment",environment);report.addProperty("service_version",version);
+        report.addProperty("outcome",outcome);if(rule!=null)report.addProperty("rule_id",rule);report.addProperty("rules_version",rulesVersion);if(engine!=null)report.addProperty("engine_version",engine);report.addProperty("elapsed_us",Math.max(0,elapsedUs));
+        request(report,new Request(ip,method,path,java.util.Set.of()));
+        if(userAgent!=null)report.addProperty("user_agent",userAgent.length()>512?userAgent.substring(0,512):userAgent);
+        if(user!=null)report.addProperty("usr_id",user.length()>255?user.substring(0,255):user);
+        if(address!=null&&address.length()<=300)report.addProperty("match_address",address);
+        if(blockedBy!=null){report.addProperty("blocked",true);report.addProperty("blocked_by",blockedBy);}
+        if(trace!=null&&span!=null){report.addProperty("trace_id",trace);report.addProperty("span_id",span);}
+        boolean queued=queue.offer(report.toString());if(!queued)reportLoss("report queue full");return queued;
+    }
     public boolean report(LocalAttackDetection.Result result,String trace,String span,Request request) {
         boolean queued=true;
         var rules=result.rules().isEmpty()?Collections.singletonList((String)null):result.rules();
