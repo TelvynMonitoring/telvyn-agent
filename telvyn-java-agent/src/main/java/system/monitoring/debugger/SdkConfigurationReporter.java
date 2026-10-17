@@ -18,6 +18,10 @@ final class SdkConfigurationReporter {
             // Keep the configured input, before each profiler's limits. Never send invalid raw text.
             try {value=Long.toString(Long.parseLong(value.trim()));} catch(NumberFormatException invalid){value="invalid";}
         }else value=Boolean.toString("true".equalsIgnoreCase(value));
+        // Opção alterada pela tela (configuração remota) vence a local e é reportada como "remote".
+        String remoteKey=switch(suffix){case "enabled"->"enabled";case "alloc.enabled"->"alloc";case "lock.enabled"->"lock";case "wall.enabled"->"wall";case "exceptions.enabled"->"exceptions";default->null;};
+        Boolean remote=remoteKey==null?null:RemoteConfig.profiling(remoteKey);
+        if(remote!=null){value=remote.toString();source="remote";}
         JsonObject result=new JsonObject();result.addProperty("name",name);result.addProperty("value",value);result.addProperty("source",source);return result;
     }
     static void start() {
@@ -34,6 +38,7 @@ final class SdkConfigurationReporter {
                     settings.add(configuration("period.ms",System::getProperty,System::getenv));settings.add(configuration("flush.sec",System::getProperty,System::getenv));settings.add(configuration("lock.threshold.ms",System::getProperty,System::getenv));report.add("configurations",settings);
                     // Preserve immediate SDK reporting; allow lifecycle registration before sensor reports.
                     if(!firstReport){settings.add(sensor("attack",SecuritySensorState.attack()));settings.add(sensor("iast",SecuritySensorState.iast()));}
+                    if(RemoteConfig.revision()>0){var applied=new JsonObject();applied.addProperty("name","telvyn.remote_config.revision");applied.addProperty("value",Long.toString(RemoteConfig.revision()));applied.addProperty("source","remote");settings.add(applied);}
                     firstReport=false;
                     String url=SnapshotSink.configUrl().replace("/debug/config","/sdk/configuration");
                     CollectorHttp.post(url,report.toString(),10000);

@@ -21,7 +21,7 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
   let iast;
   try {
     if (process.env.TELVYN_IAST_ENABLED === 'true' && !security?.reportIast) throw new Error('IAST needs the security reporter, which did not start');
-    iast = require('./iast.cjs').startIast((finding, elapsed) => security.reportIast(finding, elapsed, trace.getActiveSpan()));
+    iast = require('./iast.cjs').startIast((finding, elapsed) => { if (require('./remote.cjs').security('iast') !== false) security.reportIast(finding, elapsed, trace.getActiveSpan()); });
   } catch (error) { console.warn('[Telvyn] IAST sensor could not start; application startup continues.' + why(error)); }
   let loaderPort;
   if (require('node:worker_threads').isMainThread && typeof require('node:module').register === 'function') {
@@ -149,11 +149,26 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
   let profiler;
   try { profiler = require('./profiler.cjs').startProfiler(); }
   catch (error) { console.warn('[Telvyn] CPU profiling could not start.' + why(error)); }
+  // Remote configuration (Telvyn UI): a profile turned on starts (or restarts with wall/alloc); turned off stops delivery.
+  let stopRemote;
+  try {
+    if (transport && require('node:worker_threads').isMainThread) stopRemote = require('./remote.cjs').startRemoteConfig(transport, async remote => {
+      const want = remote.profiling;
+      const needed = want.enabled === true || want.wall === true || want.alloc === true;
+      const missing = !profiler?.running || want.wall === true && !profiler.wall || want.alloc === true && !profiler.alloc;
+      if (want.enabled !== false && needed && missing) {
+        const previous = profiler;
+        await previous?.stop();
+        profiler = require('./profiler.cjs').startProfiler({enabled: true, wall: want.wall ?? previous?.wall, alloc: want.alloc ?? previous?.alloc});
+      }
+      if (typeof remote.security.attack === 'boolean') security?.setAttack?.(remote.security.attack);
+    });
+  } catch (error) { console.warn('[Telvyn] Remote configuration could not start.' + why(error)); }
   let shutdown;
   module.exports.stop = () => {
     if (shutdown) return shutdown;
     iast?.stop();
-    debuggerAgent?.stop(); stopConfiguration?.();
+    debuggerAgent?.stop(); stopConfiguration?.(); stopRemote?.();
     loaderPort?.close();
     shutdown = Promise.allSettled([sdk.shutdown(), profiler?.stop(), security?.stop(), transport?.stop()]);
     return shutdown;

@@ -12,6 +12,10 @@ as flags de cada um (`TELVYN_PROFILING_ENABLED`, `-Dtelvyn.iast.enabled=true` et
 Build: `mvn -Dmaven.test.skip=true package` (gera `target/telvyn-debugger-<versão>.jar`). Os diagnósticos em
 `labs/` vieram do repositório da plataforma e citam caminhos de lá.
 
+## Configuração remota
+
+O agente consulta o coletor a cada 30 s (`/v1/sdk/remote-config`) e aplica, sem reiniciar, o que foi definido na tela do serviço (cartão "SDK e configuração", por serviço e ambiente): ligar/desligar os perfis de CPU, wall, alocação, lock e exceções e a detecção de ataques (Spring); o IAST só pode ser desligado. Ligar a detecção de ataques exige `TELVYN_SECURITY_QUERY_ROUTES` definido na aplicação. Opção não definida na tela = vale a variável de ambiente. A revisão aplicada vai no relatório de configuração (`telvyn.remote_config.revision`).
+
 ## Fora do Kubernetes (Docker, Portainer, Compose, AWS ECS/EC2)
 
 Nada exige Kubernetes. Suba o coletor Telvyn como um container ou serviço acessível pela aplicação (como o

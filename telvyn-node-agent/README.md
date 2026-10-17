@@ -47,6 +47,10 @@ Fontes do IAST (somente em rotas de `TELVYN_SECURITY_ROUTES`; `*` representa exa
 
 Relatórios têm limites de tamanho, concorrência e timeout. Perfis/eventos/snapshots que não alcançam o coletor podem ser perdidos com aviso; o WAL de logs não os protege. Probes de linha podem aumentar o custo de execução, especialmente em loops. Native addons de segurança vêm dos projetos Apache-2.0 `@datadog/native-appsec`, `@datadog/native-iast-taint-tracking` e `@datadog/wasm-js-rewriter`; são usados localmente, sem envio ao Datadog. Licenças acompanham as dependências.
 
+## Configuração remota
+
+O SDK consulta o coletor a cada 30 s (`/v1/sdk/remote-config`) e aplica, sem reiniciar, o que foi definido na tela do serviço (cartão "SDK e configuração", por serviço e ambiente): ligar/desligar CPU, wall e alocação e a detecção de ataques; o IAST só pode ser desligado. Ligar a detecção de ataques exige `TELVYN_SECURITY_ROUTES` definido na aplicação. Opção não definida na tela = vale a variável de ambiente. A revisão aplicada vai no relatório de configuração (`telvyn.remote_config.revision`).
+
 ## Distribuição anterior e evidências históricas
 
 Injeção Kubernetes: o coletor Telvyn pode montar este pacote sem alterar a imagem/comando da aplicação. Construa `docker build -f telvyn-node-agent/Dockerfile -t <imagem> .` na raiz; configure essa imagem em `webhook.nodeAgentImageRef` do chart do coletor e a annotation do template do pod `instrumentation.telvyn.io/node-containers: "nome-do-container"`. A imagem precisa estar acessível nos nós. Opt-in explícito, sem inferir runtime pelo nome da imagem. Node 20/CommonJS validado em 13/10; preserve e confira opções herdadas da imagem/envFrom, que o admission controller não consegue ler.

@@ -24,7 +24,7 @@ public final class SecuritySensorState {
     public static void iastIntegration(boolean registered){state.put("iastIntegration",Boolean.toString(registered));}
     public static String attack(){return state.getOrDefault("attack","absent");}
     public static String iast(){
-        if(!Boolean.getBoolean("telvyn.iast.enabled"))return "disabled";
+        if(!Boolean.getBoolean("telvyn.iast.enabled")||Boolean.FALSE.equals(RemoteConfig.security("iast")))return "disabled";
         if("true".equals(state.get("iastFailed")))return "error";
         return "true".equals(state.get("iastInstalled"))&&"true".equals(state.get("iastIntegration"))?"active":"absent";
     }
