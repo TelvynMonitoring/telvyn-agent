@@ -51,6 +51,8 @@ Relatórios têm limites de tamanho, concorrência e timeout. Perfis/eventos/sna
 
 O SDK consulta o coletor a cada 30 s (`/v1/sdk/remote-config`) e aplica, sem reiniciar, o que foi definido na tela do serviço (cartão "SDK e configuração", por serviço e ambiente): ligar/desligar CPU, wall e alocação e a detecção de ataques; o IAST só pode ser desligado. Ligar a detecção de ataques exige `TELVYN_SECURITY_ROUTES` definido na aplicação. Opção não definida na tela = vale a variável de ambiente. A revisão aplicada vai no relatório de configuração (`telvyn.remote_config.revision`).
 
+Bloqueio de ataques (como o Datadog): com a detecção de ataques ligada, o SDK barra a requisição antes da aplicação quando o IP está na lista de bloqueio ou quando uma regra está em modo "bloquear" (configuração remota do serviço e "Proteção de aplicações" nas configurações do APM). Responde 403 (ou o status/redirecionamento escolhido), em HTML ou JSON conforme o `Accept`.
+
 ## Distribuição anterior e evidências históricas
 
 Injeção Kubernetes: o coletor Telvyn pode montar este pacote sem alterar a imagem/comando da aplicação. Construa `docker build -f telvyn-node-agent/Dockerfile -t <imagem> .` na raiz; configure essa imagem em `webhook.nodeAgentImageRef` do chart do coletor e a annotation do template do pod `instrumentation.telvyn.io/node-containers: "nome-do-container"`. A imagem precisa estar acessível nos nós. Opt-in explícito, sem inferir runtime pelo nome da imagem. Node 20/CommonJS validado em 13/10; preserve e confira opções herdadas da imagem/envFrom, que o admission controller não consegue ler.

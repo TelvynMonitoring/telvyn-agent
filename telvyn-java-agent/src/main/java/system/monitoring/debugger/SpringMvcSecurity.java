@@ -12,6 +12,9 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
 public final class SpringMvcSecurity {
     private static final ThreadLocal<Method> selected=new ThreadLocal<>();
     private static final ThreadLocal<String[]> selectedRoute=new ThreadLocal<>();
+    // Método selecionado antes de cada handle (pilha: forward/include aninham handle) e se a requisição foi bloqueada.
+    private static final ThreadLocal<Deque<Optional<Method>>> previousSelection=ThreadLocal.withInitial(ArrayDeque::new);
+    private static final ThreadLocal<Boolean> blockedRequest=new ThreadLocal<>();
     private static boolean started;
     private static Set<String> routes=Set.of();
     private static volatile LocalAttackReporter attacks;
@@ -27,6 +30,11 @@ public final class SpringMvcSecurity {
         new AgentBuilder.Default().disableClassFormatChanges()
             .type(named("org.springframework.web.servlet.mvc.method.AbstractHandlerMethodAdapter"))
             .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(Dispatch.class).on(named("handle").and(takesArguments(3)))))
+            .installOn(instrumentation);
+        // Bloqueio por IP antes de qualquer handler (como o Datadog, vale para toda requisição Spring MVC).
+        new AgentBuilder.Default().disableClassFormatChanges()
+            .type(named("org.springframework.web.servlet.DispatcherServlet"))
+            .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(IpBlock.class).on(named("doDispatch").and(takesArguments(2)))))
             .installOn(instrumentation);
         if(Boolean.getBoolean("telvyn.iast.enabled"))new AgentBuilder.Default().disableClassFormatChanges()
             .type(named("org.springframework.jdbc.core.JdbcTemplate"))
@@ -98,7 +106,38 @@ public final class SpringMvcSecurity {
         for(String route:routes)if(route.endsWith("/**")&&route.startsWith(verb+" ")&&(path+"/").startsWith(route.substring(verb.length()+1,route.length()-2)))return true;
         return false;
     }
-    public static Method open(Object request,Object handler){
+    /** IP da lista de bloqueio: responde e pula o processamento do Spring. */
+    public static boolean blockIp(Object request,Object response){
+        start();
+        if(worker==null||!JavaProtection.allowBlocking())return false;
+        String ip=JavaProtection.clientIp(request);
+        if(!JavaProtection.denied(ip))return false;
+        if(JavaProtection.respond(request,response)==null)return false;
+        var ids=trace();var reporter=attacks;
+        if(reporter!=null)reporter.reportBlockedIp(new LocalAttackReporter.Request(ip,requestMethod(request),requestPath(request),Set.of()),ids[0],ids[1]);
+        return true;
+    }
+    private static String requestMethod(Object request){try{return (String)request.getClass().getMethod("getMethod").invoke(request);}catch(ReflectiveOperationException|RuntimeException unavailable){return null;}}
+    private static String requestPath(Object request){try{return (String)request.getClass().getMethod("getRequestURI").invoke(request);}catch(ReflectiveOperationException|RuntimeException unavailable){return null;}}
+    /** Regras desligadas na tela não contam como detecção. */
+    private static LocalAttackDetection.Result enabledRules(LocalAttackDetection.Result result){
+        if(!"match".equals(result.outcome()))return result;
+        var rules=result.rules().stream().filter(rule->!"disabled".equals(JavaProtection.ruleMode(rule))).toList();
+        return new LocalAttackDetection.Result(rules.isEmpty()?"no_match":"match",rules,result.engine_version(),result.elapsed_us());
+    }
+    public static boolean enterHandle(Object request,Object response,Object handler){
+        blockedRequest.remove();
+        Method previous=open(request,response,handler);
+        previousSelection.get().push(Optional.ofNullable(previous));
+        return Boolean.TRUE.equals(blockedRequest.get());
+    }
+    public static void exitHandle(){
+        var stack=previousSelection.get();
+        close(stack.isEmpty()?null:stack.pop().orElse(null));
+        blockedRequest.remove();
+    }
+    public static Method open(Object request,Object handler){return open(request,null,handler);}
+    public static Method open(Object request,Object response,Object handler){
         Method previous=selected.get();selected.remove();selectedRoute.remove();
         try{
             start();
@@ -112,7 +151,20 @@ public final class SpringMvcSecurity {
             var ids=trace();long began=System.nanoTime();
             try{
                 var values=LocalAttackDetection.permittedQuery(query,Set.of("q"));
-                if(worker!=null&&!values.isEmpty())worker.execute(()->{try{attacks.report(detector.inspectPermittedQuery(values),ids[0],ids[1]);}catch(RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("Spring analysis failure");}});
+                if(worker!=null&&!values.isEmpty()){
+                    String ip=JavaProtection.clientIp(request);String path=requestPath(request);
+                    // Com regra em modo bloquear, a análise roda na thread da requisição para decidir antes do controller.
+                    if(response!=null&&JavaProtection.anyBlocking()&&JavaProtection.allowBlocking()&&!JavaProtection.passed(ip)){
+                        var result=enabledRules(detector.inspectPermittedQuery(values));
+                        Set<String> blocking=new HashSet<>();for(String rule:result.rules())if("blocking".equals(JavaProtection.ruleMode(rule)))blocking.add(rule);
+                        boolean blocked=!blocking.isEmpty()&&JavaProtection.respond(request,response)!=null;
+                        attacks.report(result,ids[0],ids[1],new LocalAttackReporter.Request(ip,verb,path,blocked?blocking:Set.of()));
+                        if(blocked){blockedRequest.set(true);return previous;}
+                    }else{
+                        var reporter=attacks;var inspector=detector;
+                        worker.execute(()->{try{reporter.report(enabledRules(inspector.inspectPermittedQuery(values)),ids[0],ids[1],new LocalAttackReporter.Request(ip,verb,path,Set.of()));}catch(RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("Spring analysis failure");}});
+                    }
+                }
             }catch(LocalAttackDetection.InputLimitException limit){if(attacks!=null)attacks.report(new LocalAttackDetection.Result("limit",List.of(),null,(System.nanoTime()-began)/1000),ids[0],ids[1]);return previous;}
             catch(IllegalArgumentException invalid){if(attacks!=null)attacks.report(new LocalAttackDetection.Result("error",List.of(),null,(System.nanoTime()-began)/1000),ids[0],ids[1]);return previous;}
             catch(RejectedExecutionException full){LocalAttackReporter.reportLoss("Spring analysis queue full");}
@@ -163,8 +215,12 @@ public final class SpringMvcSecurity {
         StackWalker.getInstance().walk(frames->frames.filter(frame->!prefix.isEmpty()&&frame.getClassName().startsWith(prefix)&&!frame.getClassName().startsWith("system.monitoring.debugger.")).findFirst()).ifPresent(frame->IastRuntime.jdbc(sql,frame.getClassName()+"#"+frame.getMethodName(),frame.getLineNumber(),sink));
     }
     public static class Dispatch {
-        @Advice.OnMethodEnter(suppress=Throwable.class) public static Method enter(@Advice.Argument(0)Object request,@Advice.Argument(2)Object handler){return open(request,handler);}
-        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(@Advice.Enter Method previous){close(previous);}
+        // Requisição bloqueada: o handler do controller não roda (retorno nulo = resposta já tratada).
+        @Advice.OnMethodEnter(skipOn=Advice.OnNonDefaultValue.class,suppress=Throwable.class) public static boolean enter(@Advice.Argument(0)Object request,@Advice.Argument(1)Object response,@Advice.Argument(2)Object handler){return enterHandle(request,response,handler);}
+        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(){exitHandle();}
+    }
+    public static class IpBlock {
+        @Advice.OnMethodEnter(skipOn=Advice.OnNonDefaultValue.class,suppress=Throwable.class) public static boolean enter(@Advice.Argument(0)Object request,@Advice.Argument(1)Object response){return blockIp(request,response);}
     }
     public static class Jdbc {
         @Advice.OnMethodEnter(suppress=Throwable.class) public static void enter(@Advice.Argument(0)String sql,@Advice.Origin("#t.#m")String origin){jdbc(sql,origin);}

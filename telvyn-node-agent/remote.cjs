@@ -4,7 +4,7 @@
 // IAST can only be turned off: its instrumentation is installed when modules load.
 const PROFILING = ['enabled', 'wall', 'alloc'];
 const SECURITY = ['attack', 'iast'];
-const state = {revision: 0, profiling: {}, security: {}};
+const state = {revision: 0, protection: '', profiling: {}, security: {}};
 
 function pick(object, keys) {
   const out = {};
@@ -27,7 +27,13 @@ function startRemoteConfig(transport, apply) {
   const poll = async () => {
     try {
       const body = await transport.remoteConfig();
-      if (!Number.isSafeInteger(body?.revision) || body.revision === state.revision) return;
+      if (!Number.isSafeInteger(body?.revision)) return;
+      // Attack blocking (protection, rule modes) has its own revision: an IP list change reaches the SDK on its own.
+      const protection = typeof body.protection?.revision === 'string' ? body.protection.revision : '';
+      require('./protection.cjs').update(body.protection, body.rules);
+      if (body.revision === state.revision && protection === state.protection) return;
+      state.protection = protection;
+      if (body.revision === state.revision) return;
       state.profiling = pick(body.profiling, PROFILING);
       state.security = pick(body.security, SECURITY);
       await apply(state);

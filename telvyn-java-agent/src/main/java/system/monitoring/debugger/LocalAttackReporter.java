@@ -36,11 +36,29 @@ public final class LocalAttackReporter implements AutoCloseable {
         }catch(InterruptedException interrupted){Thread.currentThread().interrupt();}catch(Exception failed){reportLoss("export failure");}},"telvyn-security-export");
         sender.setDaemon(true);sender.start();
     }
-    public boolean report(LocalAttackDetection.Result result,String trace,String span) {
+    /** Dados da requisição para eventos de ataque: IP de origem, método, caminho e as regras que bloquearam. */
+    public record Request(String clientIp,String method,String path,java.util.Set<String> blockedRules) {}
+    public boolean report(LocalAttackDetection.Result result,String trace,String span) {return report(result,trace,span,null);}
+    /** Requisição de IP da lista de bloqueio, barrada antes da aplicação. */
+    public boolean reportBlockedIp(Request request,String trace,String span) {
+        var report=new JsonObject();report.addProperty("id",UUID.randomUUID().toString());report.addProperty("service",service);report.addProperty("host",host);report.addProperty("environment",environment);report.addProperty("service_version",version);report.addProperty("outcome","blocked");report.addProperty("rules_version",rulesVersion);report.addProperty("elapsed_us",0);report.addProperty("blocked",true);
+        request(report,request);
+        if(trace!=null&&span!=null){report.addProperty("trace_id",trace);report.addProperty("span_id",span);}
+        boolean queued=queue.offer(report.toString());if(!queued)reportLoss("report queue full");return queued;
+    }
+    private static void request(JsonObject report,Request request) {
+        if(request==null)return;
+        if(request.clientIp()!=null)report.addProperty("client_ip",request.clientIp());
+        if(request.method()!=null&&request.method().matches("[A-Z]{1,20}"))report.addProperty("request_method",request.method());
+        if(request.path()!=null&&request.path().length()<=1024&&request.path().indexOf('?')<0)report.addProperty("request_path",request.path());
+    }
+    public boolean report(LocalAttackDetection.Result result,String trace,String span,Request request) {
         boolean queued=true;
         var rules=result.rules().isEmpty()?Collections.singletonList((String)null):result.rules();
         for(String rule:rules) {
             var report=new JsonObject();report.addProperty("id",UUID.randomUUID().toString());report.addProperty("service",service);report.addProperty("host",host);report.addProperty("environment",environment);report.addProperty("service_version",version);report.addProperty("outcome",result.outcome());report.addProperty("rule_id",rule);report.addProperty("rules_version",rulesVersion);report.addProperty("engine_version",result.engine_version());report.addProperty("elapsed_us",result.elapsed_us());
+            request(report,request);
+            if(request!=null&&rule!=null&&request.blockedRules().contains(rule))report.addProperty("blocked",true);
             if(trace!=null&&span!=null){report.addProperty("trace_id",trace);report.addProperty("span_id",span);}
             queued&=queue.offer(report.toString());
         }

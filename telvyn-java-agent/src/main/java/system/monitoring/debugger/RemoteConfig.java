@@ -69,6 +69,9 @@ public final class RemoteConfig {
         if (response.status() != 200) return;
         JsonObject body = JsonParser.parseString(response.body()).getAsJsonObject();
         long next = body.get("revision").getAsLong();
+        // Bloqueio (proteção do tenant e modo das regras) tem revisão própria: aplicado a cada consulta.
+        JavaProtection.update(body.has("protection") && body.get("protection").isJsonObject() ? body.getAsJsonObject("protection") : null,
+                body.has("rules") && body.get("rules").isJsonObject() ? body.getAsJsonObject("rules") : null);
         if (next == revision) return;
         Map<String, Boolean> nextProfiling = flags(body.getAsJsonObject("profiling"), PROFILING);
         Map<String, Boolean> nextSecurity = flags(body.getAsJsonObject("security"), SECURITY);

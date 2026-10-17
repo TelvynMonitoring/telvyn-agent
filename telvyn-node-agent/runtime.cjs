@@ -40,7 +40,8 @@ function runtimeTransport() {
       const response = await fetch(target, {redirect: 'error', signal: AbortSignal.timeout(5000)});
       if (!response.ok) throw new Error('Remote configuration unavailable');
       const body = await response.text();
-      if (Buffer.byteLength(body) > 64 * 1024) throw new Error('Remote configuration too large');
+      // Up to 2,500 denylist entries, as in Datadog.
+      if (Buffer.byteLength(body) > 1024 * 1024) throw new Error('Remote configuration too large');
       return JSON.parse(body);
     },
     stop: () => Promise.allSettled(pending),

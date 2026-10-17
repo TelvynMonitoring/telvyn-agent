@@ -9,7 +9,7 @@ const FLAW_RULES = new Set(['WEAK_HASH', 'WEAK_CIPHER', 'INSECURE_COOKIE', 'NO_H
 function startSecurity() {
   const enabled = process.env.TELVYN_SECURITY_ENABLED === 'true';
   // With explicit routes, remote configuration can turn attack detection on later without a restart.
-  if (!enabled && process.env.TELVYN_IAST_ENABLED !== 'true' && !process.env.TELVYN_SECURITY_ROUTES) return { state: 'disabled', setAttack() {}, inspect() {}, stop() {} };
+  if (!enabled && process.env.TELVYN_IAST_ENABLED !== 'true' && !process.env.TELVYN_SECURITY_ROUTES) return { state: 'disabled', setAttack() {}, guard() { return false; }, stop() {} };
   const routes = require('./routes.cjs').compileRoutes(process.env.TELVYN_SECURITY_ROUTES);
   if (!routes.size) throw new Error('Explicit security routes required');
   const service = process.env.OTEL_SERVICE_NAME;
@@ -31,13 +31,13 @@ function startSecurity() {
   let waf = enabled ? createWaf() : null;
   const pending = new Set();
   let stopped = false;
-  function report(outcome, rule, elapsed, span, finding) {
+  function report(outcome, rule, elapsed, span, finding, request) {
     if (pending.size >= 32) { console.warn('[Telvyn] Security delivery saturated; event not queued.'); return; }
     const context = span?.spanContext();
     const body = JSON.stringify({id: randomUUID(), service, host: process.env.POD_NAME || os.hostname(), environment,
       service_version: attributes['service.version'], outcome, rule_id: rule, rules_version: finding ? (rule === 'SQL_INJECTION' ? 'iast-q-node-sql-1' : FLAW_RULES.has(rule) ? 'iast-node-flaws-1' : 'iast-q-node-sinks-1') : 'query-allowlist-1',
       engine_version: DDWAF.version(), elapsed_us: elapsed,
-      ...finding,
+      ...finding, ...request,
       ...(context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? {trace_id: context.traceId, span_id: context.spanId} : {})});
     const destination = new URL(endpoint);
     if (finding) destination.pathname = destination.pathname.replace(/events$/, 'iast');
@@ -55,27 +55,39 @@ function startSecurity() {
       else if (!on && waf) { const previous = waf; waf = null; previous.dispose(); }
     },
     reportIast({rule_id: rule, ...finding}, elapsed, span) { if (!stopped) report('match', rule, elapsed, span, finding); },
-    inspect(request, span) {
-      if (stopped || !waf || typeof request.url !== 'string') return;
+    // Runs before the application handles the request. Returns true when the request was blocked and answered.
+    guard(request, response, span) {
+      if (stopped || !waf || typeof request.url !== 'string') return false;
+      const protection = require('./protection.cjs');
       const started = process.hrtime.bigint();
+      let url;
+      try { url = new URL(request.url, 'http://application.invalid'); } catch (_) { return false; }
+      const ip = protection.clientIp(request);
+      const details = {...(ip ? {client_ip: ip} : {}), ...(/^[A-Z]{1,20}$/.test(request.method || '') ? {request_method: request.method} : {}), request_path: url.pathname.slice(0, 1024)};
+      if (protection.state.allow && protection.denied(ip)) {
+        protection.respond(request, response);
+        report('blocked', undefined, Number((process.hrtime.bigint() - started) / 1000n), span, undefined, {...details, blocked: true});
+        return true;
+      }
+      if (!routes.match(url.pathname)) return false;
+      const values = url.searchParams.getAll('q');
+      if (!values.length) return false;
+      if (request.url.length > 8192 || values.length > 8 || values.some(value => value.length > 4096)) { report('limit', undefined, Number((process.hrtime.bigint() - started) / 1000n), span, undefined, details); return false; }
       let context;
       try {
-        const url = new URL(request.url, 'http://application.invalid');
-        if (!routes.match(url.pathname)) return;
-        const values = url.searchParams.getAll('q');
-        if (!values.length) return;
-        if (request.url.length > 8192 || values.length > 8 || values.some(value => value.length > 4096)) { report('limit', undefined, Number((process.hrtime.bigint() - started) / 1000n), span); return; }
         context = waf.createContext();
         const result = context.run({persistent: {'server.request.query': {q: values}}}, 5000);
         const elapsed = Number((process.hrtime.bigint() - started) / 1000n);
-        if (result.timeout) report('timeout', undefined, elapsed, span);
-        else if (result.errorCode) report('error', undefined, elapsed, span);
-        else {
-          const rules = new Set((result.events || []).map(event => event.rule?.id).filter(id => ['telvyn-lab-sqli-v1', 'telvyn-lab-xss-v1'].includes(id)));
-          if (!rules.size) report('no_match', undefined, elapsed, span);
-          for (const rule of rules) report('match', rule, elapsed, span);
-        }
-      } catch (_) { report('error', undefined, Number((process.hrtime.bigint() - started) / 1000n), span); }
+        if (result.timeout) { report('timeout', undefined, elapsed, span, undefined, details); return false; }
+        if (result.errorCode) { report('error', undefined, elapsed, span, undefined, details); return false; }
+        const rules = [...new Set((result.events || []).map(event => event.rule?.id).filter(id => ['telvyn-lab-sqli-v1', 'telvyn-lab-xss-v1'].includes(id)))]
+          .filter(rule => protection.ruleMode(rule) !== 'disabled');
+        if (!rules.length) { report('no_match', undefined, elapsed, span, undefined, details); return false; }
+        const block = protection.state.allow && !protection.passed(ip) && rules.some(rule => protection.ruleMode(rule) === 'blocking');
+        for (const rule of rules) report('match', rule, elapsed, span, undefined, {...details, blocked: block && protection.ruleMode(rule) === 'blocking'});
+        if (block) protection.respond(request, response);
+        return block;
+      } catch (_) { report('error', undefined, Number((process.hrtime.bigint() - started) / 1000n), span, undefined, details); return false; }
       finally { context?.dispose(); }
     },
     async stop() { stopped = true; await Promise.allSettled(pending); waf?.dispose(); },
