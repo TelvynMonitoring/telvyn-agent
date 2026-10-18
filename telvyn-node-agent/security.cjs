@@ -96,6 +96,37 @@ function startSecurity() {
     protection.respond(request, response);
     if (by !== 'rule') report('blocked', undefined, elapsed, span, undefined, {...state.details, ...(state.user ? {usr_id: state.user} : {}), blocked: true, blocked_by: by});
   }
+  // Automatic user events (as Datadog's user activity): login success/failure and signup, never the password.
+  // Mode: TELVYN_SECURITY_USER_TRACKING (identification, anonymization, disabled) or the UI; a local "disabled" always wins.
+  const localTracking = String(process.env.TELVYN_SECURITY_USER_TRACKING || 'identification').trim().toLowerCase();
+  const tracking = () => localTracking === 'disabled' ? 'disabled' : protection.state.tracking || (localTracking === 'anonymization' ? 'anonymization' : 'identification');
+  const anonymize = protection.anonymize;
+  // User identifier as Datadog picks it from the user object: id, _id, email, username, login, user.
+  const userIdentifier = user => {
+    if (user == null || typeof user !== 'object') return undefined;
+    for (const field of ['id', '_id', 'email', 'username', 'login', 'user']) {
+      const value = user[field];
+      if (value == null || value === '') continue;
+      if (['string', 'number', 'bigint'].includes(typeof value) || field === '_id') return String(value).slice(0, 255);
+    }
+    return undefined;
+  };
+  const usersEndpoint = new URL(endpoint);
+  usersEndpoint.pathname = usersEndpoint.pathname.replace(/events$/, 'users');
+  function reportUser(event, user, login, exists, state, framework, mode) {
+    if (pending.size >= 32) { console.warn('[Telvyn] Security delivery saturated; user event not queued.'); return; }
+    const context = state.span?.spanContext();
+    const hide = value => value == null ? undefined : mode === 'anonymization' ? anonymize(value) : value;
+    const body = JSON.stringify({id: randomUUID(), service, host: process.env.POD_NAME || os.hostname(), environment, service_version: attributes['service.version'],
+      event, usr_id: hide(user), usr_login: hide(login), ...(typeof exists === 'boolean' ? {usr_exists: exists} : {}),
+      client_ip: state.details.client_ip, user_agent: state.details.user_agent, framework, collection_mode: mode,
+      ...(context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? {trace_id: context.traceId, span_id: context.spanId} : {})});
+    const send = fetch(usersEndpoint, {method: 'POST', headers: {'content-type': 'application/json'}, body, redirect: 'error', signal: AbortSignal.timeout(5000)})
+      .then(async response => { await response.arrayBuffer(); if (!response.ok) throw new Error('Delivery rejected'); })
+      .catch(() => console.warn('[Telvyn] User activity delivery failed.'))
+      .finally(() => pending.delete(send));
+    pending.add(send);
+  }
   function setUser(state, user, request, response, span) {
     const id = user == null ? '' : String(typeof user === 'object' ? user.id ?? '' : user).slice(0, 255);
     if (!id || state.user === id) return false;
@@ -168,6 +199,27 @@ function startSecurity() {
       if (!state) return false;
       const id = user == null ? '' : String(typeof user === 'object' ? user.id ?? '' : user).slice(0, 255);
       if (id) state.user = id;
+      return true;
+    },
+    // Login seen by an authentication library (Passport): reports it and, for a blocked user's successful login,
+    // answers with the block response. Returns true when blocked (the library callback must not continue).
+    trackLogin(framework, login, user, success) {
+      const state = store.getStore();
+      if (stopped || !waf || !state || state.blocked) return false;
+      const mode = tracking();
+      const id = success ? userIdentifier(user) : undefined;
+      const name = typeof login === 'string' && login ? login.slice(0, 255) : undefined;
+      if (mode !== 'disabled' && (id || name)) reportUser(success ? 'login_success' : 'login_failure', id ?? (success ? name : undefined), name, success ? true : undefined, state, framework, mode);
+      return !!(success && id && setUser(state, id, state.request, state.response, state.span));
+    },
+    // Public SDK API for logins and signups outside Passport (as Datadog's eventTrackingV2): always reported, as given.
+    trackUser(event, login, user, exists) {
+      const state = store.getStore();
+      const name = typeof login === 'string' && login ? login.slice(0, 255) : undefined;
+      const id = user == null ? undefined : typeof user === 'object' ? userIdentifier(user) : String(user).slice(0, 255);
+      if (stopped || !waf || !state || !(name || id)) return false;
+      reportUser(event, id, name, event === 'login_failure' && typeof exists === 'boolean' ? exists : event === 'login_success' ? true : undefined, state, 'sdk', 'identification');
+      if (event === 'login_success' && id && setUser(state, id, state.request, state.response, state.span)) return 'blocked';
       return true;
     },
     isUserBlocked(user) {

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>system.monitoring</groupId>
+    <artifactId>telvyn-java-api</artifactId>
+    <version>0.1.0</version>
+    <packaging>jar</packaging>
+
+    <!--
+      API pública para a aplicação (como o dd-trace-api do Datadog): eventos de usuário (login, cadastro), usuário da
+      requisição e consulta de bloqueio. Sem dependências e sem efeito sozinha: o agente Java do Telvyn
+      (telvyn-java-agent) instrumenta estes métodos quando está anexado à JVM.
+    -->
+
+    <properties>
+        <maven.compiler.release>8</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+</project>

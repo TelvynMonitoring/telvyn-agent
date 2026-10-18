@@ -181,6 +181,10 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
   // Public API, as Datadog's tracer.setUser / tracer.appsec.isUserBlocked / tracer.appsec.blockRequest.
   module.exports.setUser = user => security?.setUser?.(user) ?? false;
   module.exports.isUserBlocked = user => security?.isUserBlocked?.(user) ?? false;
+  // User activity (as Datadog's appsec.eventTrackingV2): returns 'blocked' when a blocked user's login was answered.
+  module.exports.trackUserLoginSuccess = (login, user) => security?.trackUser?.('login_success', login, user) ?? false;
+  module.exports.trackUserLoginFailure = (login, exists) => security?.trackUser?.('login_failure', login, undefined, exists) ?? false;
+  module.exports.trackUserSignup = (login, user) => security?.trackUser?.('signup', login, user) ?? false;
   module.exports.blockRequest = (request, response) => security?.blockRequest?.(request, response) ?? false;
   let shutdown;
   module.exports.stop = () => {

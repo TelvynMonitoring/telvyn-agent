@@ -24,6 +24,9 @@ public final class SpringMvcSecurity {
     /** Eventos das regras completas (conjunto recomendado do Datadog). */
     private static volatile LocalAttackReporter waf;
     private static final String STATE="telvyn.security.waf";
+    /** Requisição em curso nesta thread (requisição, resposta, estado), para os eventos de login do Spring Security. */
+    private static final ThreadLocal<Object[]> current=new ThreadLocal<>();
+    static Object[] current(){return current.get();}
     /** Bloqueio decidido no corpo: interrompe o handler; a resposta de bloqueio já foi escrita. */
     public static final class BlockedRequestException extends RuntimeException {
         public BlockedRequestException(){super("request blocked by Telvyn",null,false,false);}
@@ -170,12 +173,19 @@ public final class SpringMvcSecurity {
     public static boolean requestStart(Object request,Object response){
         start();
         var reporter=waf;
-        if(reporter==null||attribute(request,STATE)!=null)return false;
+        if(reporter==null)return false;
+        if(attribute(request,STATE) instanceof WafInspector.State open){
+            if(open.closed)return false;
+            open.depth++;
+            // A inspeção começa na cadeia de filtros, antes da autenticação: o usuário logado chega depois.
+            return open.user==null&&!open.blocked&&userPhase(open,request,response,loggedUser(request),reporter);
+        }
         try{
             String ip=JavaProtection.clientIp(request);
             Object agent=request.getClass().getMethod("getHeader",String.class).invoke(request,"User-Agent");
             var state=WafInspector.open(ip,requestMethod(request),requestPath(request),agent instanceof String value?value:null,trace());
             attribute(request,STATE,state);
+            current.set(new Object[]{request,response,state});
             state.user=loggedUser(request);
             if(JavaProtection.allowBlocking()&&JavaProtection.denied(ip))return block(state,request,response,"ip",reporter);
             if(state.user!=null&&JavaProtection.allowBlocking()&&JavaProtection.userBlocked(state.user)&&!JavaProtection.passed(ip))return block(state,request,response,"user",reporter);
@@ -185,10 +195,18 @@ public final class SpringMvcSecurity {
             return decide(state,WafInspector.run(state,data),reporter)&&block(state,request,response,"rule",reporter);
         }catch(Exception|LinkageError failure){LocalAttackReporter.reportLoss("request inspection failure");return false;}
     }
+    /** Usuário identificado (logado ou no login): bloqueio pela lista de usuários e regras sobre usr.id. */
+    static boolean userPhase(WafInspector.State state,Object request,Object response,String user,LocalAttackReporter reporter){
+        if(user==null)return false;
+        state.user=user;
+        if(JavaProtection.allowBlocking()&&JavaProtection.userBlocked(user)&&!JavaProtection.passed(state.ip))return block(state,request,response,"user",reporter);
+        return decide(state,WafInspector.run(state,Map.of("usr.id",user)),reporter)&&block(state,request,response,"rule",reporter);
+    }
     /** Fim da requisição: status da resposta e liberação do contexto. */
     public static void requestEnd(Object request,Object response){
-        if(!(attribute(request,STATE) instanceof WafInspector.State state))return;
+        if(!(attribute(request,STATE) instanceof WafInspector.State state)||state.closed||--state.depth>0)return;
         try{
+            current.remove();
             var reporter=waf;
             Object status=response.getClass().getMethod("getStatus").invoke(response);
             if(reporter!=null&&!state.blocked)decide(state,WafInspector.run(state,Map.of("server.response.status",String.valueOf(status))),reporter);
