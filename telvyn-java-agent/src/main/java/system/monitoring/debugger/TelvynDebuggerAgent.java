@@ -71,6 +71,8 @@ public final class TelvynDebuggerAgent {
 
     private static void install(String args, Instrumentation inst) {
         try { SpringMvcSecurity.install(inst); } catch(Throwable failure) { SecuritySensorState.attackFailed();startupFailure("Spring security",failure); }
+        try { ServletSecurity.install(inst); } catch(Throwable failure) { startupFailure("Servlet security",failure); }
+        try { UserActivity.install(inst); } catch(Throwable failure) { startupFailure("User activity",failure); }
         try { IastInstrumentation.install(inst); } catch(Throwable failure) { SecuritySensorState.iastFailed();startupFailure("IAST",failure); }
         try { ServletIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (servlet)",failure); }
         try { JdbcIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDBC)",failure); }

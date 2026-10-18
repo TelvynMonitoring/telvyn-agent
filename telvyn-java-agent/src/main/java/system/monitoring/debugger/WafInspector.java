@@ -75,6 +75,8 @@ public final class WafInspector {
         final Set<String> reported = new LinkedHashSet<>();
         String user;
         boolean blocked, closed, routeInspected, bodyInspected, timeoutReported;
+        /** Chamadas aninhadas da mesma requisição (cadeia de filtros, servlet, DispatcherServlet): fecha na última. */
+        int depth = 1;
         State(WafContext context, String ip, String method, String path, String userAgent, String[] trace) {
             this.context = context; this.ip = ip; this.method = method; this.path = path; this.userAgent = userAgent; this.trace = trace;
         }

@@ -54,6 +54,37 @@ function wrapFastify(factory, security) {
   return wrapped;
 }
 
+// Passport login (as Datadog: passport-local and passport-http Basic): the strategy's verify callback tells the login
+// tried and whether it succeeded. A blocked user's successful login is answered with the block response and the
+// strategy does not continue.
+function patchStrategy(Strategy, framework, security) {
+  const original = Strategy?.prototype?.authenticate;
+  if (typeof original !== 'function' || original.telvynUsers) return;
+  const authenticate = function (request) {
+    const verify = this._verify;
+    if (typeof verify === 'function' && !verify.telvynUsers) {
+      const passRequest = !!this._passReqToCallback;
+      const wrapped = function (...args) {
+        const login = args[passRequest ? 1 : 0];
+        const done = args[args.length - 1];
+        if (typeof done === 'function') args[args.length - 1] = function (error, user) {
+          // An error is neither a success nor a failure.
+          if (!error) {
+            try { if (security.trackLogin(framework, login, user, !!user)) return; } catch (_) { /* Protection never breaks the application. */ }
+          }
+          return done.apply(this, arguments);
+        };
+        return verify.apply(this, args);
+      };
+      wrapped.telvynUsers = true;
+      this._verify = wrapped;
+    }
+    return original.apply(this, arguments);
+  };
+  authenticate.telvynUsers = true;
+  Strategy.prototype.authenticate = authenticate;
+}
+
 function watchFrameworks(security) {
   const Module = require('node:module'), load = Module._load;
   Module._load = function (name, parent, ...rest) {
@@ -61,13 +92,17 @@ function watchFrameworks(security) {
     try {
       if (name === 'express') watchExpress(Module._resolveFilename(name, parent), security);
       else if (name === 'fastify') return wrapFastify(exported, security);
+      else if (name === 'passport-local') patchStrategy(exported?.Strategy, 'passport-local', security);
+      else if (name === 'passport-http') patchStrategy(exported?.BasicStrategy, 'passport-http', security);
     } catch (_) { /* Protection never breaks the application. */ }
     return exported;
   };
   try {
     const { Hook } = require('import-in-the-middle');
-    new Hook(['express', 'fastify'], (exported, name, baseDir) => {
+    new Hook(['express', 'fastify', 'passport-local', 'passport-http'], (exported, name, baseDir) => {
       try {
+        if (name === 'passport-local') patchStrategy(exported.Strategy ?? exported.default?.Strategy, 'passport-local', security);
+        if (name === 'passport-http') patchStrategy(exported.BasicStrategy ?? exported.default?.BasicStrategy, 'passport-http', security);
         if (name === 'express' && baseDir) watchExpress(path.join(baseDir, 'index.js'), security);
         else if (name === 'fastify') { const wrapped = wrapFastify(exported.default, security); exported.default = wrapped; exported.fastify = wrapped; }
       } catch (_) { /* Protection never breaks the application. */ }

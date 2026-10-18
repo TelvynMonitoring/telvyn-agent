@@ -27,6 +27,8 @@ public final class JavaProtection {
     private static volatile List<Range> deny = List.of(), pass = List.of();
     private static volatile Map<String, String> rules = Map.of();
     private static volatile Map<String, Long> users = Map.of();
+    /** Modo de coleta de usuários definido na tela (identification, anonymization, disabled), ou null. */
+    private static volatile String tracking;
 
     private JavaProtection() {}
 
@@ -52,6 +54,8 @@ public final class JavaProtection {
             } catch (RuntimeException invalid) { /* entrada inválida é ignorada */ }
         }
         users = blockedUsers;
+        String mode = protection.has("user_tracking_mode") && protection.get("user_tracking_mode").isJsonPrimitive() ? protection.get("user_tracking_mode").getAsString() : null;
+        tracking = java.util.Set.of("identification", "anonymization", "disabled").contains(mode) ? mode : null;
         pass = ranges(protection.get("passlist"));
         revision = next;
     }
@@ -116,7 +120,10 @@ public final class JavaProtection {
     static boolean denied(String ip) { byte[] address = literal(ip); return matches(deny, address) && !matches(pass, address); }
     static boolean passed(String ip) { return matches(pass, literal(ip)); }
     /** Usuário logado bloqueado na tela (com prazo). */
-    static boolean userBlocked(String user) { Long expires = user == null ? null : users.get(user); return expires != null && expires > System.currentTimeMillis(); }
+    static String userTracking() { return tracking; }
+    /** Usuário bloqueado a partir de um evento anonimizado fica na lista pelo hash: as duas formas valem. */
+    static boolean userBlocked(String user) { return user != null && !users.isEmpty() && (listed(user) || listed(UserActivity.anonymize(user))); }
+    private static boolean listed(String user) { Long expires = users.get(user); return expires != null && expires > System.currentTimeMillis(); }
     /** Modo da regra; sem escolha na tela, a regra só monitora (padrão do Datadog). */
     static String ruleMode(String rule) {
         String mode = rules.get(rule);
@@ -124,8 +131,18 @@ public final class JavaProtection {
     }
     static boolean anyBlocking() { return rules.containsValue("blocking"); }
 
-    private static final String[] HEADERS = {"x-forwarded-for", "x-real-ip", "true-client-ip", "x-client-ip", "x-forwarded", "forwarded-for",
+    /**
+     * telvyn.client-ip-header / TELVYN_CLIENT_IP_HEADER (como o DD_TRACE_CLIENT_IP_HEADER): só esse cabeçalho é confiável e os
+     * demais são ignorados — para aplicações atrás de um proxy conhecido, sem que o cliente forje o endereço por outro cabeçalho.
+     */
+    private static final String[] HEADERS = trustedHeader() != null ? new String[]{trustedHeader()} : new String[]{"x-forwarded-for", "x-real-ip", "true-client-ip", "x-client-ip", "x-forwarded", "forwarded-for",
             "x-cluster-client-ip", "fastly-client-ip", "cf-connecting-ip", "cf-connecting-ipv6"};
+
+    private static String trustedHeader() {
+        String value = System.getProperty("telvyn.client-ip-header");
+        if (value == null) value = System.getenv("TELVYN_CLIENT_IP_HEADER");
+        return value == null || value.isBlank() ? null : value.trim().toLowerCase(java.util.Locale.ROOT);
+    }
 
     /** IP de origem como o Datadog: o primeiro público nos cabeçalhos de proxy; senão o da conexão. */
     static String clientIp(Object request) {
