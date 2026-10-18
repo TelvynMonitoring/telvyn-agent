@@ -1,11 +1,5 @@
 package system.monitoring.debugger;
 
-import com.datadog.ddwaf.Waf;
-import com.datadog.ddwaf.WafBuilder;
-import com.datadog.ddwaf.WafContext;
-import com.datadog.ddwaf.WafHandle;
-import com.datadog.ddwaf.WafMetrics;
-import com.datadog.ddwaf.exception.TimeoutWafException;
 import com.google.gson.Gson;
 import com.google.gson.JsonParser;
 
@@ -34,9 +28,11 @@ import java.util.Set;
 public final class WafInspector {
     public static final String RULES_VERSION;
     private static final Map<String, Object> RULES;
-    private static volatile WafHandle handle;
+    /** Motor do WAF (no class loader isolado, ver WafEngines). */
+    private static volatile Object handle;
     private static volatile String engine;
-    private static final Waf.Limits LIMITS = new Waf.Limits(20, 256, 4096, 10000, 10000);
+    /** Profundidade, elementos, tamanho de texto, tempo do WAF e tempo total (µs). */
+    private static final int[] LIMITS = {20, 256, 4096, 10000, 10000};
 
     static {
         Map<String, Object> rules;
@@ -52,32 +48,58 @@ public final class WafInspector {
 
     private WafInspector() {}
 
-    static synchronized WafHandle engine() throws Exception {
+    static synchronized Object engine() throws Exception {
         if (handle != null) return handle;
-        Waf.initialize(false);
-        var builder = new WafBuilder();
         try {
-            var diagnostics = builder.addOrUpdateConfig("telvyn-recommended", RULES);
-            if (diagnostics.getNumConfigError() != 0 || diagnostics.rules.getLoaded().isEmpty()) throw new IllegalStateException("invalid WAF rules");
-            handle = builder.buildWafHandleInstance();
-            engine = Waf.getVersion();
+            Object built = WafEngines.build(RULES, "telvyn-recommended", 0);
+            warmUp(built);
+            engine = WafEngines.version();
+            handle = built;
             return handle;
-        } finally { builder.close(); }
+        } catch (Exception | Error failure) { throw failure; }
+        catch (Throwable failure) { throw new IllegalStateException(failure); }
+    }
+
+    /**
+     * Execuções de aquecimento com dados típicos (sem ataque): as primeiras execuções com o JIT frio estouram o limite
+     * de tempo e deixariam passar os primeiros ataques depois da subida. Roda na thread de subida do sensor.
+     */
+    private static void warmUp(Object built) {
+        Map<String, Object> sample = new LinkedHashMap<>();
+        sample.put("server.request.headers.no_cookies", Map.of("user-agent", "Mozilla/5.0", "accept", "application/json", "host", "localhost"));
+        sample.put("server.request.query", Map.of("q", List.of("hello world"), "page", List.of("1")));
+        sample.put("server.request.uri.raw", "/warmup?q=hello+world&page=1");
+        sample.put("server.request.method", "GET");
+        sample.put("server.request.body", Map.of("name", "telvyn", "items", List.of(Map.of("id", 1, "note", "warm up"))));
+        sample.put("server.request.path_params", Map.of("id", "42"));
+        sample.put("http.client_ip", "10.0.0.1");
+        for (int i = 0; i < 20; i++) {
+            Object context = null;
+            try {
+                context = WafEngines.open(built);
+                WafEngines.run(context, sample, new int[]{20, 256, 4096, 1_000_000, 1_000_000});
+            } catch (Throwable ignored) { return; }
+            finally { if (context != null) try { WafEngines.close(context); } catch (Throwable ignored) { /* liberado */ } }
+        }
     }
 
     static String engineVersion() { return engine; }
 
     /** Estado de uma requisição: contexto do WAF, identidade da requisição e o que já foi reportado. */
     static final class State {
-        final WafContext context;
+        /** Contexto do WAF da requisição (objeto do motor isolado). */
+        final Object context;
         final String ip, method, path, userAgent;
         final String[] trace;
         final Set<String> reported = new LinkedHashSet<>();
         String user;
-        boolean blocked, closed, routeInspected, bodyInspected, timeoutReported;
+        boolean blocked, closed, routeInspected, bodyInspected, filesInspected, timeoutReported;
+        /** Corpo lido do ServletInputStream até o limite, e quantos bytes já foram lidos. */
+        java.io.ByteArrayOutputStream rawBody;
+        long rawRead;
         /** Chamadas aninhadas da mesma requisição (cadeia de filtros, servlet, DispatcherServlet): fecha na última. */
         int depth = 1;
-        State(WafContext context, String ip, String method, String path, String userAgent, String[] trace) {
+        State(Object context, String ip, String method, String path, String userAgent, String[] trace) {
             this.context = context; this.ip = ip; this.method = method; this.path = path; this.userAgent = userAgent; this.trace = trace;
         }
     }
@@ -86,7 +108,9 @@ public final class WafInspector {
     record Evaluation(String outcome, List<Match> matches, long elapsedUs) {}
 
     static State open(String ip, String method, String path, String userAgent, String[] trace) throws Exception {
-        return new State(new WafContext(engine()), ip, method, path, userAgent, trace);
+        try { return new State(WafEngines.open(engine()), ip, method, path, userAgent, trace); }
+        catch (Exception | Error failure) { throw failure; }
+        catch (Throwable failure) { throw new IllegalStateException(failure); }
     }
 
     /** Roda uma fase no contexto da requisição; devolve só as regras novas (sem as desligadas). */
@@ -98,13 +122,14 @@ public final class WafInspector {
         long start = System.nanoTime();
         if (state.closed || data.isEmpty()) return new Evaluation("no_match", List.of(), 0);
         try {
-            var result = state.context.run(data, LIMITS, new WafMetrics());
+            Object[] result = WafEngines.run(state.context, data, LIMITS);
             long elapsed = (System.nanoTime() - start) / 1000;
-            if (result.result == Waf.Result.OK) return new Evaluation("no_match", List.of(), elapsed);
-            if (result.result != Waf.Result.MATCH) return new Evaluation("error", List.of(), elapsed);
+            if ("ok".equals(result[0])) return new Evaluation("no_match", List.of(), elapsed);
+            if ("timeout".equals(result[0])) return new Evaluation("timeout", List.of(), elapsed);
+            if (!"match".equals(result[0])) return new Evaluation("error", List.of(), elapsed);
             List<Match> matches = new ArrayList<>();
             // Os dados de match trazem o valor recebido: só a regra, o endereço e a chave saem daqui.
-            for (var item : JsonParser.parseString(result.data).getAsJsonArray()) {
+            for (var item : JsonParser.parseString((String) result[1]).getAsJsonArray()) {
                 var event = item.getAsJsonObject();
                 String rule = event.getAsJsonObject("rule").get("id").getAsString();
                 if (state.reported.contains(rule) || "disabled".equals(JavaProtection.ruleMode(rule))) continue;
@@ -125,9 +150,7 @@ public final class WafInspector {
                 matches.add(new Match(rule, address));
             }
             return new Evaluation(matches.isEmpty() ? "no_match" : "match", matches, elapsed);
-        } catch (TimeoutWafException timeout) {
-            return new Evaluation("timeout", List.of(), (System.nanoTime() - start) / 1000);
-        } catch (Exception | LinkageError failure) {
+        } catch (Throwable failure) {
             return new Evaluation("error", List.of(), (System.nanoTime() - start) / 1000);
         }
     }
@@ -136,7 +159,7 @@ public final class WafInspector {
         synchronized (state) {
             if (state.closed) return;
             state.closed = true;
-            try { state.context.close(); } catch (RuntimeException ignored) { /* contexto já liberado */ }
+            try { WafEngines.close(state.context); } catch (Throwable ignored) { /* contexto já liberado */ }
         }
     }
 
@@ -217,6 +240,16 @@ public final class WafInspector {
             return out;
         }
         String name = value.getClass().getName();
+        // JSON do Vert.x: o conteúdo, não os campos internos.
+        // Formulário do JAX-RS (Form): os campos.
+        if (name.equals("jakarta.ws.rs.core.Form") || name.equals("javax.ws.rs.core.Form")) {
+            try { return introspect(value.getClass().getMethod("asMap").invoke(value), depth, count, seen); }
+            catch (ReflectiveOperationException | RuntimeException unavailable) { return value.toString(); }
+        }
+        if (name.equals("io.vertx.core.json.JsonObject") || name.equals("io.vertx.core.json.JsonArray")) {
+            try { return introspect(value.getClass().getMethod(name.endsWith("Object") ? "getMap" : "getList").invoke(value), depth, count, seen); }
+            catch (ReflectiveOperationException | RuntimeException unavailable) { return value.toString(); }
+        }
         if (name.startsWith("java.") || name.startsWith("javax.") || name.startsWith("jakarta.") || name.startsWith("sun.")) return value.toString();
         Map<String, Object> out = new LinkedHashMap<>();
         for (Class<?> type = value.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {

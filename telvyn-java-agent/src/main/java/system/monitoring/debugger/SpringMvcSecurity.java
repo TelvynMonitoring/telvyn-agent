@@ -27,6 +27,8 @@ public final class SpringMvcSecurity {
     /** Requisição em curso nesta thread (requisição, resposta, estado), para os eventos de login do Spring Security. */
     private static final ThreadLocal<Object[]> current=new ThreadLocal<>();
     static Object[] current(){return current.get();}
+    /** Requisição em curso definida por outro framework (Vert.x) enquanto o handler roda; null limpa. */
+    static void current(Object[] value){if(value==null)current.remove();else current.set(value);}
     /** Bloqueio decidido no corpo: interrompe o handler; a resposta de bloqueio já foi escrita. */
     public static final class BlockedRequestException extends RuntimeException {
         public BlockedRequestException(){super("request blocked by Telvyn",null,false,false);}
@@ -151,7 +153,9 @@ public final class SpringMvcSecurity {
     }
     /** Reporta as regras novas da fase e decide o bloqueio por regra. */
     static LocalAttackReporter wafReporter(){start();return waf;}
-    static boolean decide(WafInspector.State state,WafInspector.Evaluation evaluation,LocalAttackReporter reporter){
+    static boolean decide(WafInspector.State state,WafInspector.Evaluation evaluation,LocalAttackReporter reporter){return decide(state,evaluation,reporter,true);}
+    /** blockable=false: só detecta (pontos onde o Datadog também não bloqueia, como o graphql-java e o gRPC). */
+    static boolean decide(WafInspector.State state,WafInspector.Evaluation evaluation,LocalAttackReporter reporter,boolean blockable){
         if(!"match".equals(evaluation.outcome())){
             if(("timeout".equals(evaluation.outcome())&&!state.timeoutReported)||"error".equals(evaluation.outcome())){
                 state.timeoutReported|="timeout".equals(evaluation.outcome());
@@ -159,7 +163,7 @@ public final class SpringMvcSecurity {
             }
             return false;
         }
-        boolean block=!state.blocked&&JavaProtection.allowBlocking()&&!JavaProtection.passed(state.ip)&&evaluation.matches().stream().anyMatch(m->"blocking".equals(JavaProtection.ruleMode(m.rule())));
+        boolean block=blockable&&!state.blocked&&JavaProtection.allowBlocking()&&!JavaProtection.passed(state.ip)&&evaluation.matches().stream().anyMatch(m->"blocking".equals(JavaProtection.ruleMode(m.rule())));
         for(var match:evaluation.matches())reporter.reportWaf("match",match.rule(),match.address(),evaluation.elapsedUs(),WafInspector.engineVersion(),state.ip,state.method,state.path,state.userAgent,state.user,block&&"blocking".equals(JavaProtection.ruleMode(match.rule()))?"rule":null,state.trace[0],state.trace[1]);
         return block;
     }
@@ -224,7 +228,7 @@ public final class SpringMvcSecurity {
             Object contentType=request.getClass().getMethod("getContentType").invoke(request);
             if(contentType instanceof String type&&type.toLowerCase(Locale.ROOT).startsWith("application/x-www-form-urlencoded")){
                 Object form=request.getClass().getMethod("getParameterMap").invoke(request);
-                if(form instanceof Map<?,?> fields&&!fields.isEmpty())data.put("server.request.body",WafInspector.introspect(fields));
+                if(form instanceof Map<?,?> fields&&!fields.isEmpty()&&!state.bodyInspected){state.bodyInspected=true;data.put("server.request.body",WafInspector.introspect(fields));}
             }
             return decide(state,WafInspector.run(state,data),reporter)&&block(state,request,response,"rule",reporter);
         }catch(Exception|LinkageError failure){LocalAttackReporter.reportLoss("route inspection failure");return false;}

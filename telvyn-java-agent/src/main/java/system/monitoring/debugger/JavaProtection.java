@@ -223,10 +223,14 @@ public final class JavaProtection {
         return new BlockResponse(id, status, html ? "text/html;charset=UTF-8" : "application/json", body.getBytes(StandardCharsets.UTF_8), null);
     }
 
-    /** Escreve a resposta de bloqueio no servlet. Devolve o id da resposta, ou null se não foi possível responder. */
+    /**
+     * Escreve a resposta de bloqueio no servlet, ou pelo Vert.x (resposta nula ou do Vert.x: a requisição dá a resposta).
+     * Devolve o id da resposta, ou null se não foi possível responder.
+     */
     static String respond(Object request, Object response) {
         try {
             Class<?>[] none = {};
+            if (response == null || hasMethod(response, "setStatusCode")) return respondVertx(request, response == null ? call(request, "response", none) : response);
             if (Boolean.TRUE.equals(call(response, "isCommitted", none))) return null;
             call(response, "reset", none);
             Object accept = call(request, "getHeader", new Class<?>[]{String.class}, "Accept");
@@ -239,8 +243,27 @@ public final class JavaProtection {
             call(response, "setContentType", new Class<?>[]{String.class}, block.contentType());
             call(response, "setContentLength", new Class<?>[]{int.class}, block.body().length);
             ((java.io.OutputStream) call(response, "getOutputStream", none)).write(block.body());
-            call(response, "flushBuffer", none);
+            try { call(response, "flushBuffer", none); } catch (NoSuchMethodException grizzly) { call(response, "flush", none); }
             return block.id();
         } catch (ReflectiveOperationException | RuntimeException | java.io.IOException failure) { return null; }
+    }
+
+    private static boolean hasMethod(Object target, String name) {
+        for (var method : target.getClass().getMethods()) if (method.getName().equals(name)) return true;
+        return false;
+    }
+
+    /** Resposta de bloqueio pelo HttpServerResponse do Vert.x. */
+    private static String respondVertx(Object request, Object response) throws ReflectiveOperationException {
+        Class<?>[] none = {};
+        if (Boolean.TRUE.equals(call(response, "ended", none)) || Boolean.TRUE.equals(call(response, "headWritten", none))) return null;
+        Object accept = call(request, "getHeader", new Class<?>[]{String.class}, "Accept");
+        var block = blockResponse(accept instanceof String value ? value : null);
+        call(response, "setStatusCode", new Class<?>[]{int.class}, block.status());
+        Class<?>[] header = {String.class, String.class};
+        if (block.location() != null) call(response, "putHeader", header, "Location", block.location());
+        else call(response, "putHeader", header, "Content-Type", block.contentType());
+        call(response, "end", new Class<?>[]{String.class}, new String(block.body(), StandardCharsets.UTF_8));
+        return block.id();
     }
 }

@@ -1,7 +1,5 @@
 package system.monitoring.debugger;
 
-import com.datadog.ddwaf.*;
-import com.datadog.ddwaf.exception.TimeoutWafException;
 import com.google.gson.*;
 import java.io.InputStreamReader;
 import java.net.URLDecoder;
@@ -10,7 +8,8 @@ import java.util.*;
 
 /** Bounded query detection. Callers must select explicitly permitted input first. */
 public final class LocalAttackDetection implements AutoCloseable {
-    private WafHandle handle;
+    /** Motor do WAF (no class loader isolado, ver WafEngines). */
+    private Object handle;
     private String engine;
     public record Result(String outcome, List<String> rules, String engine_version, long elapsed_us) {}
 
@@ -64,18 +63,13 @@ public final class LocalAttackDetection implements AutoCloseable {
         return inspectSearchQuery(true,q);
     }
 
-    private synchronized WafHandle engine() throws Exception {
+    @SuppressWarnings("unchecked")
+    private synchronized Object engine() throws Throwable {
         if(handle!=null)return handle;
-        Waf.initialize(false);
         try(var stream=LocalAttackDetection.class.getResourceAsStream("/security/lab-query-v1.json")) {
             if(stream==null)throw new IllegalStateException("missing lab rules");
-            var rules=new Gson().fromJson(new InputStreamReader(stream,StandardCharsets.UTF_8),Map.class);
-            var builder=new WafBuilder();
-            try {
-                var diagnostics=builder.addOrUpdateConfig("lab",rules);
-                if(diagnostics.getNumConfigError()!=0||diagnostics.rules.getLoaded().size()!=2)throw new IllegalStateException("invalid lab rules");
-                handle=builder.buildWafHandleInstance();engine=Waf.getVersion();return handle;
-            }finally{builder.close();}
+            var rules=(Map<String,Object>)new Gson().fromJson(new InputStreamReader(stream,StandardCharsets.UTF_8),Map.class);
+            handle=WafEngines.build(rules,"lab",2);engine=WafEngines.version();return handle;
         }
     }
 
@@ -83,21 +77,24 @@ public final class LocalAttackDetection implements AutoCloseable {
         long start=System.nanoTime();String outcome;List<String> rules=new ArrayList<>();
         if(!enabled)return new Result("disabled",List.of(),engine,(System.nanoTime()-start)/1000);
         if(q!=null&&q.length()>2048)return new Result("limit",List.of(),engine,(System.nanoTime()-start)/1000);
-        try(var context=new WafContext(engine())) {
-            var result=context.run(Map.of("server.request.query",Map.of("q",q==null?"":q)),new Waf.Limits(8,32,2048,10000,10000),new WafMetrics());
-            outcome=result.result==Waf.Result.MATCH?"match":result.result==Waf.Result.OK?"no_match":"error";
-            if(result.result==Waf.Result.MATCH) {
+        Object context=null;
+        try {
+            context=WafEngines.open(engine());
+            Object[] result=WafEngines.run(context,Map.of("server.request.query",Map.of("q",q==null?"":q)),new int[]{8,32,2048,10000,10000});
+            outcome="match".equals(result[0])?"match":"ok".equals(result[0])?"no_match":"timeout".equals(result[0])?"timeout":"error";
+            if("match".equals(result[0])) {
                 // Native match data contains input values. Only copy known rule IDs out of it.
-                for(var event:JsonParser.parseString(result.data).getAsJsonArray()) {
+                for(var event:JsonParser.parseString((String)result[1]).getAsJsonArray()) {
                     String id=event.getAsJsonObject().getAsJsonObject("rule").get("id").getAsString();
                     if(Set.of("telvyn-lab-sqli-v1","telvyn-lab-xss-v1").contains(id)&&!rules.contains(id))rules.add(id);
                 }
                 if(rules.isEmpty())outcome="error";
             }
-        }catch(TimeoutWafException timeout){outcome="timeout";rules.clear();}
-        catch(Exception|LinkageError failure){outcome="error";rules.clear();}
+            if("timeout".equals(outcome))rules.clear();
+        }catch(Throwable failure){outcome="error";rules.clear();}
+        finally{if(context!=null)try{WafEngines.close(context);}catch(Throwable ignored){/* contexto já liberado */}}
         return new Result(outcome,List.copyOf(rules),engine,(System.nanoTime()-start)/1000);
     }
 
-    @Override public synchronized void close(){if(handle!=null){handle.close();handle=null;}}
+    @Override public synchronized void close(){if(handle!=null){try{WafEngines.close(handle);}catch(Throwable ignored){/* já liberado */}handle=null;}}
 }

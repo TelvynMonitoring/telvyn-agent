@@ -85,13 +85,137 @@ function patchStrategy(Strategy, framework, security) {
   Strategy.prototype.authenticate = authenticate;
 }
 
+// multer (as Datadog: body blocking on Express needs body-parser or multer): multipart fields are parsed by the
+// route's own middleware, after the route phase; they are inspected once multer finishes.
+function patchMulter(multer, security) {
+  if (typeof multer !== 'function' || multer.telvynSecurity) return;
+  multer.telvynSecurity = true;
+  let proto;
+  try { proto = Object.getPrototypeOf(multer()); } catch (_) { return; }
+  const original = proto?._makeMiddleware;
+  if (typeof original !== 'function' || original.telvynSecurity) return;
+  const makeMiddleware = function () {
+    const middleware = original.apply(this, arguments);
+    return function (request, response, next) {
+      return middleware.call(this, request, response, function (error) {
+        if (!error) {
+          try { if (security.inspectBody(request, request.body)) return; } catch (_) { /* Protection never breaks the application. */ }
+        }
+        return next.apply(this, arguments);
+      });
+    };
+  };
+  makeMiddleware.telvynSecurity = true;
+  proto._makeMiddleware = makeMiddleware;
+}
+
+// Next.js App Router (as Datadog): the body is inspected when the route handler reads the incoming request with
+// text(), json() or formData(). Detection only, as Datadog: Next.js is blocked at request start (IP, user, rules on
+// headers, query, URI); failing the read would make Next.js log an error and record the request as a 500.
+function patchWebRequest(security) {
+  const proto = globalThis.Request?.prototype;
+  if (!proto || proto.telvynSecurity) return;
+  proto.telvynSecurity = true;
+  const form = data => {
+    const out = {};
+    for (const [key, value] of data) if (typeof value === 'string') (out[key] ??= []).push(value);
+    return out;
+  };
+  for (const method of ['text', 'json', 'formData']) {
+    const original = proto[method];
+    if (typeof original !== 'function') continue;
+    proto[method] = function () {
+      const result = original.apply(this, arguments);
+      let incoming = false;
+      try { incoming = security.isIncoming(this); } catch (_) { /* Protection never breaks the application. */ }
+      if (!incoming) return result;
+      return result.then(body => {
+        try { security.inspectBody(null, method === 'formData' ? form(body) : body, false); } catch (_) { /* Protection never breaks the application. */ }
+        return body;
+      });
+    };
+  }
+}
+
+// GraphQL arguments as Datadog's graphql.server.all_resolvers: { field: [ { argument: value } ] } for every field of
+// the executed operation, with variables resolved.
+function resolverArguments(document, variables, operationName) {
+  const out = {}, fragments = {};
+  for (const definition of document?.definitions ?? []) if (definition.kind === 'FragmentDefinition') fragments[definition.name.value] = definition;
+  const value = node => {
+    switch (node?.kind) {
+      case 'Variable': return variables?.[node.name.value];
+      case 'IntValue': case 'FloatValue': case 'StringValue': case 'BooleanValue': case 'EnumValue': return node.value;
+      case 'ListValue': return node.values.map(value);
+      case 'ObjectValue': return Object.fromEntries(node.fields.map(field => [field.name.value, value(field.value)]));
+      default: return null;
+    }
+  };
+  const visit = (selectionSet, seen) => {
+    for (const selection of selectionSet?.selections ?? []) {
+      if (selection.kind === 'Field') {
+        if (selection.arguments?.length) (out[selection.name.value] ??= []).push(Object.fromEntries(selection.arguments.map(arg => [arg.name.value, value(arg.value)])));
+        visit(selection.selectionSet, seen);
+      } else if (selection.kind === 'InlineFragment') visit(selection.selectionSet, seen);
+      else if (selection.kind === 'FragmentSpread' && !seen.has(selection.name.value)) { seen.add(selection.name.value); visit(fragments[selection.name.value]?.selectionSet, seen); }
+    }
+  };
+  for (const definition of document?.definitions ?? []) {
+    if (definition.kind !== 'OperationDefinition' || operationName && definition.name?.value !== operationName) continue;
+    visit(definition.selectionSet, new Set());
+  }
+  return out;
+}
+
+// graphql-js execute (used by Apollo Server and most Node GraphQL servers).
+function patchGraphql(graphqlFile, security) {
+  let execution;
+  try { execution = require(path.join(path.dirname(graphqlFile), 'execution', 'execute.js')); } catch (_) { return; }
+  const original = execution?.execute;
+  if (typeof original !== 'function' || original.telvynSecurity) return;
+  const execute = function (args) {
+    try {
+      const options = arguments.length === 1 && args && typeof args === 'object' && args.document ? args
+        : {document: arguments[1], variableValues: arguments[4], operationName: arguments[5]};
+      if (security.inspectGraphql(resolverArguments(options.document, options.variableValues, options.operationName))) return {errors: [new Error('Request blocked by Telvyn')]};
+    } catch (_) { /* Protection never breaks the application. */ }
+    return original.apply(this, arguments);
+  };
+  execute.telvynSecurity = true;
+  execution.execute = execute;
+}
+
+// Apollo Server (as Datadog: ApolloServer.executeHTTPGraphQLRequest): a request blocked during execution is
+// answered by Apollo itself with the block response.
+function patchApollo(exported, security) {
+  const proto = exported?.ApolloServer?.prototype;
+  const original = proto?.executeHTTPGraphQLRequest;
+  if (typeof original !== 'function' || original.telvynSecurity) return;
+  const execute = async function () {
+    try { security.apolloStart(); } catch (_) { /* Protection never breaks the application. */ }
+    const result = await original.apply(this, arguments);
+    let block = null;
+    try { block = security.apolloBlock(); } catch (_) { /* Protection never breaks the application. */ }
+    if (!block || typeof result?.headers?.constructor !== 'function') return result;
+    const headers = new result.headers.constructor();
+    for (const [name, value] of Object.entries(block.headers)) headers.set(name, value);
+    return {status: block.status, headers, body: {kind: 'complete', string: block.body}};
+  };
+  execute.telvynSecurity = true;
+  proto.executeHTTPGraphQLRequest = execute;
+}
+
 function watchFrameworks(security) {
+  try { patchWebRequest(security); } catch (_) { /* Protection never breaks the application. */ }
   const Module = require('node:module'), load = Module._load;
   Module._load = function (name, parent, ...rest) {
     const exported = load.call(this, name, parent, ...rest);
     try {
       if (name === 'express') watchExpress(Module._resolveFilename(name, parent), security);
       else if (name === 'fastify') return wrapFastify(exported, security);
+      else if (name === 'multer') patchMulter(exported, security);
+      else if (name === 'graphql') patchGraphql(Module._resolveFilename(name, parent), security);
+      else if (name === '@apollo/server') patchApollo(exported, security);
       else if (name === 'passport-local') patchStrategy(exported?.Strategy, 'passport-local', security);
       else if (name === 'passport-http') patchStrategy(exported?.BasicStrategy, 'passport-http', security);
     } catch (_) { /* Protection never breaks the application. */ }
@@ -99,8 +223,11 @@ function watchFrameworks(security) {
   };
   try {
     const { Hook } = require('import-in-the-middle');
-    new Hook(['express', 'fastify', 'passport-local', 'passport-http'], (exported, name, baseDir) => {
+    new Hook(['express', 'fastify', 'passport-local', 'passport-http', 'multer', 'graphql', '@apollo/server'], (exported, name, baseDir) => {
       try {
+        if (name === 'graphql' && baseDir) patchGraphql(path.join(baseDir, 'index.js'), security);
+        if (name === '@apollo/server') patchApollo(exported, security);
+        if (name === 'multer') patchMulter(exported.default ?? exported, security);
         if (name === 'passport-local') patchStrategy(exported.Strategy ?? exported.default?.Strategy, 'passport-local', security);
         if (name === 'passport-http') patchStrategy(exported.BasicStrategy ?? exported.default?.BasicStrategy, 'passport-http', security);
         if (name === 'express' && baseDir) watchExpress(path.join(baseDir, 'index.js'), security);

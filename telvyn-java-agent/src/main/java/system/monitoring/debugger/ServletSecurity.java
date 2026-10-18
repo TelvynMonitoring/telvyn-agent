@@ -17,13 +17,15 @@ public final class ServletSecurity {
     private ServletSecurity() {}
 
     public static void install(Instrumentation instrumentation) {
-        new AgentBuilder.Default().disableClassFormatChanges()
-            .type(hasSuperType(namedOneOf("javax.servlet.http.HttpServlet", "jakarta.servlet.http.HttpServlet")).and(not(isInterface())))
+        Agents.builder()
+            .type(hasSuperType(namedOneOf("javax.servlet.http.HttpServlet", "jakarta.servlet.http.HttpServlet")).and(not(isInterface())),
+                LoaderMatchers.canSee("javax.servlet.http.HttpServlet", "jakarta.servlet.http.HttpServlet"))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(Service.class).on(named("service").and(not(isAbstract())).and(takesArguments(2))
                 .and(takesArgument(0, namedOneOf("javax.servlet.http.HttpServletRequest", "jakarta.servlet.http.HttpServletRequest"))))))
             .installOn(instrumentation);
-        new AgentBuilder.Default().disableClassFormatChanges()
-            .type(hasSuperType(namedOneOf("javax.servlet.FilterChain", "jakarta.servlet.FilterChain")).and(not(isInterface())))
+        Agents.builder()
+            .type(hasSuperType(namedOneOf("javax.servlet.FilterChain", "jakarta.servlet.FilterChain")).and(not(isInterface())),
+                LoaderMatchers.canSee("javax.servlet.FilterChain", "jakarta.servlet.FilterChain"))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(Chain.class).on(named("doFilter").and(not(isAbstract())).and(takesArguments(2)))))
             .installOn(instrumentation);
     }
@@ -31,8 +33,12 @@ public final class ServletSecurity {
     public static class Service {
         @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
         public static boolean enter(@Advice.Argument(0) Object request, @Advice.Argument(1) Object response) { return SpringMvcSecurity.requestStart(request, response); }
+        // Bloqueio durante a leitura do corpo: a resposta já foi enviada, a requisição só termina.
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
-        public static void exit(@Advice.Argument(0) Object request, @Advice.Argument(1) Object response) { SpringMvcSecurity.requestEnd(request, response); }
+        public static void exit(@Advice.Argument(0) Object request, @Advice.Argument(1) Object response, @Advice.Thrown(readOnly = false) Throwable thrown) {
+            SpringMvcSecurity.requestEnd(request, response);
+            if (thrown instanceof SpringMvcSecurity.BlockedRequestException) thrown = null;
+        }
     }
 
     public static class Chain {
