@@ -15,6 +15,8 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		signal = "security/lab"
 	} else if r.URL.Path == "/v1/security/users" {
 		signal = "security/users"
+	} else if r.URL.Path == "/v1/security/api" {
+		signal = "security/api"
 	}
 	h.serveOTLP(w, r, "/v1/"+signal, func(body []byte, ct, clientIP string) (int, error) {
 		if ct != "application/json" {
@@ -22,7 +24,7 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		}
 		// Code findings also carry a masked statement and a call stack.
 		limit := 8192
-		if signal == "security/iast" {
+		if signal == "security/iast" || signal == "security/api" {
 			limit = 32768
 		}
 		if len(body) > limit {
@@ -33,6 +35,15 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 			return http.StatusBadRequest, errors.New("security report required")
 		}
 		for field := range report {
+			if signal == "security/api" {
+				// API Security schemas (as Datadog): field types and scanner tags, never the values.
+				switch field {
+				case "id", "service", "host", "environment", "service_version", "method", "route", "status", "schemas":
+					continue
+				default:
+					return http.StatusBadRequest, errors.New("unsupported security field")
+				}
+			}
 			if signal == "security/users" {
 				// User activity (login success/failure, signup), as Datadog user events: no credentials, only identity.
 				switch field {
