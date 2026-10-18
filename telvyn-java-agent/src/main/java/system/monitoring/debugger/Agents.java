@@ -26,7 +26,15 @@ final class Agents {
 
     private Agents() {}
 
+    /** Falha ao instrumentar uma classe: uma linha por classe, para não passar despercebida (o ByteBuddy é silencioso). */
+    private static final AgentBuilder.Listener ERRORS = new AgentBuilder.Listener.Adapter() {
+        @Override
+        public void onError(String typeName, ClassLoader classLoader, net.bytebuddy.utility.JavaModule module, boolean loaded, Throwable throwable) {
+            System.err.println("[telvyn] instrumentation failed for " + typeName + TelvynDebuggerAgent.reason(throwable));
+        }
+    };
+
     static AgentBuilder builder() {
-        return new AgentBuilder.Default().disableClassFormatChanges().with(SHARED);
+        return new AgentBuilder.Default().disableClassFormatChanges().with(SHARED).with(ERRORS);
     }
 }

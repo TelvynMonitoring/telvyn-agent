@@ -243,7 +243,7 @@ public final class JavaProtection {
             call(response, "setContentType", new Class<?>[]{String.class}, block.contentType());
             call(response, "setContentLength", new Class<?>[]{int.class}, block.body().length);
             ((java.io.OutputStream) call(response, "getOutputStream", none)).write(block.body());
-            call(response, "flushBuffer", none);
+            try { call(response, "flushBuffer", none); } catch (NoSuchMethodException grizzly) { call(response, "flush", none); }
             return block.id();
         } catch (ReflectiveOperationException | RuntimeException | java.io.IOException failure) { return null; }
     }

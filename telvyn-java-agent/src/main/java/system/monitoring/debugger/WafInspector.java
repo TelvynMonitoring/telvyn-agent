@@ -218,6 +218,11 @@ public final class WafInspector {
         }
         String name = value.getClass().getName();
         // JSON do Vert.x: o conteúdo, não os campos internos.
+        // Formulário do JAX-RS (Form): os campos.
+        if (name.equals("jakarta.ws.rs.core.Form") || name.equals("javax.ws.rs.core.Form")) {
+            try { return introspect(value.getClass().getMethod("asMap").invoke(value), depth, count, seen); }
+            catch (ReflectiveOperationException | RuntimeException unavailable) { return value.toString(); }
+        }
         if (name.equals("io.vertx.core.json.JsonObject") || name.equals("io.vertx.core.json.JsonArray")) {
             try { return introspect(value.getClass().getMethod(name.endsWith("Object") ? "getMap" : "getList").invoke(value), depth, count, seen); }
             catch (ReflectiveOperationException | RuntimeException unavailable) { return value.toString(); }
