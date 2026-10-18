@@ -30,11 +30,19 @@ final class Agents {
     private static final AgentBuilder.Listener ERRORS = new AgentBuilder.Listener.Adapter() {
         @Override
         public void onError(String typeName, ClassLoader classLoader, net.bytebuddy.utility.JavaModule module, boolean loaded, Throwable throwable) {
+            // Tipo que não se resolve durante a checagem de hierarquia não é falha de instrumentação.
+            if (throwable instanceof TypePool.Resolution.NoSuchTypeException) return;
             System.err.println("[telvyn] instrumentation failed for " + typeName + TelvynDebuggerAgent.reason(throwable));
         }
     };
 
     static AgentBuilder builder() {
-        return new AgentBuilder.Default().disableClassFormatChanges().with(SHARED).with(ERRORS);
+        return new AgentBuilder.Default().disableClassFormatChanges().with(SHARED).with(ERRORS)
+            // Classes de outros agentes (OpenTelemetry) e do próprio ByteBuddy nunca são alvo.
+            .ignore(net.bytebuddy.matcher.ElementMatchers.any(), net.bytebuddy.matcher.ElementMatchers.isBootstrapClassLoader())
+            .or(net.bytebuddy.matcher.ElementMatchers.nameStartsWith("io.opentelemetry.javaagent.")
+                .or(net.bytebuddy.matcher.ElementMatchers.nameStartsWith("net.bytebuddy."))
+                .or(net.bytebuddy.matcher.ElementMatchers.nameStartsWith("system.monitoring.debugger."))
+                .or(net.bytebuddy.matcher.ElementMatchers.isSynthetic()));
     }
 }

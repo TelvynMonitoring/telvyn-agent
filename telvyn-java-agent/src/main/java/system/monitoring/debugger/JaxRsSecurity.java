@@ -134,9 +134,22 @@ public final class JaxRsSecurity {
             catch (NoSuchMethodException resteasy) { uriInfo = JavaProtection.call(request, "getUri", new Class<?>[]{}); }
             params = JavaProtection.call(uriInfo, "getPathParameters", new Class<?>[]{});
         } catch (ReflectiveOperationException | RuntimeException | LinkageError failure) { LocalAttackReporter.reportLoss("JAX-RS inspection failure"); return; }
-        if (!(params instanceof Map<?, ?> map) || map.isEmpty()) return;
+        Map<String, Object> data = new LinkedHashMap<>();
+        if (params instanceof Map<?, ?> map && !map.isEmpty()) data.put("server.request.path_params", WafInspector.introspect(map));
+        // RESTEasy: @FormParam vem dos parâmetros de formulário decodificados, não do leitor de corpo.
+        if (!state.bodyInspected) {
+            try {
+                Object type = JavaProtection.call(JavaProtection.call(request, "getHttpHeaders", new Class<?>[]{}), "getMediaType", new Class<?>[]{});
+                if (type != null && type.toString().toLowerCase(java.util.Locale.ROOT).startsWith("application/x-www-form-urlencoded")
+                        && JavaProtection.call(request, "getDecodedFormParameters", new Class<?>[]{}) instanceof Map<?, ?> form && !form.isEmpty()) {
+                    state.bodyInspected = true;
+                    data.put("server.request.body", WafInspector.introspect(form));
+                }
+            } catch (ReflectiveOperationException | RuntimeException notResteasy) { /* Jersey lê o formulário pelo leitor de corpo */ }
+        }
+        if (data.isEmpty()) return;
         state.routeInspected = true;
-        if (SpringMvcSecurity.decide(state, WafInspector.run(state, Map.of("server.request.path_params", WafInspector.introspect(map))), reporter)) throw blocked(loader, accept(request), state);
+        if (SpringMvcSecurity.decide(state, WafInspector.run(state, data), reporter)) throw blocked(loader, accept(request), state);
     }
 
     /** WebApplicationException com a resposta de bloqueio da tela (javax ou jakarta, o que a aplicação usa). */
