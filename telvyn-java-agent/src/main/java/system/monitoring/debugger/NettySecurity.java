@@ -26,6 +26,9 @@ public final class NettySecurity {
 
     private NettySecurity() {}
 
+    /** Estado da requisição em curso no canal (para os frameworks sobre o Netty, como o Ratpack), ou null. */
+    static WafInspector.State state(Object channel) { return channel == null ? null : CHANNELS.get(channel); }
+
     public static void install(Instrumentation instrumentation) {
         Agents.builder()
             .type(named("io.netty.handler.codec.http.HttpObjectDecoder"))
@@ -149,8 +152,24 @@ public final class NettySecurity {
         else call(headers, "set", set, "Content-Type", block.contentType());
         call(headers, "set", set, "Content-Length", block.body().length);
         call(headers, "set", set, "Connection", "close");
-        // Pelo canal (fim do pipeline): o contexto do decodificador pularia o codificador HTTP do próprio codec.
-        Object future = call(call(context, "channel", new Class<?>[]{}), "writeAndFlush", new Class<?>[]{Object.class}, response);
+        // Direto ao codificador HTTP do pipeline: a resposta é codificada e vai ao socket sem passar pelos handlers da
+        // aplicação (um compressor, por exemplo, rejeitaria uma resposta sem a requisição que foi retirada).
+        Object pipeline = call(context, "pipeline", new Class<?>[]{});
+        Object encoder = null;
+        Class<?> encoderType = Class.forName("io.netty.handler.codec.http.HttpObjectEncoder", false, loader);
+        for (Object handler : ((Map<?, ?>) call(pipeline, "toMap", new Class<?>[]{})).values())
+            if (encoderType.isInstance(handler) || handler.getClass().getName().equals("io.netty.handler.codec.http.HttpServerCodec")) { encoder = handler; break; }
+        Class<?> contextType = Class.forName("io.netty.channel.ChannelHandlerContext", false, loader);
+        Class<?> promiseType = Class.forName("io.netty.channel.ChannelPromise", false, loader);
+        Object future;
+        if (encoder == null) {
+            future = call(call(context, "channel", new Class<?>[]{}), "writeAndFlush", new Class<?>[]{Object.class}, response);
+        } else {
+            Object encoderContext = call(pipeline, "context", new Class<?>[]{Class.forName("io.netty.channel.ChannelHandler", false, loader)}, encoder);
+            future = call(encoderContext, "newPromise", new Class<?>[]{});
+            call(encoder, "write", new Class<?>[]{contextType, Object.class, promiseType}, encoderContext, response, future);
+            call(encoderContext, "flush", new Class<?>[]{});
+        }
         Class<?> listener = Class.forName("io.netty.util.concurrent.GenericFutureListener", false, loader);
         Object close = Class.forName("io.netty.channel.ChannelFutureListener", false, loader).getField("CLOSE").get(null);
         call(future, "addListener", new Class<?>[]{listener}, close);
