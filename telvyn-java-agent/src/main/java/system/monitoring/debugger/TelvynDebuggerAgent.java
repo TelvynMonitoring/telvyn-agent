@@ -76,6 +76,7 @@ public final class TelvynDebuggerAgent {
         try { VertxSecurity.install(inst); } catch(Throwable failure) { startupFailure("Vert.x security",failure); }
         try { JaxRsSecurity.install(inst); } catch(Throwable failure) { startupFailure("JAX-RS security",failure); }
         try { GrizzlySecurity.install(inst); } catch(Throwable failure) { startupFailure("Grizzly security",failure); }
+        try { NettySecurity.install(inst); } catch(Throwable failure) { startupFailure("Netty security",failure); }
         // Regras do WAF carregadas na subida, fora das threads da aplicação: a primeira requisição não espera
         // (num event loop do Vert.x/Quarkus a carga travaria a thread).
         if (Boolean.parseBoolean(System.getProperty("telvyn.security.enabled", System.getenv().getOrDefault("TELVYN_SECURITY_ENABLED", "false")))) {
