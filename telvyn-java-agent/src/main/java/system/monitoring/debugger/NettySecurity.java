@@ -189,7 +189,10 @@ public final class NettySecurity {
                 var reporter = SpringMvcSecurity.wafReporter();
                 if (reporter != null && !state.blocked) {
                     Object status = call(call(message, "status", new Class<?>[]{}), "code", new Class<?>[]{});
-                    SpringMvcSecurity.decide(state, WafInspector.run(state, Map.of("server.response.status", String.valueOf(status))), reporter);
+                    ApiSecurity.finish(state, status, () -> {
+                        try { return ApiSecurity.headers((Iterable<?>) call(message, "headers", new Class<?>[]{})); }
+                        catch (ReflectiveOperationException unavailable) { return Map.of(); }
+                    }, reporter);
                 }
             } finally { WafInspector.close(state); }
         } catch (Exception | LinkageError failure) { LocalAttackReporter.reportLoss("Netty status inspection failure"); }

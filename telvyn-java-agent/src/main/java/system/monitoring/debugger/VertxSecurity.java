@@ -124,6 +124,8 @@ public final class VertxSecurity {
         try {
             Object request = call(context, "request");
             SpringMvcSecurity.current(new Object[]{request, call(request, "response"), state});
+            try { if (call(call(context, "currentRoute"), "getPath") instanceof String route && !route.isEmpty()) state.route = route; }
+            catch (ReflectiveOperationException | RuntimeException noPath) { /* rota sem caminho */ }
             if (reporter == null) return false;
             Map<String, Object> data = new LinkedHashMap<>();
             if (!state.routeInspected && call(context, "pathParams") instanceof Map<?, ?> params && !params.isEmpty()) {
@@ -197,8 +199,11 @@ public final class VertxSecurity {
             try {
                 var reporter = SpringMvcSecurity.wafReporter();
                 if (reporter != null && !state.blocked) {
-                    Object status = call(call(request, "response"), "getStatusCode");
-                    SpringMvcSecurity.decide(state, WafInspector.run(state, Map.of("server.response.status", String.valueOf(status))), reporter);
+                    Object response = call(request, "response");
+                    ApiSecurity.finish(state, call(response, "getStatusCode"), () -> {
+                        try { return ApiSecurity.headers((Iterable<?>) call(response, "headers")); }
+                        catch (ReflectiveOperationException unavailable) { return Map.of(); }
+                    }, reporter);
                 }
             } catch (ReflectiveOperationException | RuntimeException ignored) { /* status indisponível */ }
             finally { WafInspector.close(state); }

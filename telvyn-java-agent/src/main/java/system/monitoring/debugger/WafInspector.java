@@ -97,6 +97,9 @@ public final class WafInspector {
         /** Corpo lido do ServletInputStream até o limite, e quantos bytes já foram lidos. */
         java.io.ByteArrayOutputStream rawBody;
         long rawRead;
+        /** Rota do framework (modelo, como /items/{id}) e atributos da última execução do WAF (esquemas da API). */
+        String route;
+        Map<String, Object> derivatives;
         /** Chamadas aninhadas da mesma requisição (cadeia de filtros, servlet, DispatcherServlet): fecha na última. */
         int depth = 1;
         State(Object context, String ip, String method, String path, String userAgent, String[] trace) {
@@ -127,6 +130,8 @@ public final class WafInspector {
         try {
             Object[] result = WafEngines.run(state.context, data, LIMITS, ephemeral);
             long elapsed = (System.nanoTime() - start) / 1000;
+            @SuppressWarnings("unchecked") Map<String, Object> attributes = result.length > 2 && result[2] instanceof Map<?, ?> map && !map.isEmpty() ? (Map<String, Object>) map : null;
+            if (attributes != null) state.derivatives = attributes;
             if ("ok".equals(result[0])) return new Evaluation("no_match", List.of(), elapsed);
             if ("timeout".equals(result[0])) return new Evaluation("timeout", List.of(), elapsed);
             if (!"match".equals(result[0])) return new Evaluation("error", List.of(), elapsed);

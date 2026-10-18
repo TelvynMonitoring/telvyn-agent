@@ -102,7 +102,12 @@ public final class WebFluxWaf {
                 if (!state.blocked) {
                     Object status = JavaProtection.call(response, "getStatusCode", new Class<?>[]{});
                     String code = status == null ? "200" : String.valueOf(JavaProtection.call(status, "value", new Class<?>[]{}));
-                    SpringMvcSecurity.decide(state, WafInspector.run(state, Map.of("server.response.status", code)), reporter);
+                    Object pattern = attributes(exchange).get("org.springframework.web.reactive.HandlerMapping.bestMatchingPattern");
+                    if (pattern != null) state.route = String.valueOf(JavaProtection.call(pattern, "getPatternString", new Class<?>[]{}));
+                    ApiSecurity.finish(state, code, () -> {
+                        try { return ApiSecurity.headers(((Map<?, ?>) JavaProtection.call(response, "getHeaders", new Class<?>[]{})).entrySet()); }
+                        catch (ReflectiveOperationException unavailable) { return Map.of(); }
+                    }, reporter);
                 }
             } catch (ReflectiveOperationException | RuntimeException ignored) { /* status indisponível */ }
             finally { WafInspector.close(state); }

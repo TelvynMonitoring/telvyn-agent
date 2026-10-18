@@ -14,7 +14,8 @@ function patchLayer(Layer, method, security) {
     // Route handlers (layers inside a Route) carry the HTTP method; middlewares do not.
     if (this.method !== undefined && request && response && !response.headersSent) {
       try {
-        if (security.inspectRoute(request, {body: request.body, params: request.params, user: userId(request.user)})) { security.block(request, response); return; }
+        const route = request.route?.path != null ? (request.baseUrl || '') + request.route.path : undefined;
+        if (security.inspectRoute(request, {body: request.body, params: request.params, user: userId(request.user), route})) { security.block(request, response); return; }
       } catch (_) { /* Protection never breaks the application. */ }
     }
     return original.apply(this, arguments);
@@ -37,7 +38,7 @@ function wrapFastify(factory, security) {
     try {
       app.addHook('preHandler', async (request, reply) => {
         try {
-          if (security.inspectRoute(request.raw, {body: request.body, params: request.params, user: userId(request.user)})) {
+          if (security.inspectRoute(request.raw, {body: request.body, params: request.params, user: userId(request.user), route: request.routeOptions?.url ?? request.routerPath})) {
             reply.hijack();
             security.block(request.raw, reply.raw);
             return reply;

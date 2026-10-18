@@ -42,9 +42,10 @@ public final class WafEngine {
             var waf = (WafContext) context;
             var bounds = new Waf.Limits(limits[0], limits[1], limits[2], limits[3], limits[4]);
             var result = ephemeral ? waf.runEphemeral(data, bounds, new WafMetrics()) : waf.run(data, bounds, new WafMetrics());
-            if (result.result == Waf.Result.OK) return new Object[]{"ok", null};
-            if (result.result == Waf.Result.MATCH) return new Object[]{"match", result.data};
-            return new Object[]{"error", null};
+            // Terceiro item: atributos do WAF (esquemas da API Security), quando houver.
+            if (result.result == Waf.Result.OK) return new Object[]{"ok", null, result.attributes};
+            if (result.result == Waf.Result.MATCH) return new Object[]{"match", result.data, result.attributes};
+            return new Object[]{"error", null, null};
         } catch (TimeoutWafException timeout) {
             return new Object[]{"timeout", null};
         } catch (Exception | LinkageError failure) {

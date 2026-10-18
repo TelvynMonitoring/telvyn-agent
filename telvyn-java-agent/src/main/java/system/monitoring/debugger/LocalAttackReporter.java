@@ -77,6 +77,15 @@ public final class LocalAttackReporter implements AutoCloseable {
         if(trace!=null&&span!=null){report.addProperty("trace_id",trace);report.addProperty("span_id",span);}
         boolean queued=queue.offer(report.toString());if(!queued)reportLoss("user activity queue full");return queued;
     }
+    /** Esquemas de um endpoint (API Security): tipos e marcas dos scanners, nunca os valores. */
+    public boolean reportApi(String method,String route,String status,Map<String,Object> schemas) {
+        var report=new JsonObject();report.addProperty("id",UUID.randomUUID().toString());report.addProperty("service",service);report.addProperty("host",host);report.addProperty("environment",environment);report.addProperty("service_version",version);
+        report.addProperty("method",method);report.addProperty("route",route==null?"/":route.length()>1024?route.substring(0,1024):route);report.addProperty("status",Integer.parseInt(status));
+        report.add("schemas",new com.google.gson.Gson().toJsonTree(schemas));
+        String body=report.toString();
+        if(body.length()>32768){reportLoss("API schema too large");return false;}
+        boolean queued=queue.offer(body);if(!queued)reportLoss("API schema queue full");return queued;
+    }
     public boolean report(LocalAttackDetection.Result result,String trace,String span,Request request) {
         boolean queued=true;
         var rules=result.rules().isEmpty()?Collections.singletonList((String)null):result.rules();
