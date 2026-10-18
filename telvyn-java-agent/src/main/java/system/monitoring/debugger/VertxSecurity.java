@@ -21,6 +21,8 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
  */
 public final class VertxSecurity {
     static final String STATE = "telvyn.security.waf";
+    /** Algum contexto do Vert.x já recebeu uma requisição: antes disso não há o que procurar no contexto atual. */
+    private static volatile boolean serving;
 
     private VertxSecurity() {}
 
@@ -65,6 +67,7 @@ public final class VertxSecurity {
             String path = (String) call(request, "path");
             var state = WafInspector.open(ip, method, path, header.apply("User-Agent"), SpringMvcSecurity.trace());
             call(context, "put", new Class<?>[]{String.class, Object.class}, STATE, state);
+            serving = true;
             // Também no contexto do Vert.x da requisição: o Quarkus REST continua o trabalho em outra thread.
             Object vertxContext = Class.forName("io.vertx.core.Vertx", false, context.getClass().getClassLoader()).getMethod("currentContext").invoke(null);
             if (vertxContext != null) call(vertxContext, "putLocal", new Class<?>[]{Object.class, Object.class}, STATE, new Object[]{request, call(request, "response"), state});
@@ -100,6 +103,7 @@ public final class VertxSecurity {
 
     /** Requisição em curso guardada no contexto do Vert.x atual ({requisição, resposta, estado}), ou null. */
     static Object[] contextCurrent(ClassLoader loader) {
+        if (!serving) return null;
         try {
             Object vertxContext = Class.forName("io.vertx.core.Vertx", false, loader).getMethod("currentContext").invoke(null);
             return vertxContext != null && call(vertxContext, "getLocal", new Class<?>[]{Object.class}, STATE) instanceof Object[] current ? current : null;
@@ -221,7 +225,7 @@ public final class VertxSecurity {
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
         public static void exit(@Advice.Thrown(readOnly = false) Throwable thrown) {
             VertxSecurity.routeEnd();
-            if (thrown instanceof SpringMvcSecurity.BlockedRequestException) thrown = null;
+            if (SpringMvcSecurity.isBlock(thrown)) thrown = null;
         }
     }
 }

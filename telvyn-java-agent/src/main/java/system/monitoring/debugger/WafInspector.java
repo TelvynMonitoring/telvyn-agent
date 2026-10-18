@@ -114,15 +114,18 @@ public final class WafInspector {
     }
 
     /** Roda uma fase no contexto da requisição; devolve só as regras novas (sem as desligadas). */
-    static Evaluation run(State state, Map<String, Object> data) {
-        synchronized (state) { return runLocked(state, data); }
+    static Evaluation run(State state, Map<String, Object> data) { return run(state, data, false); }
+
+    /** ephemeral: dados de uma operação (exploit prevention), que não ficam no contexto da requisição. */
+    static Evaluation run(State state, Map<String, Object> data, boolean ephemeral) {
+        synchronized (state) { return runLocked(state, data, ephemeral); }
     }
 
-    private static Evaluation runLocked(State state, Map<String, Object> data) {
+    private static Evaluation runLocked(State state, Map<String, Object> data, boolean ephemeral) {
         long start = System.nanoTime();
         if (state.closed || data.isEmpty()) return new Evaluation("no_match", List.of(), 0);
         try {
-            Object[] result = WafEngines.run(state.context, data, LIMITS);
+            Object[] result = WafEngines.run(state.context, data, LIMITS, ephemeral);
             long elapsed = (System.nanoTime() - start) / 1000;
             if ("ok".equals(result[0])) return new Evaluation("no_match", List.of(), elapsed);
             if ("timeout".equals(result[0])) return new Evaluation("timeout", List.of(), elapsed);
@@ -139,7 +142,9 @@ public final class WafInspector {
                 if (ruleMatches != null && !ruleMatches.isEmpty()) {
                     var parameters = ruleMatches.get(0).getAsJsonObject().getAsJsonArray("parameters");
                     if (parameters != null && !parameters.isEmpty()) {
-                        var parameter = parameters.get(0).getAsJsonObject();
+                        var first = parameters.get(0).getAsJsonObject();
+                        // Exploit prevention: a entrada da requisição (params) e a operação (resource) vêm separadas.
+                        var parameter = first.has("address") ? first : first.has("params") ? first.getAsJsonObject("params") : first.getAsJsonObject("resource");
                         address = parameter.get("address").getAsString();
                         List<String> keys = new ArrayList<>();
                         if (parameter.has("key_path")) for (var key : parameter.getAsJsonArray("key_path")) keys.add(key.getAsString());

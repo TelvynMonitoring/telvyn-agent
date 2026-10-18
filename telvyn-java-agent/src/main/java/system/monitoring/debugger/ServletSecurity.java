@@ -37,7 +37,7 @@ public final class ServletSecurity {
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
         public static void exit(@Advice.Argument(0) Object request, @Advice.Argument(1) Object response, @Advice.Thrown(readOnly = false) Throwable thrown) {
             SpringMvcSecurity.requestEnd(request, response);
-            if (thrown instanceof SpringMvcSecurity.BlockedRequestException) thrown = null;
+            if (SpringMvcSecurity.isBlock(thrown)) thrown = null;
         }
     }
 
@@ -48,7 +48,7 @@ public final class ServletSecurity {
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
         public static void exit(@Advice.Argument(0) Object request, @Advice.Argument(1) Object response, @Advice.Thrown(readOnly = false) Throwable thrown) {
             SpringMvcSecurity.requestEnd(request, response);
-            if (thrown instanceof SpringMvcSecurity.BlockedRequestException) thrown = null;
+            if (SpringMvcSecurity.isBlock(thrown)) thrown = null;
         }
     }
 }

@@ -134,6 +134,8 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
     }
     try { require('./frameworks.cjs').watchFrameworks(security); }
     catch (error) { console.warn('[Telvyn] Route-level attack detection could not start.' + why(error)); }
+    try { require('./rasp.cjs').startRasp(security); }
+    catch (error) { console.warn('[Telvyn] Exploit prevention could not start.' + why(error)); }
   }
   const sdk = new NodeSDK({
     contextManager: new (profileContext.contextManager(AsyncLocalStorageContextManager))(),
