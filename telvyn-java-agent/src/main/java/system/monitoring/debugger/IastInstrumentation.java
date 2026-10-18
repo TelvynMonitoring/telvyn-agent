@@ -54,7 +54,28 @@ public final class IastInstrumentation {
         "java/lang/String([B)V","java/lang/String","java/lang/String([C)V","java/lang/String",
         "java/lang/StringBuilder(Ljava/lang/String;)V","java/lang/StringBuilder","java/lang/StringBuilder(Ljava/lang/CharSequence;)V","java/lang/StringBuilder",
         "java/lang/StringBuffer(Ljava/lang/String;)V","java/lang/StringBuffer","java/lang/StringBuffer(Ljava/lang/CharSequence;)V","java/lang/StringBuffer");
+    // Readers and streams built on another one (the request body, bytes read from it): the new object keeps its origin.
+    // The first argument is the source; a second one (buffer size, charset) is not.
+    static final java.util.Map<String,String> WRAPPERS=java.util.Map.ofEntries(
+        java.util.Map.entry("java/io/BufferedInputStream(Ljava/io/InputStream;)V","java/io/BufferedInputStream"),
+        java.util.Map.entry("java/io/BufferedInputStream(Ljava/io/InputStream;I)V","java/io/BufferedInputStream"),
+        java.util.Map.entry("java/io/DataInputStream(Ljava/io/InputStream;)V","java/io/DataInputStream"),
+        java.util.Map.entry("java/io/PushbackInputStream(Ljava/io/InputStream;)V","java/io/PushbackInputStream"),
+        java.util.Map.entry("java/util/zip/GZIPInputStream(Ljava/io/InputStream;)V","java/util/zip/GZIPInputStream"),
+        java.util.Map.entry("java/util/zip/GZIPInputStream(Ljava/io/InputStream;I)V","java/util/zip/GZIPInputStream"),
+        java.util.Map.entry("java/util/zip/InflaterInputStream(Ljava/io/InputStream;)V","java/util/zip/InflaterInputStream"),
+        java.util.Map.entry("java/io/ByteArrayInputStream([B)V","java/io/ByteArrayInputStream"),
+        java.util.Map.entry("java/io/InputStreamReader(Ljava/io/InputStream;)V","java/io/InputStreamReader"),
+        java.util.Map.entry("java/io/InputStreamReader(Ljava/io/InputStream;Ljava/lang/String;)V","java/io/InputStreamReader"),
+        java.util.Map.entry("java/io/InputStreamReader(Ljava/io/InputStream;Ljava/nio/charset/Charset;)V","java/io/InputStreamReader"),
+        java.util.Map.entry("java/io/BufferedReader(Ljava/io/Reader;)V","java/io/BufferedReader"),
+        java.util.Map.entry("java/io/BufferedReader(Ljava/io/Reader;I)V","java/io/BufferedReader"),
+        java.util.Map.entry("java/io/StringReader(Ljava/lang/String;)V","java/io/StringReader"));
     static final java.util.Map<String,Character> TRANSFORMS=java.util.Map.ofEntries(
+        java.util.Map.entry("java/io/InputStream.readAllBytes()[B",'A'),
+        java.util.Map.entry("javax/servlet/ServletInputStream.readAllBytes()[B",'A'),
+        java.util.Map.entry("jakarta/servlet/ServletInputStream.readAllBytes()[B",'A'),
+        java.util.Map.entry("java/io/BufferedReader.readLine()Ljava/lang/String;",'A'),
         java.util.Map.entry("java/lang/String.getBytes()[B",'A'),
         java.util.Map.entry("java/lang/String.getBytes(Ljava/lang/String;)[B",'B'),
         java.util.Map.entry("java/lang/String.getBytes(Ljava/nio/charset/Charset;)[B",'B'),
@@ -106,16 +127,32 @@ public final class IastInstrumentation {
                     var resolution=pool.describe(key.replace('/','.'));
                     return resolution.isResolved()&&hasSuperType(named("io.quarkus.hibernate.orm.panache.PanacheRepositoryBase")).matches(resolution.resolve());
                 });}
+                // Hardcoded secrets: a constant field whose value has a secret format.
+                @Override public FieldVisitor visitField(int access,String field,String descriptor,String signature,Object value){
+                    if(value instanceof String text&&IastSecrets.secret(text))IastSecrets.report(type.getName(),field,0);
+                    return super.visitField(access,field,descriptor,signature,value);
+                }
                 @Override public MethodVisitor visitMethod(int access,String name,String descriptor,String signature,String[] exceptions){
                     return new MethodVisitor(Opcodes.ASM9,super.visitMethod(access,name,descriptor,signature,exceptions)){
                         int line;
                         final String runtime="system/monitoring/debugger/IastRuntime";
                         @Override public void visitLineNumber(int number,Label label){line=number;super.visitLineNumber(number,label);}
+                        // Hardcoded secrets: a string literal of the code with a secret format, where it is used.
+                        @Override public void visitLdcInsn(Object value){
+                            if(value instanceof String text&&IastSecrets.secret(text))IastSecrets.report(type.getName(),name,line);
+                            super.visitLdcInsn(value);
+                        }
                         // Report hooks: copy the argument that matters, add where we are, and hand it to the runtime. Values stay on the stack of the application; only a copy of the reference is inspected.
                         void report(int copy,boolean dropLast,String hook,String descriptor,String owner,String method){
                             super.visitInsn(copy==1?Opcodes.DUP:Opcodes.DUP2);if(dropLast)super.visitInsn(Opcodes.POP);
                             super.visitLdcInsn(type.getName()+"#"+name);super.visitLdcInsn(line);super.visitLdcInsn(owner.replace('/','.')+"."+method);
                             super.visitMethodInsn(Opcodes.INVOKESTATIC,runtime,hook,descriptor,false);
+                        }
+                        // The first of three single-slot arguments: [a, b, c] -> [b, c, a, b, c] -> [b, c, a] -> [a, b, c, a].
+                        void firstOfThree(String hook,String owner,String method){
+                            super.visitInsn(Opcodes.DUP2_X1);super.visitInsn(Opcodes.POP2);super.visitInsn(Opcodes.DUP_X2);
+                            super.visitLdcInsn(type.getName()+"#"+name);super.visitLdcInsn(line);super.visitLdcInsn(owner.replace('/','.')+"."+method);
+                            super.visitMethodInsn(Opcodes.INVOKESTATIC,runtime,hook,"(Ljava/lang/Object;Ljava/lang/String;ILjava/lang/String;)V",false);
                         }
                         @Override public void visitInvokeDynamicInsn(String method,String desc,Handle bootstrap,Object... args){
                             if(bootstrap.getOwner().equals("java/lang/invoke/StringConcatFactory")&&bootstrap.getName().equals("makeConcatWithConstants"))
@@ -139,6 +176,10 @@ public final class IastInstrumentation {
                                     super.visitMethodInsn(Opcodes.INVOKESTATIC,runtime,hook,"(Ljava/lang/String;"+result+")"+result,false);return;
                                 }
                                 if(method.equals("getParameterMap")&&desc.equals("()Ljava/util/Map;")){super.visitMethodInsn(opcode,owner,method,desc,itf);super.visitMethodInsn(Opcodes.INVOKESTATIC,runtime,"sourceParameterMap","(Ljava/util/Map;)Ljava/util/Map;",false);return;}
+                                if(method.equals("getInputStream")&&desc.startsWith("()")&&desc.endsWith("/ServletInputStream;")||method.equals("getReader")&&desc.equals("()Ljava/io/BufferedReader;")){
+                                    super.visitMethodInsn(opcode,owner,method,desc,itf);super.visitMethodInsn(Opcodes.INVOKESTATIC,runtime,"sourceBody","(Ljava/lang/Object;)Ljava/lang/Object;",false);
+                                    super.visitTypeInsn(Opcodes.CHECKCAST,desc.substring(3,desc.length()-1));return;
+                                }
                                 if(method.equals("getQueryString")&&desc.equals("()Ljava/lang/String;")){super.visitMethodInsn(opcode,owner,method,desc,itf);super.visitMethodInsn(Opcodes.INVOKESTATIC,runtime,"sourceQuery","(Ljava/lang/String;)Ljava/lang/String;",false);return;}
                                 if((method.equals("getParameterNames")||method.equals("getHeaderNames"))&&desc.equals("()Ljava/util/Enumeration;")){
                                     super.visitMethodInsn(opcode,owner,method,desc,itf);super.visitLdcInsn(method.equals("getParameterNames")?"parametername":"headername");super.visitInsn(Opcodes.SWAP);
@@ -165,6 +206,17 @@ public final class IastInstrumentation {
                             }
                             // new String(byte[] | char[] [, charset]) and new StringBuilder/StringBuffer(text): the new object keeps the origin.
                             String created=method.equals("<init>")?CONSTRUCTORS.get(owner+desc):null;
+                            String wrapper=method.equals("<init>")?WRAPPERS.get(owner+desc):null;
+                            // One argument: the same shape as the constructors above.
+                            if(wrapper!=null&&Type.getArgumentTypes(desc).length==1){created=wrapper;wrapper=null;}
+                            if(wrapper!=null){
+                                // [s, s, source, extra] -> [source, extra, s, s, source, extra] -> init -> [source, extra, s] -> [source, s]
+                                super.visitInsn(Opcodes.DUP2_X2);super.visitMethodInsn(opcode,owner,method,desc,itf);
+                                super.visitInsn(Opcodes.SWAP);super.visitInsn(Opcodes.POP);
+                                super.visitMethodInsn(Opcodes.INVOKESTATIC,runtime,"propagateFrom","(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;",false);
+                                super.visitTypeInsn(Opcodes.CHECKCAST,owner);
+                                return;
+                            }
                             if(created!=null||owner.equals("java/lang/String")&&method.equals("<init>")&&(desc.equals("([BLjava/lang/String;)V")||desc.equals("([BLjava/nio/charset/Charset;)V"))){
                                 if(created!=null){
                                     // [s, s, array] -> [array, s, s, array] -> init -> [array, s]
@@ -292,6 +344,35 @@ public final class IastInstrumentation {
                             }
                             // Only the value of a header can carry injected line breaks.
                             if(servletResponse&&(method.equals("setHeader")||method.equals("addHeader"))&&desc.equals("(Ljava/lang/String;Ljava/lang/String;)V"))report(1,false,"header",one,owner,method);
+                            // Untrusted deserialization: the stream or document deserialized came from the request.
+                            if(owner.equals("java/io/ObjectInputStream")&&constructor&&desc.equals("(Ljava/io/InputStream;)V"))report(1,false,"deserialization",one,owner,"<init>");
+                            if(owner.equals("org/yaml/snakeyaml/Yaml")&&(method.equals("load")||method.equals("loadAll"))&&(desc.startsWith("(Ljava/lang/String;)")||desc.startsWith("(Ljava/io/InputStream;)")||desc.startsWith("(Ljava/io/Reader;)")))report(1,false,"deserialization",one,owner,method);
+                            if(owner.equals("org/yaml/snakeyaml/Yaml")&&method.equals("loadAs")&&desc.endsWith("Ljava/lang/Class;)Ljava/lang/Object;"))report(2,true,"deserialization",one,owner,method);
+                            if(owner.equals("com/thoughtworks/xstream/XStream")&&method.equals("fromXML")){
+                                int arguments=Type.getArgumentTypes(desc).length;
+                                if(arguments==1)report(1,false,"deserialization",one,owner,method);
+                                else if(arguments==2&&desc.endsWith(";Ljava/lang/Object;)Ljava/lang/Object;"))report(2,true,"deserialization",one,owner,method);
+                            }
+                            // Reflection injection: the class, method or field name came from the request.
+                            if(owner.equals("java/lang/Class")){
+                                if(method.equals("forName")&&desc.equals("(Ljava/lang/String;)Ljava/lang/Class;"))report(1,false,"reflection",one,owner,method);
+                                else if(method.equals("forName")&&desc.equals("(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;"))firstOfThree("reflection",owner,method);
+                                else if((method.equals("getMethod")||method.equals("getDeclaredMethod"))&&desc.startsWith("(Ljava/lang/String;[Ljava/lang/Class;)"))report(2,true,"reflection",one,owner,method);
+                                else if((method.equals("getField")||method.equals("getDeclaredField"))&&desc.startsWith("(Ljava/lang/String;)"))report(1,false,"reflection",one,owner,method);
+                            }
+                            if((owner.equals("java/lang/ClassLoader")||owner.equals("java/net/URLClassLoader"))&&method.equals("loadClass")&&desc.equals("(Ljava/lang/String;)Ljava/lang/Class;"))report(1,false,"reflection",one,owner,method);
+                            if(owner.equals("java/lang/invoke/MethodHandles$Lookup")){
+                                // (Class, name, type): the name is the second of the three arguments.
+                                if(method.equals("findClass")&&desc.startsWith("(Ljava/lang/String;)"))report(1,false,"reflection",one,owner,method);
+                                else if(java.util.Set.of("findStatic","findVirtual","findGetter","findSetter","findStaticGetter","findStaticSetter","findVarHandle","findStaticVarHandle").contains(method)&&desc.startsWith("(Ljava/lang/Class;Ljava/lang/String;")&&Type.getArgumentTypes(desc).length==3)report(2,true,"reflection",one,owner,method);
+                            }
+                            // E-mail HTML injection: the message is inspected when it is sent, as the mail API delivers it.
+                            if(owner.equals("javax/mail/Transport")||owner.equals("jakarta/mail/Transport")){
+                                String message="(L"+owner.substring(0,owner.lastIndexOf('/'))+"/Message;";
+                                if(method.equals("send")&&desc.equals(message+")V"))report(1,false,"email",one,owner,method);
+                                else if((method.equals("send")||method.equals("sendMessage"))&&desc.startsWith(message+"[L")&&desc.endsWith("/Address;)V"))report(2,true,"email",one,owner,method);
+                                else if(method.equals("send")&&desc.equals(message+"Ljava/lang/String;Ljava/lang/String;)V"))firstOfThree("email",owner,method);
+                            }
                             // Weak algorithms and cookies without protection: no input is needed, only the call.
                             if(owner.equals("java/security/MessageDigest")&&method.equals("getInstance")){
                                 if(desc.startsWith("(Ljava/lang/String;)"))report(1,false,"weakHash",one,owner,method);

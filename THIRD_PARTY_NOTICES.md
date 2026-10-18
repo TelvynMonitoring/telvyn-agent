@@ -62,3 +62,17 @@ https://github.com/DataDog/agent-linux-install-script
 That project is distributed under the Apache License, Version 2.0. The Telvyn
 script does not include installation telemetry, product flavors or legacy
 upgrade paths from that project.
+
+## Hardcoded secret formats (Java IAST)
+
+`telvyn-java-agent/src/main/resources/iast-secret-patterns.tsv` lists the
+secret formats that the Java IAST looks for in application string literals. The
+patterns are copied from `HardcodedSecretMatcher.java` in DataDog
+`dd-trace-java`, which derives them from the gitleaks rules:
+
+- Source: https://github.com/DataDog/dd-trace-java
+- Source path: `internal-api/src/main/java/datadog/trace/api/iast/secrets/HardcodedSecretMatcher.java`
+- Imported blob: `f90ffde5834ad959742b2efe2db7c5c8d6a097af`
+- License: Apache License, Version 2.0 (reproduced in the root `LICENSE` file)
+- Upstream rules: https://github.com/gitleaks/gitleaks (MIT License,
+  Copyright (c) 2019 Zachary Rice)
