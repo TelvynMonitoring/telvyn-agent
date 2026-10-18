@@ -13,6 +13,8 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		signal = "security/iast"
 	} else if r.URL.Path == "/v1/security/lab" {
 		signal = "security/lab"
+	} else if r.URL.Path == "/v1/security/users" {
+		signal = "security/users"
 	}
 	h.serveOTLP(w, r, "/v1/"+signal, func(body []byte, ct, clientIP string) (int, error) {
 		if ct != "application/json" {
@@ -31,6 +33,15 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 			return http.StatusBadRequest, errors.New("security report required")
 		}
 		for field := range report {
+			if signal == "security/users" {
+				// User activity (login success/failure, signup), as Datadog user events: no credentials, only identity.
+				switch field {
+				case "id", "service", "host", "environment", "service_version", "event", "usr_id", "usr_login", "usr_exists", "client_ip", "user_agent", "framework", "collection_mode", "trace_id", "span_id":
+					continue
+				default:
+					return http.StatusBadRequest, errors.New("unsupported security field")
+				}
+			}
 			switch field {
 			case "id", "service", "host", "environment", "service_version", "outcome", "rule_id", "rules_version", "engine_version", "elapsed_us", "trace_id", "span_id":
 			case "request_method", "request_path", "user_agent":
