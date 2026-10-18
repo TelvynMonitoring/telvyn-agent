@@ -77,6 +77,17 @@ public final class LocalAttackReporter implements AutoCloseable {
         if(trace!=null&&span!=null){report.addProperty("trace_id",trace);report.addProperty("span_id",span);}
         boolean queued=queue.offer(report.toString());if(!queued)reportLoss("user activity queue full");return queued;
     }
+    /** Bibliotecas carregadas pelo serviço (runtime SCA): ecossistema, nome e versão de cada uma. */
+    public boolean reportLibraries(String ecosystem,java.util.List<String[]> libraries) {
+        if(libraries.isEmpty())return true;
+        var report=new JsonObject();report.addProperty("id",UUID.randomUUID().toString());report.addProperty("service",service);report.addProperty("host",host);report.addProperty("environment",environment);report.addProperty("service_version",version);
+        var list=new JsonArray();
+        for(String[] library:libraries){var item=new JsonObject();item.addProperty("ecosystem",ecosystem);item.addProperty("name",library[0]);item.addProperty("version",library[1]);if(library.length>2)item.addProperty("sha1",library[2]);list.add(item);}
+        report.add("libraries",list);
+        String body=report.toString();
+        if(body.length()>65536){reportLoss("SCA report too large");return false;}
+        boolean queued=queue.offer(body);if(!queued)reportLoss("SCA queue full");return queued;
+    }
     /** Esquemas de um endpoint (API Security): tipos e marcas dos scanners, nunca os valores. */
     public boolean reportApi(String method,String route,String status,Map<String,Object> schemas) {
         var report=new JsonObject();report.addProperty("id",UUID.randomUUID().toString());report.addProperty("service",service);report.addProperty("host",host);report.addProperty("environment",environment);report.addProperty("service_version",version);
