@@ -87,23 +87,26 @@ const ruleMode = rule => ['monitoring', 'blocking', 'disabled'].includes(state.r
 
 const TITLE = "You've been blocked";
 const DETAIL = 'Sorry, you cannot access this page. Please contact the customer service team. Security provided by Telvyn.';
-function respond(request, response) {
+// Block response as configured in the UI: redirect, or HTML when the browser asks for HTML and JSON otherwise.
+function blockPayload(request) {
   const id = randomUUID();
-  if (response.headersSent) { response.destroy(); return id; }
   if (state.status === 301 || state.status === 302) {
     const target = new URL(state.redirect);
     target.searchParams.set('security_response_id', id);
-    response.writeHead(state.status, {location: target.toString(), 'content-length': '0'});
-    response.end();
-    return id;
+    return {id, status: state.status, headers: {location: target.toString(), 'content-length': '0'}, body: ''};
   }
-  const html = /text\/html/i.test(String(request.headers?.accept || ''));
+  const html = /text\/html/i.test(String(request?.headers?.accept || ''));
   const body = html
     ? `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${TITLE}</title></head><body><h1>${TITLE}</h1><p>${DETAIL}</p><p>Security Response ID: ${id}</p></body></html>`
     : JSON.stringify({errors: [{title: TITLE, detail: DETAIL}], security_response_id: id});
-  response.writeHead(state.status, {'content-type': html ? 'text/html; charset=utf-8' : 'application/json', 'content-length': Buffer.byteLength(body)});
-  response.end(body);
-  return id;
+  return {id, status: state.status, headers: {'content-type': html ? 'text/html; charset=utf-8' : 'application/json', 'content-length': String(Buffer.byteLength(body))}, body};
+}
+function respond(request, response) {
+  if (response.headersSent) { response.destroy(); return randomUUID(); }
+  const block = blockPayload(request);
+  response.writeHead(block.status, block.headers);
+  response.end(block.body);
+  return block.id;
 }
 
-module.exports = { state, update, clientIp, denied, passed, userBlocked, ruleMode, respond, anonymize };
+module.exports = { state, update, clientIp, denied, passed, userBlocked, ruleMode, respond, blockPayload, anonymize };

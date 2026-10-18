@@ -72,7 +72,8 @@ function startSecurity() {
   };
 
   // Runs one phase on the request's WAF context; reports new matches and returns whether a blocking rule matched.
-  function evaluate(state, data, span) {
+  // blockable=false: detection only (a phase where answering would break the framework's own response).
+  function evaluate(state, data, span, blockable = true) {
     if (!state.context || state.closed) return false;
     const started = process.hrtime.bigint();
     let result;
@@ -83,7 +84,7 @@ function startSecurity() {
     if (result.errorCode) { report('error', undefined, elapsed, span, undefined, state.details); return false; }
     const matches = (result.events || []).filter(event => event.rule?.id && !state.reported.has(event.rule.id) && protection.ruleMode(event.rule.id) !== 'disabled');
     if (!matches.length) return false;
-    const block = protection.state.allow && !protection.passed(state.ip) && !state.blocked && matches.some(event => protection.ruleMode(event.rule.id) === 'blocking');
+    const block = blockable && protection.state.allow && !protection.passed(state.ip) && !state.blocked && matches.some(event => protection.ruleMode(event.rule.id) === 'blocking');
     for (const event of matches) {
       state.reported.add(event.rule.id);
       const blocking = block && protection.ruleMode(event.rule.id) === 'blocking';
@@ -127,6 +128,8 @@ function startSecurity() {
       .finally(() => pending.delete(send));
     pending.add(send);
   }
+  // Body worth a WAF run: a non-empty object or string (body parsers leave {} when they do not handle the type).
+  const hasBody = body => typeof body === 'string' ? body.length > 0 : !!body && typeof body === 'object' && Object.keys(body).length > 0;
   function setUser(state, user, request, response, span) {
     const id = user == null ? '' : String(typeof user === 'object' ? user.id ?? '' : user).slice(0, 255);
     if (!id || state.user === id) return false;
@@ -182,11 +185,47 @@ function startSecurity() {
       if (user != null && setUser(state, user, request, null, state.span)) return true;
       if (state.user && protection.state.allow && protection.userBlocked(state.user) && !protection.passed(state.ip)) { state.blockedBy = 'user'; return true; }
       const data = {};
-      if (body !== undefined && body !== null && (typeof body === 'object' || typeof body === 'string')) data['server.request.body'] = body;
+      if (!state.bodyInspected && hasBody(body)) { state.bodyInspected = true; data['server.request.body'] = body; }
       if (params && typeof params === 'object' && Object.keys(params).length) data['server.request.path_params'] = params;
       if (state.user) data['usr.id'] = state.user;
       if (Object.keys(data).length && evaluate(state, data, state.span)) { state.blockedBy = 'rule'; return true; }
       return false;
+    },
+    // Body parsed after the route matched (multer) or read by the application (Next.js NextRequest): inspected once.
+    // Returns true when blocked; the block response was already sent. blockable=false only detects (as Datadog on
+    // the Next.js body, which blocks at request start only).
+    inspectBody(request, body, blockable = true) {
+      const state = request ? requests.get(request) : store.getStore();
+      if (!state || state.blocked || state.bodyInspected || !waf || !hasBody(body)) return false;
+      state.bodyInspected = true;
+      if (!evaluate(state, {'server.request.body': body}, state.span, blockable) || !blockable) return false;
+      blockRequest(state, state.request, state.response, state.span, 'rule');
+      return true;
+    },
+    // GraphQL (as Datadog: graphql.server.all_resolvers, every resolver with its arguments). Inside Apollo Server's
+    // HTTP handling a blocking match stops execution and Apollo answers with the block response; elsewhere it only
+    // detects. Returns true when execution must stop.
+    inspectGraphql(resolvers) {
+      const state = store.getStore();
+      if (!state || state.blocked || !waf || !resolvers || !Object.keys(resolvers).length) return false;
+      const blockable = !!state.apollo;
+      if (!evaluate(state, {'graphql.server.all_resolvers': resolvers}, state.span, blockable) || !blockable) return false;
+      state.blocked = true;
+      state.graphqlBlocked = true;
+      return true;
+    },
+    // Apollo Server request: marks the request so GraphQL blocking can answer through Apollo, and returns the block
+    // response (status, headers, body) once execution was stopped.
+    apolloStart() { const state = store.getStore(); if (state) state.apollo = true; },
+    apolloBlock() {
+      const state = store.getStore();
+      return state?.graphqlBlocked ? protection.blockPayload(state.request) : null;
+    },
+    // Whether a Web API Request is the incoming request being handled (Next.js wraps it), not one the application builds.
+    isIncoming(webRequest) {
+      const state = store.getStore();
+      if (!state || typeof webRequest?.url !== 'string') return false;
+      try { return webRequest.method === state.request.method && new URL(webRequest.url).pathname === state.details.request_path; } catch (_) { return false; }
     },
     block(request, response) {
       const state = requests.get(request);
