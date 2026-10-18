@@ -87,6 +87,10 @@ type CRILogsTailer struct {
 	readers map[string]*criReaderHandle // logfile path → handle
 
 	linesTotal atomic.Int64
+
+	// Host without Kubernetes: /var/log/pods does not exist. Said once, then quiet
+	// until the directory shows up. discover runs on a single goroutine.
+	podsDirMissing bool
 }
 
 type criReaderHandle struct {
@@ -162,10 +166,18 @@ func (t *CRILogsTailer) Stats() CRILogsStats {
 // discover varre /var/log/pods e reconcilia readers ativos.
 func (t *CRILogsTailer) discover() {
 	podDirs, err := os.ReadDir(criPodsDir)
+	if os.IsNotExist(err) {
+		if !t.podsDirMissing {
+			t.podsDirMissing = true
+			t.log.Info("cri: no Kubernetes pod logs on this host; watching for the directory", "dir", criPodsDir)
+		}
+		return
+	}
 	if err != nil {
 		t.log.Warn("cri: read pods dir failed", "dir", criPodsDir, "err", err)
 		return
 	}
+	t.podsDirMissing = false
 
 	active := make(map[string]criFileInfo)
 	for _, pd := range podDirs {

@@ -820,7 +820,10 @@ func startIngestPodLogs(ctx context.Context, log *slog.Logger, logsExp *otlp.Log
 	tokenFile := getenvOr("ISPWATCH_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token")
 	caFile := getenvOr("ISPWATCH_KUBELET_CA_FILE", "")
 	insecure := getenvOr("ISPWATCH_KUBELET_INSECURE", "1") == "1"
-	if resolver, err := ebpf.NewPodResolver(kubeletURL, tokenFile, caFile, insecure, log); err != nil {
+	if _, statErr := os.Stat(tokenFile); os.IsNotExist(statErr) {
+		// Fora do Kubernetes não há token de service account nem pods: nada a avisar.
+		log.Info("logs: sem Kubernetes neste host; service tagging por label de pod não se aplica")
+	} else if resolver, err := ebpf.NewPodResolver(kubeletURL, tokenFile, caFile, insecure, log); err != nil {
 		log.Warn("logs: service tagging por label desativado (usando nome do workload)", "err", err)
 	} else {
 		go resolver.Run(ctx)
