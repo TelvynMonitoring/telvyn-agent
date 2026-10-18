@@ -215,7 +215,8 @@ public final class SpringMvcSecurity {
             current.remove();
             var reporter=waf;
             Object status=response.getClass().getMethod("getStatus").invoke(response);
-            if(reporter!=null&&!state.blocked)decide(state,WafInspector.run(state,Map.of("server.response.status",String.valueOf(status))),reporter);
+            if(attribute(request,"org.springframework.web.servlet.HandlerMapping.bestMatchingPattern") instanceof String route)state.route=route;
+            ApiSecurity.finish(state,status,()->ApiSecurity.servletHeaders(response),reporter);
         }catch(ReflectiveOperationException|RuntimeException|LinkageError ignored){ /* status indisponível */ }
         finally{WafInspector.close(state);}
     }

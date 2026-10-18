@@ -93,10 +93,7 @@ public final class GrizzlySecurity {
             if (!"onAfterService".equals(method.getName())) return method.getName().equals("hashCode") ? System.identityHashCode(proxy) : method.getName().equals("equals") ? proxy == args[0] : "telvyn-after-service";
             try {
                 var reporter = SpringMvcSecurity.wafReporter();
-                if (reporter != null && !state.blocked) {
-                    Object status = call(response, "getStatus", new Class<?>[]{});
-                    SpringMvcSecurity.decide(state, WafInspector.run(state, Map.of("server.response.status", String.valueOf(status))), reporter);
-                }
+                if (reporter != null && !state.blocked) ApiSecurity.finish(state, call(response, "getStatus", new Class<?>[]{}), () -> ApiSecurity.servletHeaders(response), reporter);
             } catch (ReflectiveOperationException | RuntimeException ignored) { /* status indisponível */ }
             finally { WafInspector.close(state); }
             return null;

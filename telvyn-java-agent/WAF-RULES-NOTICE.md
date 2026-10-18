@@ -5,6 +5,7 @@ The attack detection rules are the Datadog App and API Protection recommended ru
 Copyright Datadog, Inc. Licensed under Apache-2.0 OR BSD-3-Clause
 (https://github.com/DataDog/dd-trace-js/blob/master/LICENSE).
 
-Changes by Telvyn: removed the IP and user blocking rules (blk-001-*), the API security
-processors, scanners and rules_compat, and the "block" actions; blocking is decided by the Telvyn
-rule modes set in the UI.
+Changes by Telvyn: removed the IP and user blocking rules (blk-001-*), rules_compat, the
+fingerprint and JWT processors, and the "block" actions; blocking is decided by the Telvyn rule
+modes set in the UI. The API security schema processors (extract-content, extract-headers) and
+the scanners are kept as published.

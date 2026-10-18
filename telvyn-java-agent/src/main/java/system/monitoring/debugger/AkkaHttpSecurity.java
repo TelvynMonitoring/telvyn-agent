@@ -197,8 +197,13 @@ public final class AkkaHttpSecurity {
                 if (state.blocked) return Class.forName("scala.util.Success", false, loader).getConstructor(Object.class).newInstance(blockResponse(request));
                 var reporter = SpringMvcSecurity.wafReporter();
                 if (reporter != null && Boolean.TRUE.equals(call(result, "isSuccess"))) {
-                    Object status = call(call(call(result, "get"), "status"), "intValue");
-                    SpringMvcSecurity.decide(state, WafInspector.run(state, Map.of("server.response.status", String.valueOf(status))), reporter);
+                    Object response = call(result, "get");
+                    ApiSecurity.finish(state, call(call(response, "status"), "intValue"), () -> {
+                        Map<String, Object> headers = new LinkedHashMap<>();
+                        try { for (Object header : (Iterable<?>) call(response, "getHeaders")) headers.put(String.valueOf(call(header, "lowercaseName")), String.valueOf(call(header, "value"))); }
+                        catch (ReflectiveOperationException unavailable) { /* sem cabeçalhos */ }
+                        return headers;
+                    }, reporter);
                 }
                 return result;
             } catch (ReflectiveOperationException | RuntimeException failure) { return result; }

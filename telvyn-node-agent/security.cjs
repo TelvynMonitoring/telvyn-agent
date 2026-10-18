@@ -84,6 +84,7 @@ function startSecurity() {
     catch (_) { report('error', undefined, Number((process.hrtime.bigint() - started) / 1000n), span, undefined, state.details); return false; }
     const elapsed = Number((process.hrtime.bigint() - started) / 1000n);
     if (result.timeout && !state.timeoutReported) { state.timeoutReported = true; report('timeout', undefined, elapsed, span, undefined, state.details); }
+    state.derivatives = result.derivatives ?? result.attributes;
     if (result.errorCode) { report('error', undefined, elapsed, span, undefined, state.details); return false; }
     const matches = (result.events || []).filter(event => event.rule?.id && !state.reported.has(event.rule.id) && protection.ruleMode(event.rule.id) !== 'disabled');
     if (!matches.length) return false;
@@ -133,6 +134,35 @@ function startSecurity() {
   }
   // Body worth a WAF run: a non-empty object or string (body parsers leave {} when they do not handle the type).
   const hasBody = body => typeof body === 'string' ? body.length > 0 : !!body && typeof body === 'object' && Object.keys(body).length > 0;
+  // API Security (as Datadog): the WAF extracts the schema of each endpoint (types of headers, query, path params,
+  // body and response headers, with sensitive data and credentials flagged by the scanners), sampled once per method,
+  // route and status every 30 seconds.
+  const API_SAMPLE_MS = 30000;
+  const sampled = new Map();
+  const apiEndpoint = new URL(endpoint);
+  apiEndpoint.pathname = apiEndpoint.pathname.replace(/events$/, 'api');
+  function apiSample(state, status) {
+    const route = state.route || state.details.request_path;
+    const key = `${state.request.method} ${route} ${status}`;
+    const now = Date.now();
+    if ((sampled.get(key) ?? 0) > now - API_SAMPLE_MS) return false;
+    if (sampled.size >= 4096) sampled.delete(sampled.keys().next().value);
+    sampled.set(key, now);
+    return true;
+  }
+  function reportApi(state, status, derivatives) {
+    const schemas = {};
+    for (const [name, value] of Object.entries(derivatives || {})) if (name.startsWith('_dd.appsec.s.')) schemas[name.slice('_dd.appsec.s.'.length)] = value;
+    if (!Object.keys(schemas).length || pending.size >= 32) return;
+    const body = JSON.stringify({id: randomUUID(), service, host: process.env.POD_NAME || os.hostname(), environment, service_version: attributes['service.version'],
+      method: state.request.method, route: String(state.route || state.details.request_path).slice(0, 1024), status, schemas});
+    if (body.length > 32768) return;
+    const send = fetch(apiEndpoint, {method: 'POST', headers: {'content-type': 'application/json'}, body, redirect: 'error', signal: AbortSignal.timeout(5000)})
+      .then(async response => { await response.arrayBuffer(); if (!response.ok) throw new Error('Delivery rejected'); })
+      .catch(() => console.warn('[Telvyn] API schema delivery failed.'))
+      .finally(() => pending.delete(send));
+    pending.add(send);
+  }
   function setUser(state, user, request, response, span) {
     const id = user == null ? '' : String(typeof user === 'object' ? user.id ?? '' : user).slice(0, 255);
     if (!id || state.user === id) return false;
@@ -165,7 +195,17 @@ function startSecurity() {
       state.context = waf.createContext();
       const done = () => {
         if (state.closed) return;
-        evaluate(state, {'server.response.status': String(response.statusCode)}, span);
+        const status = response.statusCode;
+        const data = {'server.response.status': String(status)};
+        const schema = !state.blocked && apiSample(state, status);
+        if (schema) {
+          const headers = {...response.getHeaders()};
+          delete headers['set-cookie'];
+          data['server.response.headers.no_cookies'] = headers;
+          data['waf.context.processor'] = {'extract-schema': true};
+        }
+        evaluate(state, data, span);
+        if (schema) reportApi(state, status, state.derivatives);
         state.closed = true;
         state.context.dispose();
       };
@@ -181,8 +221,9 @@ function startSecurity() {
     },
     // Route phase (Express route handler, Fastify preHandler): body, path parameters and the logged-in user.
     // Returns true when the request must be blocked; the caller answers with block().
-    inspectRoute(request, {body, params, user} = {}) {
+    inspectRoute(request, {body, params, user, route} = {}) {
       const state = requests.get(request);
+      if (state && typeof route === 'string' && route && !state.route) state.route = route.slice(0, 1024);
       if (!state || state.blocked || state.routeInspected || !waf) return false;
       state.routeInspected = true;
       if (user != null && setUser(state, user, request, null, state.span)) return true;
