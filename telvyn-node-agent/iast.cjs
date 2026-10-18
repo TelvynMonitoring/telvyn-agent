@@ -388,21 +388,34 @@ function startIast(report) {
     if (!has('httponly')) inspectFlaw('NO_HTTPONLY_COOKIE', 'http.ServerResponse.setHeader');
     if (!has('samesite')) inspectFlaw('NO_SAMESITE_COOKIE', 'http.ServerResponse.setHeader');
   }
+  // As the Datadog Node tracer: redirects, not modified, not found, gone and server errors are not judged.
+  const IGNORED_STATUS = new Set([301, 302, 304, 307, 404, 410, 500]);
+  const HTML_TYPES = ['text/html', 'application/xhtml+xml'];
+  // Strict-Transport-Security is valid when it starts with max-age and the value up to ';' is a whole number above 0.
+  function validHsts(value) {
+    value = value.trim();
+    if (!value.startsWith('max-age')) return false;
+    const end = value.indexOf(';');
+    const text = value.slice('max-age'.length + 1, end === -1 ? value.length : end);
+    const seconds = Number.parseInt(text, 10);
+    return seconds > 0 && String(seconds) === text;
+  }
   function inspectHeaders(response, status, rest) {
     const code = Number(typeof status === 'number' ? status : response.statusCode);
-    if (!(code >= 200 && code < 300)) return;
+    if (IGNORED_STATUS.has(code)) return;
     const given = {};
     const extra = rest.find(value => value && typeof value === 'object');
     if (Array.isArray(extra)) { for (let i = 0; i < extra.length; i++) { if (Array.isArray(extra[i])) given[String(extra[i][0]).toLowerCase()] = extra[i][1]; else if (i % 2 === 0) given[String(extra[i]).toLowerCase()] = extra[i + 1]; } }
     else if (extra) for (const key of Object.keys(extra)) given[key.toLowerCase()] = extra[key];
-    const header = name => { const value = response.getHeader(name) ?? given[name]; return Array.isArray(value) ? value.join(', ') : value == null ? undefined : String(value); };
-    if (!/^(?:text\/html|application\/xhtml\+xml)/i.test(header('content-type') || '')) return;
-    if ((header('x-content-type-options') || '').trim().toLowerCase() !== 'nosniff') inspectFlaw('XCONTENTTYPE_HEADER_MISSING', 'http.ServerResponse.writeHead');
+    // Every value of the header, each one judged on its own.
+    const values = name => { const value = response.getHeader(name) ?? given[name]; return value == null ? [] : (Array.isArray(value) ? value : [value]).map(String); };
+    if (!values('content-type').some(type => HTML_TYPES.some(html => type === html || type.startsWith(html + ';')))) return;
+    const options = values('x-content-type-options');
+    if (!options.length || options.some(value => value.trim().toLowerCase() !== 'nosniff')) inspectFlaw('XCONTENTTYPE_HEADER_MISSING', 'http.ServerResponse.writeHead');
     const request = response.req;
-    const forwarded = String(request?.headers?.['x-forwarded-proto'] ?? '').split(',')[0].trim();
-    if (request?.socket?.encrypted === true || /^https$/i.test(forwarded)) {
-      const age = /max-age\s*=\s*(\d+)/i.exec(header('strict-transport-security') || '');
-      if (!age || Number(age[1]) < 15552000) inspectFlaw('HSTS_HEADER_MISSING', 'http.ServerResponse.writeHead');
+    if (request?.protocol === 'https' || request?.socket?.encrypted === true || request?.headers?.['x-forwarded-proto'] === 'https') {
+      const hsts = values('strict-transport-security');
+      if (!hsts.length || hsts.some(value => !validHsts(value))) inspectFlaw('HSTS_HEADER_MISSING', 'http.ServerResponse.writeHead');
     }
   }
   function patchBuiltins() {
@@ -429,7 +442,7 @@ function startIast(report) {
     };
     const response = http.ServerResponse.prototype;
     const writeHead = response.writeHead;
-    // An HTML answer without X-Content-Type-Options: nosniff, and, over HTTPS, without a Strict-Transport-Security of at least 180 days.
+    // An HTML answer without X-Content-Type-Options: nosniff, and, over HTTPS, without a valid Strict-Transport-Security (max-age above 0).
     response.writeHead = function (status, ...rest) {
       try { inspectHeaders(this, status, rest); } catch (_) { /* never alters the call */ }
       return writeHead.call(this, status, ...rest);
