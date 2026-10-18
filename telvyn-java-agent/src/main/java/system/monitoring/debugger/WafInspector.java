@@ -217,6 +217,11 @@ public final class WafInspector {
             return out;
         }
         String name = value.getClass().getName();
+        // JSON do Vert.x: o conteúdo, não os campos internos.
+        if (name.equals("io.vertx.core.json.JsonObject") || name.equals("io.vertx.core.json.JsonArray")) {
+            try { return introspect(value.getClass().getMethod(name.endsWith("Object") ? "getMap" : "getList").invoke(value), depth, count, seen); }
+            catch (ReflectiveOperationException | RuntimeException unavailable) { return value.toString(); }
+        }
         if (name.startsWith("java.") || name.startsWith("javax.") || name.startsWith("jakarta.") || name.startsWith("sun.")) return value.toString();
         Map<String, Object> out = new LinkedHashMap<>();
         for (Class<?> type = value.getClass(); type != null && type != Object.class; type = type.getSuperclass()) {

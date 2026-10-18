@@ -27,6 +27,8 @@ public final class SpringMvcSecurity {
     /** Requisição em curso nesta thread (requisição, resposta, estado), para os eventos de login do Spring Security. */
     private static final ThreadLocal<Object[]> current=new ThreadLocal<>();
     static Object[] current(){return current.get();}
+    /** Requisição em curso definida por outro framework (Vert.x) enquanto o handler roda; null limpa. */
+    static void current(Object[] value){if(value==null)current.remove();else current.set(value);}
     /** Bloqueio decidido no corpo: interrompe o handler; a resposta de bloqueio já foi escrita. */
     public static final class BlockedRequestException extends RuntimeException {
         public BlockedRequestException(){super("request blocked by Telvyn",null,false,false);}
