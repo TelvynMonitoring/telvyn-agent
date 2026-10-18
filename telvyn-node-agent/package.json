@@ -24,6 +24,7 @@
     "protection.cjs",
     "frameworks.cjs",
     "rasp.cjs",
+    "sca.cjs",
     "waf-rules.json",
     "WAF-RULES-NOTICE.md"
   ],

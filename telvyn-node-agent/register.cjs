@@ -23,6 +23,9 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
     if (process.env.TELVYN_IAST_ENABLED === 'true' && !security?.reportIast) throw new Error('IAST needs the security reporter, which did not start');
     iast = require('./iast.cjs').startIast((finding, elapsed) => { if (require('./remote.cjs').security('iast') !== false) security.reportIast(finding, elapsed, trace.getActiveSpan()); });
   } catch (error) { console.warn('[Telvyn] IAST sensor could not start; application startup continues.' + why(error)); }
+  let sca;
+  try { sca = require('./sca.cjs').startSca(); }
+  catch (error) { console.warn('[Telvyn] Library inventory (SCA) could not start; application startup continues.' + why(error)); }
   let loaderPort;
   if (require('node:worker_threads').isMainThread && typeof require('node:module').register === 'function') {
     try {
@@ -31,9 +34,10 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
       port1.on('message', message => {
         if (message.error) { if (iast) iast.state = 'error'; console.warn('[Telvyn] ESM taint instrumentation failed.'); }
         else if (message.filename && message.source) require('@datadog/wasm-js-rewriter/js/source-map').cacheRewrittenSourceMap(message.filename, message.source);
+        else if (message.module) sca?.noteUrl(message.module);
       });
       port1.unref();
-      require('node:module').register(require('node:url').pathToFileURL(require('node:path').join(__dirname, 'loader.mjs')), {data: {sourceRoot: process.env.TELVYN_PROFILE_SOURCE_ROOT, iast: iast?.state === 'active', port: port2}, transferList: [port2]});
+      require('node:module').register(require('node:url').pathToFileURL(require('node:path').join(__dirname, 'loader.mjs')), {data: {sourceRoot: process.env.TELVYN_PROFILE_SOURCE_ROOT, iast: iast?.state === 'active', sca: !!sca, port: port2}, transferList: [port2]});
     } catch (error) { console.warn('[Telvyn] ESM instrumentation could not start.' + why(error)); loaderPort?.close(); }
   }
 

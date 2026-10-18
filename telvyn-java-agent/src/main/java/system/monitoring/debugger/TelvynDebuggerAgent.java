@@ -96,6 +96,7 @@ public final class TelvynDebuggerAgent {
         try { ServletIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (servlet)",failure); }
         try { JdbcIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDBC)",failure); }
         try { IastJdk.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDK classes)",failure); }
+        try { ScaLibraries.install(inst); } catch(Throwable failure) { startupFailure("SCA",failure); }
         try { SdkConfigurationReporter.start(); } catch (Throwable ignored) { /* Configuration reporting cannot disable instrumentation. */ }
         try { RemoteConfig.start(); } catch (Throwable ignored) { /* Remote configuration cannot disable instrumentation. */ }
         // 1) bootstrap local (env/sysprop/arg) — vale até a primeira busca remota.
