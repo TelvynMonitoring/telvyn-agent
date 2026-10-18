@@ -33,6 +33,8 @@ public final class SpringMvcSecurity {
     public static final class BlockedRequestException extends RuntimeException {
         public BlockedRequestException(){super("request blocked by Telvyn",null,false,false);}
     }
+    /** Exceção de bloqueio, inclusive embrulhada por outra (frameworks costumam embrulhar falhas de acesso a dados). */
+    public static boolean isBlock(Throwable thrown){for(int i=0;thrown!=null&&i<10;i++,thrown=thrown.getCause())if(thrown instanceof BlockedRequestException)return true;return false;}
     private SpringMvcSecurity() {}
     public static Object selection(){return selected.get();}
     public static void selection(Object method){if(method instanceof Method value)selected.set(value);else selected.remove();}
@@ -316,7 +318,7 @@ public final class SpringMvcSecurity {
         // Requisição bloqueada: o handler do controller não roda (retorno nulo = resposta já tratada).
         @Advice.OnMethodEnter(skipOn=Advice.OnNonDefaultValue.class,suppress=Throwable.class) public static boolean enter(@Advice.Argument(0)Object request,@Advice.Argument(1)Object response,@Advice.Argument(2)Object handler){return enterHandle(request,response,handler);}
         // Bloqueio no corpo: a exceção interrompe o controller e não chega aos tratadores de erro do Spring.
-        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(@Advice.Thrown(readOnly=false)Throwable thrown){exitHandle();if(thrown instanceof BlockedRequestException)thrown=null;}
+        @Advice.OnMethodExit(onThrowable=Throwable.class,suppress=Throwable.class) public static void exit(@Advice.Thrown(readOnly=false)Throwable thrown){exitHandle();if(isBlock(thrown))thrown=null;}
     }
     public static class RequestPhase {
         @Advice.OnMethodEnter(skipOn=Advice.OnNonDefaultValue.class,suppress=Throwable.class) public static boolean enter(@Advice.Argument(0)Object request,@Advice.Argument(1)Object response){return requestStart(request,response);}

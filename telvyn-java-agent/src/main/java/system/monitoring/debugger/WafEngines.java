@@ -34,7 +34,7 @@ final class WafEngines {
         version = lookup.findStatic(engine, "version", MethodType.methodType(String.class));
         open = lookup.findStatic(engine, "open", MethodType.methodType(Object.class, Object.class));
         close = lookup.findStatic(engine, "close", MethodType.methodType(void.class, Object.class));
-        run = lookup.findStatic(engine, "run", MethodType.methodType(Object[].class, Object.class, Map.class, int[].class));
+        run = lookup.findStatic(engine, "run", MethodType.methodType(Object[].class, Object.class, Map.class, int[].class, boolean.class));
     }
 
     /** Motor com as regras (expected > 0: número exato de regras carregadas). */
@@ -45,7 +45,9 @@ final class WafEngines {
     static Object open(Object handle) throws Throwable { return open.invoke(handle); }
 
     /** {resultado ("ok", "match", "error", "timeout"), dados do match em JSON ou null}. */
-    static Object[] run(Object context, Map<String, Object> data, int[] limits) throws Throwable { return (Object[]) run.invoke(context, data, limits); }
+    static Object[] run(Object context, Map<String, Object> data, int[] limits) throws Throwable { return run(context, data, limits, false); }
+
+    static Object[] run(Object context, Map<String, Object> data, int[] limits, boolean ephemeral) throws Throwable { return (Object[]) run.invoke(context, data, limits, ephemeral); }
 
     static void close(Object resource) throws Throwable { close.invoke(resource); }
 }

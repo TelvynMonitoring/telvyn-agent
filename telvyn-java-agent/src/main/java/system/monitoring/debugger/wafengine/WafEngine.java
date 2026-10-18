@@ -34,9 +34,14 @@ public final class WafEngine {
     public static Object open(Object handle) { return new WafContext((WafHandle) handle); }
 
     /** {resultado ("ok", "match", "error", "timeout"), dados do match em JSON ou null}. limits: profundidade, elementos, texto, tempo do WAF, tempo total (µs). */
-    public static Object[] run(Object context, Map<String, Object> data, int[] limits) {
+    public static Object[] run(Object context, Map<String, Object> data, int[] limits) { return run(context, data, limits, false); }
+
+    /** ephemeral: dados de uma operação (exploit prevention), que não ficam no contexto da requisição. */
+    public static Object[] run(Object context, Map<String, Object> data, int[] limits, boolean ephemeral) {
         try {
-            var result = ((WafContext) context).run(data, new Waf.Limits(limits[0], limits[1], limits[2], limits[3], limits[4]), new WafMetrics());
+            var waf = (WafContext) context;
+            var bounds = new Waf.Limits(limits[0], limits[1], limits[2], limits[3], limits[4]);
+            var result = ephemeral ? waf.runEphemeral(data, bounds, new WafMetrics()) : waf.run(data, bounds, new WafMetrics());
             if (result.result == Waf.Result.OK) return new Object[]{"ok", null};
             if (result.result == Waf.Result.MATCH) return new Object[]{"match", result.data};
             return new Object[]{"error", null};

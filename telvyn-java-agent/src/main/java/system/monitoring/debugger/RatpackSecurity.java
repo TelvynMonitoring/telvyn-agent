@@ -114,6 +114,6 @@ public final class RatpackSecurity {
     /** Erro de requisição bloqueada: a resposta de bloqueio já foi enviada, não é falha da aplicação. */
     public static class Error {
         @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
-        public static boolean enter(@Advice.Argument(0) Throwable failure) { return failure instanceof SpringMvcSecurity.BlockedRequestException; }
+        public static boolean enter(@Advice.Argument(0) Throwable failure) { return SpringMvcSecurity.isBlock(failure); }
     }
 }
