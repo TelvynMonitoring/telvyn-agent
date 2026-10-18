@@ -93,7 +93,7 @@ public final class WafInspector {
         final String[] trace;
         final Set<String> reported = new LinkedHashSet<>();
         String user;
-        boolean blocked, closed, routeInspected, bodyInspected, timeoutReported;
+        boolean blocked, closed, routeInspected, bodyInspected, filesInspected, timeoutReported;
         /** Corpo lido do ServletInputStream até o limite, e quantos bytes já foram lidos. */
         java.io.ByteArrayOutputStream rawBody;
         long rawRead;

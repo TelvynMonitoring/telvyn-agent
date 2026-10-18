@@ -135,6 +135,12 @@ public final class VertxSecurity {
                 Object body = body(context, request);
                 if (body != null) { state.bodyInspected = true; data.put("server.request.body", body); }
             }
+            // Arquivos enviados (BodyHandler com uploads): nomes, como o Datadog.
+            if (!state.filesInspected && call(context, "fileUploads") instanceof Iterable<?> uploads) {
+                List<String> names = new ArrayList<>();
+                for (Object upload : uploads) if (call(upload, "fileName") instanceof String name && !name.isEmpty()) names.add(name);
+                if (!names.isEmpty()) { state.filesInspected = true; data.put("server.request.body.filenames", names); }
+            }
             if (!data.isEmpty() && SpringMvcSecurity.decide(state, WafInspector.run(state, data), reporter)) { block(state, request, "rule", reporter); return true; }
         } catch (Exception | LinkageError failure) { LocalAttackReporter.reportLoss("Vert.x route inspection failure"); }
         return false;

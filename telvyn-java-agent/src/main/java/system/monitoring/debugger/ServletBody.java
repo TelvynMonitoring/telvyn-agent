@@ -13,7 +13,10 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
  * Corpo da requisição em qualquer servlet, como as instrumentações "Servlet Request Body" do Datadog: o corpo que a
  * aplicação lê do {@code ServletInputStream} (guardado até {@link #LIMIT} bytes e inspecionado quando a leitura chega
  * ao fim; JSON é interpretado) e o formulário lido por {@code getParameter*}. Vale para servlets puros e para os
- * frameworks sobre eles; quem já leu o corpo interpretado (Spring, JAX-RS) não é inspecionado de novo. O bloqueio
+ * frameworks sobre eles; quem já leu o corpo interpretado (Spring, JAX-RS) não é inspecionado de novo. Upload
+ * multipart (como o Datadog): nomes dos arquivos enviados ({@code server.request.body.filenames}) pelo
+ * {@code getParts} do servlet e pelo Commons FileUpload ({@code ServletFileUpload.parseRequest}), que também entrega
+ * os campos de texto como corpo. O bloqueio
  * responde e interrompe a leitura com a exceção de bloqueio, tratada no fim da requisição.
  */
 public final class ServletBody {
@@ -36,8 +39,64 @@ public final class ServletBody {
             .type(hasSuperType(namedOneOf("javax.servlet.ServletRequest", "jakarta.servlet.ServletRequest")).and(not(isInterface())).and(not(isAbstract())),
                 LoaderMatchers.canSee("javax.servlet.ServletRequest", "jakarta.servlet.ServletRequest"))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(Parameters.class)
-                .on(namedOneOf("getParameter", "getParameterValues", "getParameterMap", "getParameterNames").and(isPublic()))))
+                .on(namedOneOf("getParameter", "getParameterValues", "getParameterMap", "getParameterNames").and(isPublic())))
+                .visit(Advice.to(Parts.class).on(named("getParts").and(isPublic()).and(takesArguments(0)))))
             .installOn(instrumentation);
+        Agents.builder()
+            .type(named("org.apache.commons.fileupload.servlet.ServletFileUpload"))
+            .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(FileUpload.class)
+                .on(named("parseRequest").and(isPublic()).and(takesArgument(0, named("javax.servlet.http.HttpServletRequest"))))))
+            .installOn(instrumentation);
+    }
+
+    /** Nomes dos arquivos e campos de texto do upload: inspecionados uma vez; devolve true quando bloqueou. */
+    static boolean upload(java.util.List<String> filenames, Map<String, Object> fields) {
+        Object[] current = SpringMvcSecurity.current();
+        var reporter = SpringMvcSecurity.wafReporter();
+        if (current == null || reporter == null || !(current[2] instanceof WafInspector.State state) || state.blocked) return false;
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        if (!filenames.isEmpty() && !state.filesInspected) { state.filesInspected = true; data.put("server.request.body.filenames", filenames); }
+        if (fields != null && !fields.isEmpty() && !state.bodyInspected) { state.bodyInspected = true; data.put("server.request.body", fields); }
+        return !data.isEmpty() && SpringMvcSecurity.decide(state, WafInspector.run(state, data), reporter) && block(current, state);
+    }
+
+    /** Partes do multipart (getParts): nomes dos arquivos enviados e campos de texto (corpo, até 4 KiB por campo). */
+    public static void parts(Object parts) {
+        if (--DEPTH.get()[0] > 0 || !(parts instanceof Iterable<?> all)) return;
+        java.util.List<String> names = new java.util.ArrayList<>();
+        Map<String, Object> fields = new java.util.LinkedHashMap<>();
+        DEPTH.get()[0]++;
+        try {
+            for (Object part : all) {
+                try {
+                    if (JavaProtection.call(part, "getSubmittedFileName", new Class<?>[]{}) instanceof String name && !name.isEmpty()) { names.add(name); continue; }
+                    String field = String.valueOf(JavaProtection.call(part, "getName", new Class<?>[]{}));
+                    try (var input = (java.io.InputStream) JavaProtection.call(part, "getInputStream", new Class<?>[]{})) {
+                        @SuppressWarnings("unchecked") var list = (java.util.List<Object>) fields.computeIfAbsent(field, key -> new java.util.ArrayList<>());
+                        list.add(new String(input.readNBytes(4096), StandardCharsets.UTF_8));
+                    }
+                } catch (ReflectiveOperationException | RuntimeException | java.io.IOException unreadable) { /* parte ignorada */ }
+            }
+        } finally { DEPTH.get()[0]--; }
+        if (upload(names, fields)) throw new SpringMvcSecurity.BlockedRequestException();
+    }
+
+    /** Commons FileUpload: arquivos (nomes) e campos de texto (corpo). */
+    public static void fileItems(Object items) {
+        if (--DEPTH.get()[0] > 0 || !(items instanceof Iterable<?> all)) return;
+        java.util.List<String> names = new java.util.ArrayList<>();
+        Map<String, Object> fields = new java.util.LinkedHashMap<>();
+        for (Object item : all) {
+            try {
+                if (Boolean.TRUE.equals(JavaProtection.call(item, "isFormField", new Class<?>[]{}))) {
+                    String field = String.valueOf(JavaProtection.call(item, "getFieldName", new Class<?>[]{}));
+                    Object value = JavaProtection.call(item, "getString", new Class<?>[]{});
+                    @SuppressWarnings("unchecked") var list = (java.util.List<Object>) fields.computeIfAbsent(field, key -> new java.util.ArrayList<>());
+                    list.add(value);
+                } else if (JavaProtection.call(item, "getName", new Class<?>[]{}) instanceof String name && !name.isEmpty()) names.add(name);
+            } catch (ReflectiveOperationException | RuntimeException unreadable) { /* item ignorado */ }
+        }
+        if (upload(names, fields)) throw new SpringMvcSecurity.BlockedRequestException();
     }
 
     public static void enter() { DEPTH.get()[0]++; }
@@ -135,6 +194,25 @@ public final class ServletBody {
         @Advice.OnMethodEnter(suppress = Throwable.class) public static void enter() { ServletBody.enter(); }
         @Advice.OnMethodExit(onThrowable = Throwable.class)
         public static void exit(@Advice.This Object request, @Advice.Thrown Throwable thrown) { if (thrown == null) ServletBody.parametersSafely(request); else ServletBody.leave(); }
+    }
+
+    public static class Parts {
+        @Advice.OnMethodEnter(suppress = Throwable.class) public static void enter() { ServletBody.enter(); }
+        @Advice.OnMethodExit(onThrowable = Throwable.class)
+        public static void exit(@Advice.Return Object parts, @Advice.Thrown Throwable thrown) { if (thrown == null) ServletBody.uploadSafely(parts, true); else ServletBody.leave(); }
+    }
+
+    /** O parse do Commons FileUpload lê o corpo: a leitura bruta dentro dele não é inspecionada (DEPTH). */
+    public static class FileUpload {
+        @Advice.OnMethodEnter(suppress = Throwable.class) public static void enter() { ServletBody.enter(); }
+        @Advice.OnMethodExit(onThrowable = Throwable.class)
+        public static void exit(@Advice.Return Object items, @Advice.Thrown Throwable thrown) { if (thrown == null) ServletBody.uploadSafely(items, false); else ServletBody.leave(); }
+    }
+
+    public static void uploadSafely(Object value, boolean parts) {
+        try { if (parts) parts(value); else fileItems(value); }
+        catch (SpringMvcSecurity.BlockedRequestException blocked) { throw blocked; }
+        catch (RuntimeException | LinkageError failure) { LocalAttackReporter.reportLoss("upload inspection failure"); }
     }
 
     public static void leave() { DEPTH.get()[0]--; }
