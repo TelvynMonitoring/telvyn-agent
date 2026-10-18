@@ -47,8 +47,8 @@ final class IastSecrets {
         return false;
     }
 
-    /** Constructors and static initializers keep a readable method name ({@code <init>} → {@code init}). */
+    /** Construtores e inicializadores estáticos ficam com o nome da JVM ({@code <init>}, {@code <clinit>}), como os demais achados. */
     static void report(String type, String method, int line) {
-        IastRuntime.once("HARDCODED_SECRET", type + "#" + method.replace("<", "").replace(">", ""), line, null);
+        IastRuntime.once("HARDCODED_SECRET", type + "#" + method, line, null);
     }
 }
