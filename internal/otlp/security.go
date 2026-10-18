@@ -17,6 +17,8 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		signal = "security/users"
 	} else if r.URL.Path == "/v1/security/api" {
 		signal = "security/api"
+	} else if r.URL.Path == "/v1/security/libraries" {
+		signal = "security/libraries"
 	}
 	h.serveOTLP(w, r, "/v1/"+signal, func(body []byte, ct, clientIP string) (int, error) {
 		if ct != "application/json" {
@@ -27,6 +29,10 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		if signal == "security/iast" || signal == "security/api" {
 			limit = 32768
 		}
+		// Libraries a service loaded (runtime SCA), sent in batches by the agent.
+		if signal == "security/libraries" {
+			limit = 65536
+		}
 		if len(body) > limit {
 			return http.StatusRequestEntityTooLarge, errors.New("security report too large")
 		}
@@ -35,6 +41,15 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 			return http.StatusBadRequest, errors.New("security report required")
 		}
 		for field := range report {
+			if signal == "security/libraries" {
+				// Runtime SCA (as Datadog): ecosystem, name and version of each library the service loaded.
+				switch field {
+				case "id", "service", "host", "environment", "service_version", "libraries":
+					continue
+				default:
+					return http.StatusBadRequest, errors.New("unsupported security field")
+				}
+			}
 			if signal == "security/api" {
 				// API Security schemas (as Datadog): field types and scanner tags, never the values.
 				switch field {

@@ -782,6 +782,7 @@ func (h *HTTPReceiver) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/security/lab", h.handleSecurity)
 	mux.HandleFunc("/v1/security/users", h.handleSecurity)
 	mux.HandleFunc("/v1/security/api", h.handleSecurity)
+	mux.HandleFunc("/v1/security/libraries", h.handleSecurity)
 	mux.HandleFunc("/v1/sdk/configuration", h.handleApplicationReport)
 	mux.HandleFunc("/v1/debug", h.handleApplicationReport)
 	mux.HandleFunc("/v1/debug/config", h.handleDebugConfig)
