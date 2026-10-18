@@ -65,7 +65,9 @@ function startSecurity() {
   };
   // Where the rule matched: address and key path, never the value.
   const where = event => {
-    const parameter = event.rule_matches?.[0]?.parameters?.[0];
+    const first = event.rule_matches?.[0]?.parameters?.[0];
+    // Exploit prevention matches name the request input (params) and the operation (resource) separately.
+    const parameter = first?.address ? first : first?.params ?? first?.resource;
     if (!parameter?.address) return undefined;
     const key = (parameter.key_path || []).map(String).join('.').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
     return key ? `${parameter.address}:${key}` : parameter.address;
@@ -73,11 +75,12 @@ function startSecurity() {
 
   // Runs one phase on the request's WAF context; reports new matches and returns whether a blocking rule matched.
   // blockable=false: detection only (a phase where answering would break the framework's own response).
-  function evaluate(state, data, span, blockable = true) {
+  // ephemeral: data of one operation (exploit prevention), not kept in the request context.
+  function evaluate(state, data, span, blockable = true, ephemeral = false) {
     if (!state.context || state.closed) return false;
     const started = process.hrtime.bigint();
     let result;
-    try { result = state.context.run({persistent: data}, BUDGET_US); }
+    try { result = state.context.run(ephemeral ? {ephemeral: data} : {persistent: data}, BUDGET_US); }
     catch (_) { report('error', undefined, Number((process.hrtime.bigint() - started) / 1000n), span, undefined, state.details); return false; }
     const elapsed = Number((process.hrtime.bigint() - started) / 1000n);
     if (result.timeout && !state.timeoutReported) { state.timeoutReported = true; report('timeout', undefined, elapsed, span, undefined, state.details); }
@@ -220,6 +223,16 @@ function startSecurity() {
     apolloBlock() {
       const state = store.getStore();
       return state?.graphqlBlocked ? protection.blockPayload(state.request) : null;
+    },
+    // Exploit prevention (as Datadog RASP): a dangerous operation (SQL, outgoing URL, file, command) checked against
+    // the request's input. Returns true when a blocking rule matched: the block response was sent and the caller
+    // aborts the operation.
+    inspectOperation(data) {
+      const state = store.getStore();
+      if (stopped || !waf || !state || state.blocked || state.closed) return false;
+      if (!evaluate(state, data, state.span, true, true)) return false;
+      blockRequest(state, state.request, state.response, state.span, 'rule');
+      return true;
     },
     // Whether a Web API Request is the incoming request being handled (Next.js wraps it), not one the application builds.
     isIncoming(webRequest) {

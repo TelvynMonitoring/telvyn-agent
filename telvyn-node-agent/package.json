@@ -23,6 +23,7 @@
     "remote.cjs",
     "protection.cjs",
     "frameworks.cjs",
+    "rasp.cjs",
     "waf-rules.json",
     "WAF-RULES-NOTICE.md"
   ],
