@@ -42,7 +42,6 @@ final class Agents {
             .ignore(net.bytebuddy.matcher.ElementMatchers.any(), net.bytebuddy.matcher.ElementMatchers.isBootstrapClassLoader())
             .or(net.bytebuddy.matcher.ElementMatchers.nameStartsWith("io.opentelemetry.javaagent.")
                 .or(net.bytebuddy.matcher.ElementMatchers.nameStartsWith("net.bytebuddy."))
-                .or(net.bytebuddy.matcher.ElementMatchers.nameStartsWith("system.monitoring.debugger."))
-                .or(net.bytebuddy.matcher.ElementMatchers.isSynthetic()));
+                .or(net.bytebuddy.matcher.ElementMatchers.nameStartsWith("system.monitoring.debugger.")));
     }
 }
