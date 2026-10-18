@@ -81,6 +81,7 @@ public final class TelvynDebuggerAgent {
         try { ServletBody.install(inst); } catch(Throwable failure) { startupFailure("Servlet body security",failure); }
         try { GraphqlJavaSecurity.install(inst); } catch(Throwable failure) { startupFailure("graphql-java security",failure); }
         try { GrpcSecurity.install(inst); } catch(Throwable failure) { startupFailure("gRPC security",failure); }
+        try { AkkaHttpSecurity.install(inst); } catch(Throwable failure) { startupFailure("Akka/Pekko HTTP security",failure); }
         // Regras do WAF carregadas na subida, fora das threads da aplicação: a primeira requisição não espera
         // (num event loop do Vert.x/Quarkus a carga travaria a thread).
         if (Boolean.parseBoolean(System.getProperty("telvyn.security.enabled", System.getenv().getOrDefault("TELVYN_SECURITY_ENABLED", "false")))) {
