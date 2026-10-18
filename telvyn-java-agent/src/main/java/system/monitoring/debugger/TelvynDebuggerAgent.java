@@ -74,6 +74,14 @@ public final class TelvynDebuggerAgent {
         try { ServletSecurity.install(inst); } catch(Throwable failure) { startupFailure("Servlet security",failure); }
         try { UserActivity.install(inst); } catch(Throwable failure) { startupFailure("User activity",failure); }
         try { VertxSecurity.install(inst); } catch(Throwable failure) { startupFailure("Vert.x security",failure); }
+        try { JaxRsSecurity.install(inst); } catch(Throwable failure) { startupFailure("JAX-RS security",failure); }
+        // Regras do WAF carregadas na subida, fora das threads da aplicação: a primeira requisição não espera
+        // (num event loop do Vert.x/Quarkus a carga travaria a thread).
+        if (Boolean.parseBoolean(System.getProperty("telvyn.security.enabled", System.getenv().getOrDefault("TELVYN_SECURITY_ENABLED", "false")))) {
+            Thread warmup = new Thread(() -> { try { SpringMvcSecurity.wafReporter(); } catch (Throwable failure) { /* falha já relatada pelo sensor */ } }, "telvyn-security-warmup");
+            warmup.setDaemon(true);
+            warmup.start();
+        }
         try { IastInstrumentation.install(inst); } catch(Throwable failure) { SecuritySensorState.iastFailed();startupFailure("IAST",failure); }
         try { ServletIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (servlet)",failure); }
         try { JdbcIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDBC)",failure); }

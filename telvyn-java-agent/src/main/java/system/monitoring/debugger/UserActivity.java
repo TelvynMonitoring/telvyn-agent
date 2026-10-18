@@ -25,20 +25,23 @@ public final class UserActivity {
     private UserActivity() {}
 
     public static void install(Instrumentation instrumentation) {
-        new AgentBuilder.Default().disableClassFormatChanges()
-            .type(hasSuperType(named("org.springframework.security.authentication.AuthenticationManager")).and(not(isInterface())))
+        Agents.builder()
+            .type(hasSuperType(named("org.springframework.security.authentication.AuthenticationManager")).and(not(isInterface())),
+                LoaderMatchers.canSee("org.springframework.security.authentication.AuthenticationManager"))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(Authenticate.class).on(named("authenticate").and(not(isAbstract())).and(takesArguments(1)))))
             .installOn(instrumentation);
-        new AgentBuilder.Default().disableClassFormatChanges()
-            .type(hasSuperType(named("org.springframework.security.core.userdetails.UserDetailsService")).and(not(isInterface())))
+        Agents.builder()
+            .type(hasSuperType(named("org.springframework.security.core.userdetails.UserDetailsService")).and(not(isInterface())),
+                LoaderMatchers.canSee("org.springframework.security.core.userdetails.UserDetailsService"))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(LoadUser.class).on(named("loadUserByUsername").and(not(isAbstract())).and(takesArguments(String.class)))))
             .installOn(instrumentation);
-        new AgentBuilder.Default().disableClassFormatChanges()
-            .type(hasSuperType(named("org.springframework.security.provisioning.UserDetailsManager")).and(not(isInterface())))
+        Agents.builder()
+            .type(hasSuperType(named("org.springframework.security.provisioning.UserDetailsManager")).and(not(isInterface())),
+                LoaderMatchers.canSee("org.springframework.security.provisioning.UserDetailsManager"))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(CreateUser.class).on(named("createUser").and(not(isAbstract())).and(takesArguments(1)))))
             .installOn(instrumentation);
         // API manual (telvyn-java-api, como o EventTrackerV2 do Datadog): os métodos da API não fazem nada sem o agente.
-        new AgentBuilder.Default().disableClassFormatChanges()
+        Agents.builder()
             .type(named("system.monitoring.telvyn.TelvynSecurity"))
             .transform((builder, type, loader, module, domain) -> builder
                 .visit(Advice.to(Manual.class).on(namedOneOf("trackUserLoginSuccess", "trackUserLoginFailure", "trackUserSignup", "setUser").and(isStatic())))

@@ -25,13 +25,13 @@ public final class VertxSecurity {
     private VertxSecurity() {}
 
     public static void install(Instrumentation instrumentation) {
-        new AgentBuilder.Default().disableClassFormatChanges()
+        Agents.builder()
             .type(named("io.vertx.ext.web.impl.RoutingContextImpl"))
             .transform((builder, type, loader, module, domain) -> builder
                 .visit(Advice.to(Start.class).on(isConstructor().and(takesArguments(4))))
                 .visit(Advice.to(Next.class).on(named("next").and(takesArguments(0)))))
             .installOn(instrumentation);
-        new AgentBuilder.Default().disableClassFormatChanges()
+        Agents.builder()
             .type(namedOneOf("io.vertx.ext.web.impl.RouteState", "io.vertx.ext.web.impl.RouteImpl"))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(Route.class).on(named("handleContext").and(takesArguments(1)))))
             .installOn(instrumentation);
@@ -65,6 +65,9 @@ public final class VertxSecurity {
             String path = (String) call(request, "path");
             var state = WafInspector.open(ip, method, path, header.apply("User-Agent"), SpringMvcSecurity.trace());
             call(context, "put", new Class<?>[]{String.class, Object.class}, STATE, state);
+            // Também no contexto do Vert.x da requisição: o Quarkus REST continua o trabalho em outra thread.
+            Object vertxContext = Class.forName("io.vertx.core.Vertx", false, context.getClass().getClassLoader()).getMethod("currentContext").invoke(null);
+            if (vertxContext != null) call(vertxContext, "putLocal", new Class<?>[]{Object.class, Object.class}, STATE, new Object[]{request, call(request, "response"), state});
             closeAtEnd(context, request, state);
             if (JavaProtection.allowBlocking() && JavaProtection.denied(ip)) { block(state, request, "ip", reporter); return; }
             Map<String, Object> data = new LinkedHashMap<>();
@@ -95,6 +98,14 @@ public final class VertxSecurity {
         } catch (Exception | LinkageError failure) { LocalAttackReporter.reportLoss("Vert.x inspection failure"); }
     }
 
+    /** Requisição em curso guardada no contexto do Vert.x atual ({requisição, resposta, estado}), ou null. */
+    static Object[] contextCurrent(ClassLoader loader) {
+        try {
+            Object vertxContext = Class.forName("io.vertx.core.Vertx", false, loader).getMethod("currentContext").invoke(null);
+            return vertxContext != null && call(vertxContext, "getLocal", new Class<?>[]{Object.class}, STATE) instanceof Object[] current ? current : null;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError unavailable) { return null; }
+    }
+
     /** Requisição bloqueada: o roteamento para (nenhum handler roda). */
     public static boolean blocked(Object context) {
         var state = state(context);
@@ -112,8 +123,13 @@ public final class VertxSecurity {
             if (reporter == null) return false;
             Map<String, Object> data = new LinkedHashMap<>();
             if (!state.routeInspected && call(context, "pathParams") instanceof Map<?, ?> params && !params.isEmpty()) {
-                state.routeInspected = true;
-                data.put("server.request.path_params", WafInspector.introspect(params));
+                // O curinga "*" é só o resto da URI (rota genérica, como a do Quarkus), não um parâmetro nomeado.
+                Map<Object, Object> named = new LinkedHashMap<>(params);
+                named.remove("*");
+                if (!named.isEmpty()) {
+                    state.routeInspected = true;
+                    data.put("server.request.path_params", WafInspector.introspect(named));
+                }
             }
             if (!state.bodyInspected) {
                 Object body = body(context, request);
