@@ -23,7 +23,28 @@ public final class IastRuntime {
         final java.util.Set<String> reported=new java.util.HashSet<>(); volatile boolean closed;
     }
     private IastRuntime() {}
-    public static void configure(Consumer<Finding> sink){reporter=sink;SecuritySensorState.iastIntegration(sink!=null);}
+    public static void configure(Consumer<Finding> sink){
+        reporter=sink;SecuritySensorState.iastIntegration(sink!=null);
+        if(sink==null)return;
+        java.util.List<Finding> queued;
+        synchronized(PENDING){queued=new java.util.ArrayList<>(PENDING);PENDING.clear();}
+        if(queued.isEmpty())return;
+        // On a thread of its own: these findings belong to no request, so they must not take the trace of the current one.
+        var flush=new Thread(()->{for(var finding:queued)try{sink.accept(finding);}catch(RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("IAST report failure");}},"telvyn-iast-pending");
+        flush.setDaemon(true);flush.start();
+    }
+    public static boolean active(){return reporter!=null;}
+    // Findings outside a request (configuration of the application, secrets in its code): once per rule and place for
+    // the life of the process. Found before the first request (class loading), they wait for the reporter.
+    private static final java.util.Set<String> ONCE=java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final java.util.List<Finding> PENDING=new java.util.ArrayList<>();
+    public static void once(String rule,String method,int line,String sink){
+        if(ONCE.size()>=512||!ONCE.add(rule+"@"+method+":"+line))return;
+        var finding=new Finding(method,line>0?line:null,0,"iast-jvm-flaws-1",sinkLabel(sink),null,java.util.List.of(),rule,null);
+        var report=reporter;
+        if(report==null){synchronized(PENDING){if(PENDING.size()<64)PENDING.add(finding);else LocalAttackReporter.reportLoss("IAST pending limit");}return;}
+        try{report.accept(finding);}catch(RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("IAST report failure");}
+    }
     public static void configureSources(java.util.function.Predicate<Method> sources){configuredSources=sources==null?method->false:sources;}
     public static void configureTrace(java.util.function.Supplier<String[]> source){traceSource=source==null?()->null:source;}
     public static void configureRequest(java.util.function.Supplier<String[]> source){requestSource=source==null?()->null:source;}
@@ -57,12 +78,15 @@ public final class IastRuntime {
             var annotations=method.getParameterAnnotations();
             for(int i=0;i<annotations.length;i++)for(var annotation:annotations[i]) {
                 String kind=sourceKind(annotation.annotationType().getName());
-                if(kind==null||!(arguments[i] instanceof String value)||value.isEmpty())continue;
-                String name=sourceName(annotation,parameters[i]);
+                if(kind==null)continue;
+                boolean body=kind.equals("body");
+                // The request body arrives as text or as bytes (deserialized later by the application).
+                if(!(arguments[i] instanceof String value&&!value.isEmpty())&&!(body&&arguments[i] instanceof byte[] bytes&&bytes.length>0))continue;
+                String name=body?"body":sourceName(annotation,parameters[i]);
                 // A configured route exposes every supported input; the annotation only exposes the query names it lists.
                 if(!routeSelected&&!(kind.equals("query")&&inspected.contains(name)))continue;
-                if(value.length()>2048||state.tainted.size()>=256){LocalAttackReporter.reportLoss("IAST source limit");continue;}
-                state.tainted.put(value,kind+":"+name);
+                if(!body&&((String)arguments[i]).length()>2048||state.tainted.size()>=256){LocalAttackReporter.reportLoss("IAST source limit");continue;}
+                state.tainted.put(arguments[i],kind+":"+name);
             }
         }catch(ReflectiveOperationException failure){LocalAttackReporter.reportLoss("IAST source unavailable");}
         return previous;
@@ -73,6 +97,7 @@ public final class IastRuntime {
             case "org.springframework.web.bind.annotation.PathVariable","jakarta.ws.rs.PathParam"->"path";
             case "org.springframework.web.bind.annotation.RequestHeader","jakarta.ws.rs.HeaderParam"->"header";
             case "org.springframework.web.bind.annotation.CookieValue","jakarta.ws.rs.CookieParam"->"cookie";
+            case "org.springframework.web.bind.annotation.RequestBody"->"body";
             default->null;
         };
     }
@@ -100,6 +125,13 @@ public final class IastRuntime {
     public static String sourceParameter(String name,String value){mark(value,"parameter",name);return value;}
     public static String sourceHeader(String name,String value){mark(value,"header",name);return value;}
     public static String sourceQuery(String value){mark(value,"query","querystring");return value;}
+    // The body stream or reader of the request: the object itself is the source (deserialization, readers built on it).
+    public static Object sourceBody(Object body){
+        var state=current.get();
+        if(state==null||body==null)return body;
+        synchronized(state){if(state.closed)return body;if(state.tainted.size()<256||state.tainted.containsKey(body))state.tainted.put(body,"body:body");else LocalAttackReporter.reportLoss("IAST source limit");}
+        return body;
+    }
     public static String[] sourceParameterValues(String name,String[] values){if(values!=null&&current.get()!=null)for(String value:values)mark(value,"parameter",name);return values;}
     public static java.util.Map<?,?> sourceParameterMap(java.util.Map<?,?> values){
         if(values!=null&&current.get()!=null)for(var entry:values.entrySet())if(entry.getValue() instanceof String[] list&&entry.getKey() instanceof String name)for(String value:list)mark(value,"parameter",name);
@@ -215,7 +247,8 @@ public final class IastRuntime {
         try {
             var state=current.get();var report=reporter;
             if(state==null||report==null)return;
-            Object found=taintedPart(value,0,rule.equals("XSS"));
+            // HTML escaping protects the page and the e-mail alike.
+            Object found=taintedPart(value,0,rule.equals("XSS")||rule.equals("EMAIL_HTML_INJECTION"));
             if(found==null)return;
             String source;
             synchronized(state){if(state.closed||!state.reported.add(rule+"@"+method+":"+line))return;source=origin(state.tainted.get(found));}
@@ -232,6 +265,33 @@ public final class IastRuntime {
     public static void trustBoundary(Object name,Object value,String method,int line,String sink){flaw(new Object[]{name,value},method,line,sink,"TRUST_BOUNDARY_VIOLATION");}
     public static void weakRandom(String method,int line,String sink){withoutInput(method,line,sink,"WEAK_RANDOMNESS");}
     public static void nosql(Object value,String method,int line,String sink){flaw(value,method,line,sink,"NOSQL_INJECTION");}
+    // Request input deserialized (ObjectInputStream, SnakeYAML, XStream).
+    public static void deserialization(Object value,String method,int line,String sink){flaw(value,method,line,sink,"UNTRUSTED_DESERIALIZATION");}
+    // A class, method or field chosen by the request (Class.forName, getMethod, MethodHandles.Lookup...).
+    public static void reflection(Object name,String method,int line,String sink){flaw(name,method,line,sink,"REFLECTION_INJECTION");}
+    // E-mail sent with HTML built from request input: the HTML parts of the message, as they are when sent.
+    public static void email(Object message,String method,int line,String sink){
+        if(current.get()==null||message==null)return;
+        try{flaw(htmlParts(message,0),method,line,sink,"EMAIL_HTML_INJECTION");}
+        catch(ReflectiveOperationException|RuntimeException unavailable){LocalAttackReporter.reportLoss("IAST mail inspection unavailable");}
+    }
+    private static java.util.List<Object> htmlParts(Object part,int depth)throws ReflectiveOperationException {
+        var out=new java.util.ArrayList<Object>();
+        if(part==null||depth>3)return out;
+        var type=part.getClass();
+        Object content=type.getMethod("getContent").invoke(part);
+        // The type of the content as it was set (setContent/setText): the Content-Type header only exists after saveChanges.
+        Object handler=type.getMethod("getDataHandler").invoke(part);
+        Object mime=handler==null?null:handler.getClass().getMethod("getContentType").invoke(handler);
+        if(mime instanceof String text&&text.trim().toLowerCase(java.util.Locale.ROOT).startsWith("text/html"))out.add(content);
+        else if(content!=null&&!(content instanceof String)){
+            Method count;
+            try{count=content.getClass().getMethod("getCount");}catch(NoSuchMethodException notMultipart){return out;}
+            Method get=content.getClass().getMethod("getBodyPart",int.class);
+            for(int i=0,n=(Integer)count.invoke(content);i<n&&i<16;i++)out.addAll(htmlParts(get.invoke(content,i),depth+1));
+        }
+        return out;
+    }
     public static void redirect(Object value,String method,int line,String sink){flaw(value,method,line,sink,"UNVALIDATED_REDIRECT");}
     public static void header(Object value,String method,int line,String sink){flaw(value,method,line,sink,"HEADER_INJECTION");}
     // Weak algorithms and unprotected cookies need no input: they count only inside a request that was selected for inspection.

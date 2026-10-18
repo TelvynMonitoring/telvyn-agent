@@ -94,6 +94,7 @@ public final class TelvynDebuggerAgent {
         }
         try { IastInstrumentation.install(inst); } catch(Throwable failure) { SecuritySensorState.iastFailed();startupFailure("IAST",failure); }
         try { ServletIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (servlet)",failure); }
+        try { IastApplication.install(inst); } catch(Throwable failure) { startupFailure("IAST (application)",failure); }
         try { JdbcIast.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDBC)",failure); }
         try { IastJdk.install(inst); } catch(Throwable failure) { startupFailure("IAST (JDK classes)",failure); }
         try { SdkConfigurationReporter.start(); } catch (Throwable ignored) { /* Configuration reporting cannot disable instrumentation. */ }
