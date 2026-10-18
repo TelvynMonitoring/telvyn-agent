@@ -33,8 +33,12 @@ public final class ServletSecurity {
     public static class Service {
         @Advice.OnMethodEnter(skipOn = Advice.OnNonDefaultValue.class, suppress = Throwable.class)
         public static boolean enter(@Advice.Argument(0) Object request, @Advice.Argument(1) Object response) { return SpringMvcSecurity.requestStart(request, response); }
+        // Bloqueio durante a leitura do corpo: a resposta já foi enviada, a requisição só termina.
         @Advice.OnMethodExit(onThrowable = Throwable.class, suppress = Throwable.class)
-        public static void exit(@Advice.Argument(0) Object request, @Advice.Argument(1) Object response) { SpringMvcSecurity.requestEnd(request, response); }
+        public static void exit(@Advice.Argument(0) Object request, @Advice.Argument(1) Object response, @Advice.Thrown(readOnly = false) Throwable thrown) {
+            SpringMvcSecurity.requestEnd(request, response);
+            if (thrown instanceof SpringMvcSecurity.BlockedRequestException) thrown = null;
+        }
     }
 
     public static class Chain {

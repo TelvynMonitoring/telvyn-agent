@@ -226,7 +226,7 @@ public final class SpringMvcSecurity {
             Object contentType=request.getClass().getMethod("getContentType").invoke(request);
             if(contentType instanceof String type&&type.toLowerCase(Locale.ROOT).startsWith("application/x-www-form-urlencoded")){
                 Object form=request.getClass().getMethod("getParameterMap").invoke(request);
-                if(form instanceof Map<?,?> fields&&!fields.isEmpty())data.put("server.request.body",WafInspector.introspect(fields));
+                if(form instanceof Map<?,?> fields&&!fields.isEmpty()&&!state.bodyInspected){state.bodyInspected=true;data.put("server.request.body",WafInspector.introspect(fields));}
             }
             return decide(state,WafInspector.run(state,data),reporter)&&block(state,request,response,"rule",reporter);
         }catch(Exception|LinkageError failure){LocalAttackReporter.reportLoss("route inspection failure");return false;}

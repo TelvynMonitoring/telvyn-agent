@@ -94,6 +94,9 @@ public final class WafInspector {
         final Set<String> reported = new LinkedHashSet<>();
         String user;
         boolean blocked, closed, routeInspected, bodyInspected, timeoutReported;
+        /** Corpo lido do ServletInputStream até o limite, e quantos bytes já foram lidos. */
+        java.io.ByteArrayOutputStream rawBody;
+        long rawRead;
         /** Chamadas aninhadas da mesma requisição (cadeia de filtros, servlet, DispatcherServlet): fecha na última. */
         int depth = 1;
         State(Object context, String ip, String method, String path, String userAgent, String[] trace) {
