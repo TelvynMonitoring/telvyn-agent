@@ -35,6 +35,8 @@ const (
 // Rows já são deltas; nunca são os contadores cumulativos crus do Postgres.
 type DatabaseQueryStat struct {
 	QueryID string
+	// User é o papel do banco que executou a consulta (PostgreSQL); vazio quando o motor não informa por consulta.
+	User    string
 	Text    string
 	Calls   int64
 	TotalMS float64
@@ -88,6 +90,7 @@ type QuerySamplesCheck interface {
 
 type postgresQueryStatRow struct {
 	QueryID string  `json:"query_id"`
+	User    string  `json:"user"`
 	Text    string  `json:"text"`
 	Calls   int64   `json:"calls"`
 	TotalMS float64 `json:"total_ms"`
@@ -188,18 +191,25 @@ func buildPostgresQuerySnapshotSQL(capabilities, activityCapabilities postgresRe
 	if capabilities.hasColumn("rows") {
 		rowsExpression = "s.rows::bigint"
 	}
+	// pg_stat_statements tem uma linha por (usuário, banco, consulta), como o Datadog agrupa: o usuário entra
+	// na identidade da linha para os contadores de um usuário não sobrescreverem os de outro.
+	userExpression, userJoin := "''::text", ""
+	if capabilities.hasColumn("userid") {
+		userExpression, userJoin = "COALESCE(r.rolname::text, '')", "\n      LEFT JOIN pg_roles r ON r.oid = s.userid"
+	}
 
 	statsLimit = boundedInt(statsLimit, 1, postgresQueryStatsLimit, postgresQueryStatsLimit)
 	sampleLimit = boundedInt(sampleLimit, 1, postgresQuerySampleLimit, postgresQuerySampleLimit)
 	sampleCTE := postgresQuerySamplesCTE(activityCapabilities, sampleLimit)
 	return fmt.Sprintf(`WITH query_stats AS (
     SELECT %s AS query_id,
+           %s AS "user",
            s.query AS text,
            s.calls::bigint AS calls,
            s.%s::float8 AS total_ms,
            %s AS rows
       FROM %s s
-      JOIN pg_database d ON d.oid = s.dbid
+      JOIN pg_database d ON d.oid = s.dbid%s
      WHERE d.datname = current_database()
        AND s.calls > 0
      ORDER BY total_ms DESC
@@ -210,9 +220,11 @@ SELECT json_build_object(
 	'samples', COALESCE((SELECT json_agg(s ORDER BY s.duration_ms DESC) FROM query_samples s), '[]'::json)
 )::text`,
 		queryIDExpression,
+		userExpression,
 		timeColumn,
 		rowsExpression,
 		capabilities.qualifiedName,
+		userJoin,
 		statsLimit,
 		sampleCTE,
 	), nil
@@ -421,8 +433,9 @@ func (c *postgresQueries) RunQueryStats(ctx context.Context) (*DatabaseQueryStat
 			continue
 		}
 		current := postgresQueryCounter{calls: row.Calls, totalMS: row.TotalMS, rows: row.Rows}
-		previous, hadPrevious := c.previous[row.QueryID]
-		c.previous[row.QueryID] = current
+		key := row.QueryID + "\x00" + row.User
+		previous, hadPrevious := c.previous[key]
+		c.previous[key] = current
 		if !hadPrevious {
 			// A primeira leitura só firma a baseline; não inventa uma janela
 			// histórica desde o último restart do Postgres.
@@ -439,7 +452,7 @@ func (c *postgresQueries) RunQueryStats(ctx context.Context) (*DatabaseQueryStat
 			text = "(consulta sem texto)"
 		}
 		out.Queries = append(out.Queries, DatabaseQueryStat{
-			QueryID: row.QueryID, Text: text, Calls: calls, TotalMS: totalMS,
+			QueryID: row.QueryID, User: limitText(row.User, 128), Text: text, Calls: calls, TotalMS: totalMS,
 			MeanMS: totalMS / float64(calls), Rows: readRows,
 		})
 	}

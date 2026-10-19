@@ -16,7 +16,10 @@ FROM performance_schema.events_statements_summary_by_digest
 WHERE SCHEMA_NAME = DATABASE() AND DIGEST IS NOT NULL AND COUNT_STAR > 0
 ORDER BY SUM_TIMER_WAIT DESC LIMIT %d`
 
-const sqlMySQLQuerySamples = `SELECT e.THREAD_ID, e.EVENT_ID, e.DIGEST, COALESCE(e.DIGEST_TEXT,''), COALESCE(e.SQL_TEXT,''),
+// events_statements_current muda enquanto é lido: uma linha que passou por DIGEST IS NOT NULL pode chegar com o
+// DIGEST já nulo (a instrução terminou no meio da leitura). Lido com COALESCE e descartado no laço, em vez de
+// derrubar o lote inteiro de amostras com erro de Scan.
+const sqlMySQLQuerySamples = `SELECT e.THREAD_ID, e.EVENT_ID, COALESCE(e.DIGEST,''), COALESCE(e.DIGEST_TEXT,''), COALESCE(e.SQL_TEXT,''),
 	COALESCE(t.PROCESSLIST_USER,''), COALESCE(t.PROCESSLIST_HOST,''),
 	COALESCE(t.PROCESSLIST_STATE,''), COALESCE(e.TIMER_WAIT,0)
 FROM performance_schema.events_statements_current e
@@ -163,6 +166,9 @@ func (c *mysqlQueries) RunQuerySamples(ctx context.Context) (*DatabaseQueryStats
 		var timer float64
 		if err := rows.Scan(&threadID, &eventID, &digest, &text, &rawQuery, &user, &client, &state, &timer); err != nil {
 			return nil, err
+		}
+		if digest == "" {
+			continue
 		}
 		sample := DatabaseQuerySample{
 			SampleID: fmt.Sprintf("%d:%d", threadID, eventID), QueryID: digest,

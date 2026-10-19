@@ -39,6 +39,10 @@ ISPWATCH_DATABASE_ENGINE="${ISPWATCH_DATABASE_ENGINE:-postgres}"
 # EnvironmentFile. Para o profile database o instalador encontra o serviço
 # local; o operador nunca precisa informar um identificador.
 ISPWATCH_UPGRADE="${ISPWATCH_UPGRADE:-false}"
+# ISPWATCH_REINSTALL=true → instala de novo por cima de uma instalação existente, com o token e a configuração do
+# comando novo (ex.: o monitoramento do banco foi excluído no Telvyn e o Agent antigo foi revogado). Sem ela, uma
+# instalação existente é recusada, para ninguém substituir por engano um Agent que funciona.
+ISPWATCH_REINSTALL="${ISPWATCH_REINSTALL:-false}"
 if [[ "${TELVYN_EXTERNAL_EXECUTION_MODE:-}" == "approved-unisolated" ]]; then
     if [[ ! -x "${TELVYN_EXTERNAL_PYTHON:-/usr/bin/python3}" || -z "${TELVYN_EXTERNAL_APPROVED_ENDPOINTS:-}" ]]; then
         echo "ERROR: Proxmox requires Python 3 and TELVYN_EXTERNAL_APPROVED_ENDPOINTS before installation." >&2
@@ -251,6 +255,8 @@ if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
         exit 1
     fi
     echo "Modo upgrade: ${UNIT_NAME} detectado — troco apenas seu binário e reinicio (config preservada)."
+elif [[ "$INSTALLED" == "true" && "$ISPWATCH_REINSTALL" == "true" ]]; then
+    echo "Reinstalação: ${UNIT_NAME} detectado — token, configuração e binário passam a ser os deste comando."
 elif [[ "$INSTALLED" == "true" ]]; then
     echo "WARN: instalação existente do Agent Telvyn detectada para ${UNIT_NAME}." >&2
     echo "      Para ATUALIZAR no lugar (preserva token/config), rode com ISPWATCH_UPGRADE=true:" >&2
@@ -259,6 +265,8 @@ elif [[ "$INSTALLED" == "true" ]]; then
     else
         echo "        curl -fsSL <URL> | ISPWATCH_UPGRADE=true sudo -E bash" >&2
     fi
+    echo "      Para REINSTALAR com este comando (token novo; ex.: depois de excluir o monitoramento no Telvyn)," >&2
+    echo "      rode o mesmo comando acrescentando ISPWATCH_REINSTALL=true." >&2
     exit 1
 fi
 
@@ -522,7 +530,7 @@ umask 077
 # instalador (já consumidas acima). Mantém o contrato "1 agente, toggles" sem
 # este script precisar conhecer cada capability — evita a defasagem que
 # quebrava a instalação quando o front ganhava um toggle novo.
-INSTALLER_VARS=" ISPWATCH_AGENT_VERSION ISPWATCH_GITHUB_REPO ISPWATCH_DOWNLOAD_BASE ISPWATCH_INSTALL_ONLY ISPWATCH_HOSTNAME ISPWATCH_ENROLL_TOKEN ISPWATCH_SITE ISPWATCH_DOCKER_INTEGRATION ISPWATCH_INGEST_URL ISPWATCH_INGEST_TOKEN ISPWATCH_AGENT_KIND ISPWATCH_AGENT_PROFILE ISPWATCH_DATABASE_INSTALLATION_ID ISPWATCH_DATABASE_ENROLLMENT_ID ISPWATCH_DATABASE_ENGINE ISPWATCH_DATABASE_REVOKED_MARKER_PATH ISPWATCH_UPGRADE ISPWATCH_INSTALL_SCRIPT_URL ISPWATCH_NODE_NAME ISPWATCH_STATE_DIR ISPWATCH_LOGS_CURSOR_PATH "
+INSTALLER_VARS=" ISPWATCH_AGENT_VERSION ISPWATCH_GITHUB_REPO ISPWATCH_DOWNLOAD_BASE ISPWATCH_INSTALL_ONLY ISPWATCH_HOSTNAME ISPWATCH_ENROLL_TOKEN ISPWATCH_SITE ISPWATCH_DOCKER_INTEGRATION ISPWATCH_INGEST_URL ISPWATCH_INGEST_TOKEN ISPWATCH_AGENT_KIND ISPWATCH_AGENT_PROFILE ISPWATCH_DATABASE_INSTALLATION_ID ISPWATCH_DATABASE_ENROLLMENT_ID ISPWATCH_DATABASE_ENGINE ISPWATCH_DATABASE_REVOKED_MARKER_PATH ISPWATCH_UPGRADE ISPWATCH_INSTALL_SCRIPT_URL ISPWATCH_NODE_NAME ISPWATCH_STATE_DIR ISPWATCH_LOGS_CURSOR_PATH ISPWATCH_REINSTALL "
 for name in $(compgen -v); do
     case "$name" in
         ISPWATCH_*|COLLECTOR_LOG_LEVEL|TELVYN_EXTERNAL_*) ;;
@@ -570,6 +578,10 @@ fi
 systemctl daemon-reload
 if [[ "${ISPWATCH_INSTALL_ONLY:-}" != "true" ]]; then
     systemctl enable --now "$UNIT_NAME"
+    # Na reinstalação o serviço já rodava com o token antigo: enable --now não o reinicia.
+    if [[ "$ISPWATCH_REINSTALL" == "true" ]]; then
+        systemctl restart "$UNIT_NAME"
+    fi
     echo ""
     if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
         echo "OK — Agent instalado e iniciado."

@@ -942,7 +942,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 		queries := make([]otlp.DatabaseQueryStat, 0, len(stats.Queries))
 		for _, q := range stats.Queries {
 			queries = append(queries, otlp.DatabaseQueryStat{
-				QueryID: q.QueryID, Text: q.Text, Calls: q.Calls,
+				QueryID: q.QueryID, User: q.User, Text: q.Text, Calls: q.Calls,
 				TotalMS: q.TotalMS, MeanMS: q.MeanMS, Rows: q.Rows,
 			})
 		}
