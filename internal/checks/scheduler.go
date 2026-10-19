@@ -234,6 +234,11 @@ func (r *Runtime) ApplyDelta(added []*collectorv1.CheckConfig, deletedIDs []stri
 			r.pendingStarts[cfg.GetCheckId()] = cfg
 			r.log.Warn("checks delta: factory error",
 				"check_id", cfg.GetCheckId(), "err", err)
+			// A falha ao criar (credencial recusada, banco inalcançável) também vai pro backend: sem isso o
+			// motivo ficava só neste log e a tela seguia "aguardando o primeiro dado".
+			r.reportExecution(ExecutionReport{
+				CheckID: cfg.GetCheckId(), OK: false, Message: err.Error(), At: time.Now(),
+			})
 			continue
 		}
 		// Se já tem rodando, para e substitui (update = stop + start novo)
