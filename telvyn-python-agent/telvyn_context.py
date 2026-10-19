@@ -18,6 +18,8 @@ class RequestState:
 class Requests(SpanProcessor):
     def __init__(self):
         self.spans = {}
+        # Requisições ativas por thread: a thread do profiler lê daqui o trace da pilha que amostrou.
+        self.threads = {}
         self.lock = threading.RLock()
 
     def on_start(self, span, parent_context=None):
@@ -26,6 +28,10 @@ class Requests(SpanProcessor):
             request = self.spans.get(parent.span_id)
             if span.kind == trace.SpanKind.SERVER:
                 request = RequestState(span)
+                request.thread = threading.get_ident()
+                active = self.threads.setdefault(request.thread, [])
+                if len(active) < 256:
+                    active.append(request)
             if request and request.active and len(self.spans) < 65536:
                 self.spans[span.get_span_context().span_id] = request
 
@@ -35,14 +41,32 @@ class Requests(SpanProcessor):
             if request and span.kind == trace.SpanKind.SERVER:
                 request.active = False
                 request.sources.clear()
+                active = self.threads.get(getattr(request, "thread", None))
+                if active and request in active:
+                    active.remove(request)
+                    if not active:
+                        del self.threads[request.thread]
 
     def current(self, context=None):
         with self.lock:
             request = self.spans.get(trace.get_current_span(context).get_span_context().span_id)
             return request if request and request.active else None
 
+    def thread_context(self, ident):
+        """Trace, span e rota da requisição da thread, só se ela tiver exatamente uma ativa (servidor síncrono).
+        Num event loop com várias requisições ao mesmo tempo não há como saber qual estava na CPU: sem vínculo."""
+        with self.lock:
+            active = self.threads.get(ident)
+            if not active or len(active) != 1:
+                return None
+            span = active[0].span
+            context = span.get_span_context()
+            route = span.attributes.get("http.route") if span.attributes else None
+            return (f"{context.trace_id:032x}", f"{context.span_id:016x}", route)
+
     def reset_after_fork(self):
         self.spans = {}
+        self.threads = {}
         self.lock = threading.RLock()
 
 

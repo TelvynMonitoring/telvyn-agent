@@ -1,3 +1,4 @@
+import functools
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,6 @@ import time
 import tracemalloc
 import uuid
 
-from opentelemetry import trace
 from telvyn_context import requests
 
 
@@ -20,11 +20,23 @@ def int_conf(name, default, minimum, maximum):
     return min(maximum, max(minimum, value)) if -(1 << 31) <= value < (1 << 31) else default
 
 
+# Chamada a cada amostra para cada quadro da pilha: sem cache, Path.resolve() fazia chamadas ao sistema de arquivos
+# por quadro dentro do gancho de CPU e a aplicação não terminava de subir. O resultado só depende do arquivo e da raiz.
+@functools.lru_cache(maxsize=8192)
 def source_file(filename, root):
     try:
         relative = Path(filename).resolve().relative_to(root).as_posix()
         return relative if re.fullmatch(r"(?:[\w.-]+/)*[\w.-]+\.py", relative, re.ASCII) else None
     except (ValueError, OSError):
+        return None
+
+
+def thread_cpu_ns(native_id):
+    """Tempo de CPU da thread em ns (Linux), lido sem gancho nenhum na aplicação."""
+    try:
+        with open(f"/proc/self/task/{native_id}/schedstat", "rb") as stat:
+            return int(stat.read().split()[0])
+    except (OSError, ValueError, IndexError):
         return None
 
 
@@ -56,17 +68,17 @@ class Profiler:
         self.period = int_conf("TELVYN_PROFILING_PERIOD_MS", 10, 1, 1000)
         self.flush = int_conf("TELVYN_PROFILING_FLUSH_SEC", 15, 2, 600)
         self.wall = os.environ.get("TELVYN_PROFILE_WALL_ENABLED") == "true"
-        self.cpu = (os.environ.get("TELVYN_PROFILE_ALLOCATION_ENABLED") != "true"
-            and sys.getprofile() is None and threading.getprofile() is None)
+        # Heap vivo rastreia toda alocação (tracemalloc não amostra): opt-in próprio, como alocação no Java/Node.
+        self.heap = os.environ.get("TELVYN_PROFILE_HEAP_ENABLED") == "true"
+        # CPU como o Datadog: a thread do profiler amostra as pilhas e conta só as threads que usaram CPU no período.
+        # Um gancho por chamada (sys.setprofile) custava uma chamada de sistema por função e a aplicação não subia.
+        self.cpu = thread_cpu_ns(threading.get_native_id()) is not None
         self._reset()
-        if not tracemalloc.is_tracing():
+        if self.heap and not tracemalloc.is_tracing():
             tracemalloc.start(64)
             self.owns_heap = True
-        if self.cpu:
-            threading.setprofile(self._cpu_sample)
-            sys.setprofile(self._cpu_sample)
-        else:
-            print("[Telvyn] CPU profiler unavailable: profile hook reserved for allocation or another profiler.", file=sys.stderr)
+        if not self.cpu:
+            print("[Telvyn] CPU profiler unavailable: per-thread CPU time requires Linux /proc.", file=sys.stderr)
         if os.environ.get("TELVYN_PROFILE_ALLOCATION_ENABLED") == "true":
             self._start_allocations()
         self._start()
@@ -80,8 +92,10 @@ class Profiler:
 
     def _reset(self):
         self.lock = threading.RLock()
-        self.local = threading.local()
         self.samples = {"cpu": {}, "wall": {}}
+        self.cpu_seen = {}
+        # Depois de fork o Python mantém na thread que forkou o id nativo do processo pai; o filho registra o real.
+        self.native_ids = {}
         self.instance = uuid.uuid4().hex
         self.from_ms = time.time_ns() // 1000000
 
@@ -99,39 +113,33 @@ class Profiler:
             if key in samples or len(samples) < 4096:
                 samples[key] = samples.get(key, 0) + weight
 
-    def _cpu_sample(self, frame, event, arg):
-        if self.closed:
-            sys.setprofile(None)
-            return
-        if threading.current_thread().name.startswith("telvyn-"):
-            return
-        try:
-            now = time.thread_time_ns()
-            previous = getattr(self.local, "last", None)
-            if previous is None or now - previous < self.period * 1000000:
-                if previous is None:
-                    self.local.last = now
-                return
-            self.local.last = now
+    def _cpu_tick(self, frames, own):
+        seen = {}
+        for thread in threading.enumerate():
+            native_id = self.native_ids.get(thread.ident, thread.native_id)
+            if thread.ident == own or native_id is None or thread.name.startswith("telvyn-"):
+                continue
+            used = thread_cpu_ns(native_id)
+            if used is None:
+                continue
+            seen[thread.ident] = used
+            previous = self.cpu_seen.get(thread.ident)
+            frame = frames.get(thread.ident)
+            # Uma amostra por período em que a thread esteve na CPU; nunca transforma intervalos perdidos em amostras.
+            if previous is None or frame is None or used - previous < self.period * 500000:
+                continue
             stack, lines = stack_frames(frame, self.root, lines=False)
-            span = trace.get_current_span().get_span_context()
-            request = requests.current()
-            context = None
-            if request and span.is_valid:
-                route = request.span.attributes.get("http.route")
-                context = (f"{span.trace_id:032x}", f"{span.span_id:016x}", route)
-            # A call-boundary observation is one sample; never turn a missed interval into invented samples.
-            self._add("cpu", stack, lines, 1, context)
-        except Exception:
-            # Profile callbacks must not change application execution.
-            return
+            self._add("cpu", stack, lines, 1, requests.thread_context(thread.ident))
+        self.cpu_seen = seen
 
     def _run(self):
         deadline = time.monotonic() + self.flush
         while not self.stop_event.wait(self.period / 1000):
             try:
+                own = threading.get_ident()
+                if self.cpu:
+                    self._cpu_tick(sys._current_frames(), own)
                 if self.wall:
-                    own = threading.get_ident()
                     for ident, frame in sys._current_frames().items():
                         if ident != own:
                             stack, lines = stack_frames(frame, self.root)
@@ -188,7 +196,7 @@ class Profiler:
         seconds = max(1, (now - from_ms) // 1000)
         for kind, values in samples.items():
             self._emit(kind, values, from_ms, seconds)
-        if tracemalloc.is_tracing():
+        if self.heap and tracemalloc.is_tracing():
             live = {}
             for statistic in tracemalloc.take_snapshot().statistics("traceback")[:4096]:
                 frames, lines = [], []
@@ -205,6 +213,7 @@ class Profiler:
     def after_fork(self):
         if self.enabled and not self.closed:
             self._reset()
+            self.native_ids[threading.get_ident()] = threading.get_native_id()
             self._start()
             # Native allocator hooks are not resumed in a forked child from an active capture.
             if self.allocations:
@@ -219,9 +228,5 @@ class Profiler:
         if self.allocations:
             self.allocations.stop()
         self.thread.join(timeout=5)
-        if threading.getprofile() == self._cpu_sample:
-            threading.setprofile(None)
-        if sys.getprofile() == self._cpu_sample:
-            sys.setprofile(None)
         if self.owns_heap:
             tracemalloc.stop()
