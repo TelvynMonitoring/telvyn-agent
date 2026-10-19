@@ -1,4 +1,4 @@
-.PHONY: proto build run test clean tools lint-no-disk release-ci release-local release-multiarch build-all build-amd64 build-arm64
+.PHONY: proto build run test clean tools lint-no-disk release-ci release-local release-multiarch release-language-agents build-all build-amd64 build-arm64
 
 # ----------------------------------------------------------------------
 # Defaults — override on the command line: `make run TENANT_ID=foo ...`
@@ -103,6 +103,10 @@ release-ci:
 	cd dist && sha256sum $(DIST_NAME).tar.gz > $(DIST_NAME).tar.gz.sha256
 	@echo "==> Built: dist/$(DIST_NAME).tar.gz"
 	@cat dist/$(DIST_NAME).tar.gz.sha256
+
+# Agentes Telvyn de linguagem para máquinas comuns (instalados pelo install.sh com ISPWATCH_LANGUAGE_AGENTS).
+release-language-agents:
+	bash packaging/build-language-agents.sh $(VERSION) dist
 
 release-local: release-ci
 	@echo "==> Local release artifacts in dist/"

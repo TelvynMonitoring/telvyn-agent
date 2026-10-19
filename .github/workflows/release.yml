@@ -70,6 +70,19 @@ jobs:
       - name: Build multi-arch tarballs
         run: make release-multiarch VERSION=${{ steps.vars.outputs.version }}
 
+      # Agentes Java/Node para máquinas comuns (ISPWATCH_LANGUAGE_AGENTS no install.sh): um pacote só, sem
+      # arquitetura (jars e JavaScript; as dependências nativas opcionais do Node trazem binários prontos).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build language agents bundle
+        run: make release-language-agents VERSION=${{ steps.vars.outputs.version }}
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:

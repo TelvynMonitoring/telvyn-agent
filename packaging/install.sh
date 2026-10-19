@@ -43,6 +43,9 @@ ISPWATCH_UPGRADE="${ISPWATCH_UPGRADE:-false}"
 # comando novo (ex.: o monitoramento do banco foi excluído no Telvyn e o Agent antigo foi revogado). Sem ela, uma
 # instalação existente é recusada, para ninguém substituir por engano um Agent que funciona.
 ISPWATCH_REINSTALL="${ISPWATCH_REINSTALL:-false}"
+# ISPWATCH_LANGUAGE_AGENTS=java,node → instala também os agentes Telvyn de linguagem em /opt/telvyn/<linguagem>, para
+# instrumentar aplicações Java/Node nesta máquina (no Kubernetes eles chegam pela injeção do webhook).
+ISPWATCH_LANGUAGE_AGENTS="${ISPWATCH_LANGUAGE_AGENTS:-}"
 if [[ "${TELVYN_EXTERNAL_EXECUTION_MODE:-}" == "approved-unisolated" ]]; then
     if [[ ! -x "${TELVYN_EXTERNAL_PYTHON:-/usr/bin/python3}" || -z "${TELVYN_EXTERNAL_APPROVED_ENDPOINTS:-}" ]]; then
         echo "ERROR: Proxmox requires Python 3 and TELVYN_EXTERNAL_APPROVED_ENDPOINTS before installation." >&2
@@ -291,6 +294,65 @@ fi
 TARBALL="ispwatch-agent-${VERSION}-linux-${GO_ARCH}.tar.gz"
 URL="${ISPWATCH_DOWNLOAD_BASE}/${VERSION}/${TARBALL}"
 
+# === Agentes de linguagem (Java/Node) ==================================
+# Pacote único da release (telvyn-language-agents-<versão>.tar.gz, conferido pelo .sha256), com o mesmo conteúdo da
+# imagem do Kubernetes. Cada linguagem é trocada inteira (diretório novo + rename); aplicações em execução seguem
+# com o que já carregaram e pegam a versão nova no próximo restart. No upgrade, as linguagens já instaladas são
+# atualizadas para a versão do Agent.
+LANGUAGE_AGENTS_DIR="/opt/telvyn"
+LANGUAGE_AGENTS_WANTED="${ISPWATCH_LANGUAGE_AGENTS// /}"
+if [[ -n "$LANGUAGE_AGENTS_WANTED" && "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+    echo "WARN: ISPWATCH_LANGUAGE_AGENTS é ignorado no Agent de Banco." >&2
+    LANGUAGE_AGENTS_WANTED=""
+fi
+if [[ "$ISPWATCH_UPGRADE" == "true" && -z "$LANGUAGE_AGENTS_WANTED" && "$ISPWATCH_AGENT_PROFILE" != "database" ]]; then
+    for lang in java node; do
+        if [[ -d "${LANGUAGE_AGENTS_DIR}/${lang}" ]]; then
+            LANGUAGE_AGENTS_WANTED="${LANGUAGE_AGENTS_WANTED:+${LANGUAGE_AGENTS_WANTED},}${lang}"
+        fi
+    done
+fi
+for lang in ${LANGUAGE_AGENTS_WANTED//,/ }; do
+    case "$lang" in
+        java|node) ;;
+        *) echo "ERROR: ISPWATCH_LANGUAGE_AGENTS aceita java e node (recebi '${lang}')." >&2; exit 1 ;;
+    esac
+done
+
+install_language_agents() {
+    [[ -z "$LANGUAGE_AGENTS_WANTED" ]] && return 0
+    local bundle="telvyn-language-agents-${VERSION}"
+    local work
+    work=$(mktemp -d /tmp/telvyn-language-agents-XXXXXX)
+    curl --proto '=https' --retry 5 --retry-delay 5 -fsSL -o "${work}/${bundle}.tar.gz"         "${ISPWATCH_DOWNLOAD_BASE}/${VERSION}/${bundle}.tar.gz"
+    curl --proto '=https' --retry 5 --retry-delay 5 -fsSL -o "${work}/${bundle}.tar.gz.sha256"         "${ISPWATCH_DOWNLOAD_BASE}/${VERSION}/${bundle}.tar.gz.sha256"
+    (cd "$work" && sha256sum -c "${bundle}.tar.gz.sha256")
+    tar -xzf "${work}/${bundle}.tar.gz" -C "$work"
+    mkdir -p "$LANGUAGE_AGENTS_DIR"
+    chmod 0755 "$LANGUAGE_AGENTS_DIR"
+    local lang
+    for lang in ${LANGUAGE_AGENTS_WANTED//,/ }; do
+        if [[ ! -d "${work}/${bundle}/${lang}" ]]; then
+            echo "ERROR: o pacote ${bundle} não contém o agente ${lang}." >&2
+            rm -rf "$work"
+            exit 1
+        fi
+        rm -rf "${LANGUAGE_AGENTS_DIR}/${lang}.new"
+        cp -R "${work}/${bundle}/${lang}" "${LANGUAGE_AGENTS_DIR}/${lang}.new"
+        chown -R root:root "${LANGUAGE_AGENTS_DIR}/${lang}.new"
+        chmod -R u=rwX,go=rX "${LANGUAGE_AGENTS_DIR}/${lang}.new"
+        rm -rf "${LANGUAGE_AGENTS_DIR}/${lang}"
+        mv "${LANGUAGE_AGENTS_DIR}/${lang}.new" "${LANGUAGE_AGENTS_DIR}/${lang}"
+        echo "Agente ${lang} da Telvyn ${VERSION} instalado em ${LANGUAGE_AGENTS_DIR}/${lang}."
+        if [[ "$lang" == "java" ]]; then
+            echo "  Na aplicação: -javaagent:${LANGUAGE_AGENTS_DIR}/java/opentelemetry-javaagent.jar -javaagent:${LANGUAGE_AGENTS_DIR}/java/telvyn-javaagent.jar"
+        else
+            echo "  Na aplicação: NODE_OPTIONS=\"--require=${LANGUAGE_AGENTS_DIR}/node/bootstrap.cjs\""
+        fi
+    done
+    rm -rf "$work"
+}
+
 # === Download + verify =================================================
 TMP_TARBALL="/tmp/ispwatch-install-${VERSION}-${GO_ARCH}.tar.gz"
 TMP_SHA="/tmp/ispwatch-install-${VERSION}-${GO_ARCH}.sha256"
@@ -455,6 +517,7 @@ if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
         systemctl restart "$UNIT_NAME"
     fi
     rm -rf "$WORK_DIR"
+    install_language_agents
     echo ""
     if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
         echo "OK — Agent atualizado para ${VERSION} (config preservada)."
@@ -530,7 +593,7 @@ umask 077
 # instalador (já consumidas acima). Mantém o contrato "1 agente, toggles" sem
 # este script precisar conhecer cada capability — evita a defasagem que
 # quebrava a instalação quando o front ganhava um toggle novo.
-INSTALLER_VARS=" ISPWATCH_AGENT_VERSION ISPWATCH_GITHUB_REPO ISPWATCH_DOWNLOAD_BASE ISPWATCH_INSTALL_ONLY ISPWATCH_HOSTNAME ISPWATCH_ENROLL_TOKEN ISPWATCH_SITE ISPWATCH_DOCKER_INTEGRATION ISPWATCH_INGEST_URL ISPWATCH_INGEST_TOKEN ISPWATCH_AGENT_KIND ISPWATCH_AGENT_PROFILE ISPWATCH_DATABASE_INSTALLATION_ID ISPWATCH_DATABASE_ENROLLMENT_ID ISPWATCH_DATABASE_ENGINE ISPWATCH_DATABASE_REVOKED_MARKER_PATH ISPWATCH_UPGRADE ISPWATCH_INSTALL_SCRIPT_URL ISPWATCH_NODE_NAME ISPWATCH_STATE_DIR ISPWATCH_LOGS_CURSOR_PATH ISPWATCH_REINSTALL "
+INSTALLER_VARS=" ISPWATCH_AGENT_VERSION ISPWATCH_GITHUB_REPO ISPWATCH_DOWNLOAD_BASE ISPWATCH_INSTALL_ONLY ISPWATCH_HOSTNAME ISPWATCH_ENROLL_TOKEN ISPWATCH_SITE ISPWATCH_DOCKER_INTEGRATION ISPWATCH_INGEST_URL ISPWATCH_INGEST_TOKEN ISPWATCH_AGENT_KIND ISPWATCH_AGENT_PROFILE ISPWATCH_DATABASE_INSTALLATION_ID ISPWATCH_DATABASE_ENROLLMENT_ID ISPWATCH_DATABASE_ENGINE ISPWATCH_DATABASE_REVOKED_MARKER_PATH ISPWATCH_UPGRADE ISPWATCH_INSTALL_SCRIPT_URL ISPWATCH_NODE_NAME ISPWATCH_STATE_DIR ISPWATCH_LOGS_CURSOR_PATH ISPWATCH_REINSTALL ISPWATCH_LANGUAGE_AGENTS "
 for name in $(compgen -v); do
     case "$name" in
         ISPWATCH_*|COLLECTOR_LOG_LEVEL|TELVYN_EXTERNAL_*) ;;
@@ -573,6 +636,8 @@ elif [[ "${ISPWATCH_DOCKER_INTEGRATION:-false}" == "true" ]]; then
     echo "AVISO de segurança: membros do grupo 'docker' têm acesso root-equivalente"
     echo "                    ao daemon Docker. Audite quem mais está no grupo."
 fi
+
+install_language_agents
 
 # === Start =============================================================
 systemctl daemon-reload
