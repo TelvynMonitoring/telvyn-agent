@@ -1,7 +1,9 @@
 import json
 import os
 import platform
+import shutil
 import sys
+import sysconfig
 from opentelemetry import trace
 from opentelemetry.distro import OpenTelemetryConfigurator, OpenTelemetryDistro
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -79,6 +81,10 @@ class TelvynDistro(OpenTelemetryDistro):
             kwargs["request_hook"] = request_hook
         elif entry_point.name in ("fastapi", "starlette", "tornado"):
             kwargs["server_request_hook"] = request_hook
+        if entry_point.name == "fastapi":
+            # Sem os spans internos de cada envio/recebimento ASGI ("http send"), que o Datadog não cria: eles viravam
+            # recursos próprios na tela e somavam chamadas que não existiram.
+            kwargs["exclude_spans"] = ["receive", "send"]
         if entry_point.name == "starlette":
             # FastAPI must retain the original Starlette base, avoiding two HTTP middlewares.
             import importlib.util
@@ -119,4 +125,14 @@ def main():
         raise SystemExit("Usage: telvyn-python python app.py (or gunicorn ...)")
     if os.environ.get("OTEL_SDK_DISABLED", "").lower() == "true":
         os.execvp(sys.argv[1], sys.argv[1:])
-    os.execvp("opentelemetry-instrument", ["opentelemetry-instrument", "--distro", "telvyn", "--traces_exporter", "telvyn", *sys.argv[1:]])
+    # O launcher do OpenTelemetry vem no mesmo ambiente que este comando: numa venv não ativada (o caso de um serviço
+    # systemd com o caminho completo) ele não está no PATH.
+    scripts = sysconfig.get_path("scripts")
+    launcher = os.path.join(scripts, "opentelemetry-instrument")
+    if not os.access(launcher, os.X_OK):
+        launcher = "opentelemetry-instrument"
+    # O programa da aplicação (gunicorn, uvicorn...) também: fora do PATH, vale o da mesma venv.
+    program = sys.argv[1]
+    if os.sep not in program and shutil.which(program) is None and os.access(os.path.join(scripts, program), os.X_OK):
+        program = os.path.join(scripts, program)
+    os.execvp(launcher, [launcher, "--distro", "telvyn", "--traces_exporter", "telvyn", program, *sys.argv[2:]])
