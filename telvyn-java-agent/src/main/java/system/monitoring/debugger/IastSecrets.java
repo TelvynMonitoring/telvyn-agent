@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
 
 /**
  * Hardcoded secrets in the application's code: string literals that match, as a whole, one of the formats the
- * Datadog Java tracer looks for (iast-secret-patterns.tsv). Judged when the class is instrumented; the finding names
+ * Java tracers look for (iast-secret-patterns.tsv). Judged when the class is instrumented; the finding names
  * the class, the method and the line, never the value.
  */
 final class IastSecrets {

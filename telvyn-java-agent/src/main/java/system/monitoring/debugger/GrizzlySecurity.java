@@ -14,7 +14,7 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * Detecção e bloqueio de ataques no servidor HTTP do Grizzly (e no Jersey sobre ele), como a instrumentação de
- * Grizzly do Datadog. Início em {@code HttpHandler.doHandle} (IP, cabeçalhos, cookies, query, endereço), status e
+ * Grizzly. Início em {@code HttpHandler.doHandle} (IP, cabeçalhos, cookies, query, endereço), status e
  * liberação depois do atendimento (inclusive assíncrono). Durante o atendimento a requisição fica disponível para
  * o corpo e os parâmetros do Jersey e para a API manual.
  */

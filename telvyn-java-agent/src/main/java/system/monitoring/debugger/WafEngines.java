@@ -9,9 +9,9 @@ import java.net.URLClassLoader;
 import java.util.Map;
 
 /**
- * Motor do WAF (libddwaf) num class loader isolado do classpath da aplicação, como o Datadog isola o agente. A
+ * Motor do WAF (libddwaf) num class loader isolado do classpath da aplicação. A
  * biblioteca nativa escolhe o slf4j pelo nome ({@code org/slf4j} se o encontrar, senão a cópia relocada
- * {@code datadog/slf4j} do agente) pelo class loader que a carregou: no class loader do sistema, uma aplicação com
+ * do slf4j no agente) pelo class loader que a carregou: no class loader do sistema, uma aplicação com
  * slf4j no classpath faria a escolha errada e o WAF não subiria. O loader isolado lê o próprio jar do agente e tem
  * como pai o class loader da plataforma (só o JDK); a ponte {@code wafengine.WafEngine} expõe o motor com tipos do JDK.
  */

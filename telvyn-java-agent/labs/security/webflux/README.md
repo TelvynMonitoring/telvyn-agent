@@ -6,7 +6,7 @@ A configuração abaixo continua vigente; registros anteriores de preparação/a
 
 - Cobertos nos ensaios: controllers Mono/Flux, RouterFunctions diretas/aninhadas via DispatcherHandler e `toHttpHandler`, corpo adiado, cancelamento, concorrência, R2DBC SPI/DatabaseClient String/Supplier/PreparedOperation dinâmico e vinculado, repositories/EntityTemplate, retry, cache compartilhado e múltiplas assinaturas frias dentro da mesma requisição.
 - Micrometer context-propagation compatível continua obrigatório. Consultas vinculadas/Criteria/derivadas/@Query estática e constantes não geraram IAST. Um finding por estado/requisição; compartilhar publishers entre requests ou SpEL dinâmico não foi certificado.
-- Referência DD operacional mostrou SQL Injection em `FluxLab#query`, também observado no Telvyn. Não apresentou achados R2DBC nessa rodada; não inferir equivalência ou ausência universal de suporte DD. API98f9b904 permaneceu ativa sem novo restart; regra R2DBC/RLS/retenção existentes foram reutilizadas.
+- A referência externa mostrou SQL Injection em `FluxLab#query`, também observado no Telvyn. Não apresentou achados R2DBC nessa rodada; não inferir equivalência ou ausência universal de suporte. API98f9b904 permaneceu ativa sem novo restart; regra R2DBC/RLS/retenção existentes foram reutilizadas.
 - JavaagentSHA256 `b5f4fcc0b9a7b9c709f70d0ec0a9422758112f3a4212e963986642d3b857edb1`, somente laboratórios. Flags/pacote/rotas explícitos, apenas `q`, sem corpo/cookies/headers/SQL exportado ou bloqueio. Sem deploy. Matriz, limites de versões/drivers e fila de envio no [roteiro vigente](../../../../docs/APM-PARITY-REMAINING.md).
 
 `lab.tracing.enabled=false` desliga filtro/contexto/exportação OTel auxiliares do laboratório para comparar outro tracer; não altera o sensor. O padrão mantém tracing Telvyn. Biblioteca e inicialização reativa da aplicação real continuam as descritas abaixo.
@@ -21,7 +21,7 @@ O hook de `RequestMappingHandlerAdapter.handle` usa método/rota reconhecidos po
 
 Rodada `flux-accepted`:14 chamadas (13x200/1x500 controlado),14 detecções sem sinal e6 IAST (duas consultas concatenadas Mono/Flux e quatro concorrentes), todos20 eventos ligados aos14 spans reais. Parâmetros vinculados, erro→parametrizada e oito chamadas simultâneas não contaminaram outros fluxos. Cancelamento validado em diagnóstico de assinatura Reactor, não por desconexão HTTP. `flux-disabled`:4x200/4spans e nenhum evento. Tela claro/escuro, método/linha/trace e estados de sensor conferidos.
 
-Limites: controllers anotados e fontes/transformações/sinks já descritos; rotas funcionais, R2DBC, múltiplas assinaturas/retry/share, outros adaptadores e versões não validados. Não é paridade integral DD, proteção ou overhead certificado. DD IAST de referência ainda sem setup funcional, comparação interativa não comprovada; contrato consultado em https://docs.datadoghq.com/security/code_security/iast/setup/compatibility/java/ .
+Limites: controllers anotados e fontes/transformações/sinks já descritos; rotas funcionais, R2DBC, múltiplas assinaturas/retry/share, outros adaptadores e versões não validados. Não é paridade integral, proteção ou overhead certificado.
 
 Build: `mvn -Dmaven.test.skip=true package`, sem suíte. AgentSHA43edaae9ad05a6c1852c884deb583f39634b9a3858c1f62f71b1a2db7fcb486e, somente nas JVMs Spring locais. Backend Quarkus74c3764c e produção preservados. Evidências em `artifacts/apm-spring-expanded-20261012`.
 
@@ -41,7 +41,7 @@ A pendência de ativação acima foi cumprida: API98f9b904 ativa, único restart
 
 31 chamadas reais (25x200/6x500 controlados),12IAST esperados nas três APIs/linhas18/28/29,43eventos ligados aos31spans. Parâmetros vinculados, constantes e PreparedOperation seguros sem achados; erros/12concorrentes e19sequenciais sem contaminação. Dez consultas com sensor desligado geraram dez spans e nenhum evento. Tela claro/escuro, métodos/linhas/trace/span, Atualizar e SDK ligado/desligado conferidos. Um timeout do detector separado foi exposto no painel; IAST passou, proteção integral não declarada. Conteúdo de query/SQL não encontrado nos eventos, RLS preservado.
 
-Evidências completas no roteiro e artifacts/apm-r2dbc-20261012. Java21/Spring6.2.11/R2DBC-SPI/H21.0.0.RELEASE, mesmoJavaagent acima. Limites de outros drivers/versões/wrappers/PreparedOperation dinâmico/repositories e DD interativo permanecem explícitos. Laboratórios encerrados; backend saudável, sem deploy/restart de outros serviços.
+Evidências completas no roteiro e artifacts/apm-r2dbc-20261012. Java21/Spring6.2.11/R2DBC-SPI/H21.0.0.RELEASE, mesmoJavaagent acima. Limites de outros drivers/versões/wrappers/PreparedOperation dinâmico/repositories e comparação interativa permanecem explícitos. Laboratórios encerrados; backend saudável, sem deploy/restart de outros serviços.
 
 ## WebFlux funcional — concluído localmente em12/10/2026
 
@@ -57,7 +57,7 @@ functional-disabled:12HTTP200/12spans, nenhum evento; SDK disabled/disabled e ac
 
 Agentcode0c6ccfe2/SHAad0a65cb07651b70ff29ff402c6ac5fb2539c6e27763abee01b87dcb3bf7c950 somente nos laboratórios, encerrados após aceite. Backend98f9b904 saudável e sem restart desde2026-10-12T15:37:26.816548282Z; nenhuma nova autorização consumida, migration, deploy ou restart de serviços. Evidências artifacts/apm-functional-20261012. Referência de contrato: https://docs.spring.io/spring-framework/reference/web/webflux-functional.html .
 
-O conjunto Spring pedido (MVC,async,JPA,WebFlux anotado/funcional,R2DBC) foi exercitado nos recortes documentados. Não declarar todo ecossistema/versões ou DD integral: toHttpHandler direto sem DispatcherHandler, requests customizados, Kotlin, retry/share, outros drivers e APIs não exercitados mantêm limites explícitos.
+O conjunto Spring pedido (MVC,async,JPA,WebFlux anotado/funcional,R2DBC) foi exercitado nos recortes documentados. Não declarar todo ecossistema/versões ou paridade integral: toHttpHandler direto sem DispatcherHandler, requests customizados, Kotlin, retry/share, outros drivers e APIs não exercitados mantêm limites explícitos.
 
 ## PreparedOperation dinâmico aceito
 O Javaagent preserva a interface PreparedOperation e delega bindTo, examinando somente o SQL solicitado pelo DatabaseClient. Casos dinâmico/vinculado/constante, erro, concorrência e desligamento passaram em prepared-final: sete achados esperados ligados aos spans reais. Método/linha referem-se à chamada DatabaseClient.sql. Sem SQL ou bindings exportados; mesma configuração opt-in e versões acima. Provas e limites no roteiro.

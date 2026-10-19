@@ -322,7 +322,7 @@ func (a *Agent) inventoryMetrics(resources []map[string]any) []*collectorv1.Metr
 		if container {
 			pod := owners["Pod/"+metric.Tags["kube_namespace"]+"/"+metric.Tags["pod_name"]]
 			phase := stringValue(pod["phase"])
-			// Like DD, allocation totals exclude terminal and unscheduled pods;
+			// Allocation totals exclude terminal and unscheduled pods;
 			// keep their declared per-container requests for investigation.
 			if phase == "Succeeded" || phase == "Failed" || metric.Tags["kube_node"] == "" {
 				value = 0

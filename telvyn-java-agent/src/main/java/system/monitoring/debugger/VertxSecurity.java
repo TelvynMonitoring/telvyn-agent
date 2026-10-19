@@ -14,7 +14,7 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * Detecção e bloqueio de ataques no Vert.x Web (e no que roda sobre ele, como o Quarkus), como a instrumentação de
- * Vert.x do Datadog, sem dependência do Vert.x. Início da requisição quando o roteador cria o contexto (IP,
+ * Vert.x, sem dependência do Vert.x. Início da requisição quando o roteador cria o contexto (IP,
  * cabeçalhos, cookies, query, endereço — inclusive rotas inexistentes); fase de rota antes de cada handler
  * (parâmetros de rota, corpo lido pelo BodyHandler, JSON ou formulário); status no fim. Bloqueio responde pelo
  * próprio Vert.x e interrompe o roteamento. Durante o handler, a requisição fica disponível para a API manual.
@@ -141,7 +141,7 @@ public final class VertxSecurity {
                 Object body = body(context, request);
                 if (body != null) { state.bodyInspected = true; data.put("server.request.body", body); }
             }
-            // Arquivos enviados (BodyHandler com uploads): nomes, como o Datadog.
+            // Arquivos enviados (BodyHandler com uploads): nomes.
             if (!state.filesInspected && call(context, "fileUploads") instanceof Iterable<?> uploads) {
                 List<String> names = new ArrayList<>();
                 for (Object upload : uploads) if (call(upload, "fileName") instanceof String name && !name.isEmpty()) names.add(name);

@@ -5,7 +5,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { fileURLToPath } = require('node:url');
 
-// Runtime SCA (as Datadog): the packages the application loaded — CommonJS through require.cache, ES modules through
+// Runtime SCA: the packages the application loaded — CommonJS through require.cache, ES modules through
 // the loader thread — each with the name and version of its package.json, sent to the collector in batches. Matching
 // against advisories runs in the backend, so a new advisory shows without a new report.
 const FIRST_MS = 15000, EVERY_MS = 60000, RESEND_MS = 12 * 3600000, BATCH = 400;

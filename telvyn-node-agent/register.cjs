@@ -75,7 +75,7 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
   }
 
   // mariadb has no OpenTelemetry instrumentation: one client span per call, with the attributes the pg and mysql2 spans carry.
-  // Calls outside a request (startup, jobs) are traces of their own, as in Datadog; a pool call that runs on one of its
+  // Calls outside a request (startup, jobs) are traces of their own; a pool call that runs on one of its
   // connections is one span, not two.
   function startMariadbSpans() {
     const { context, createContextKey, SpanKind, SpanStatusCode } = require('@opentelemetry/api');
@@ -184,10 +184,10 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
       if (typeof remote.security.attack === 'boolean') security?.setAttack?.(remote.security.attack);
     });
   } catch (error) { console.warn('[Telvyn] Remote configuration could not start.' + why(error)); }
-  // Public API, as Datadog's tracer.setUser / tracer.appsec.isUserBlocked / tracer.appsec.blockRequest.
+  // Public API, like tracer.setUser / tracer.appsec.isUserBlocked / tracer.appsec.blockRequest.
   module.exports.setUser = user => security?.setUser?.(user) ?? false;
   module.exports.isUserBlocked = user => security?.isUserBlocked?.(user) ?? false;
-  // User activity (as Datadog's appsec.eventTrackingV2): returns 'blocked' when a blocked user's login was answered.
+  // User activity (like appsec.eventTrackingV2): returns 'blocked' when a blocked user's login was answered.
   module.exports.trackUserLoginSuccess = (login, user) => security?.trackUser?.('login_success', login, user) ?? false;
   module.exports.trackUserLoginFailure = (login, exists) => security?.trackUser?.('login_failure', login, undefined, exists) ?? false;
   module.exports.trackUserSignup = (login, user) => security?.trackUser?.('signup', login, user) ?? false;

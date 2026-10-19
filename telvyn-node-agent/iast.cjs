@@ -388,7 +388,7 @@ function startIast(report) {
     if (!has('httponly')) inspectFlaw('NO_HTTPONLY_COOKIE', 'http.ServerResponse.setHeader');
     if (!has('samesite')) inspectFlaw('NO_SAMESITE_COOKIE', 'http.ServerResponse.setHeader');
   }
-  // As the Datadog Node tracer: redirects, not modified, not found, gone and server errors are not judged.
+  // Redirects, not modified, not found, gone and server errors are not judged.
   const IGNORED_STATUS = new Set([301, 302, 304, 307, 404, 410, 500]);
   const HTML_TYPES = ['text/html', 'application/xhtml+xml'];
   // Strict-Transport-Security is valid when it starts with max-age and the value up to ';' is a whole number above 0.

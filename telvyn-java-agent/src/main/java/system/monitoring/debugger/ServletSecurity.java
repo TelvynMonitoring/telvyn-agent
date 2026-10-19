@@ -7,7 +7,7 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * Detecção e bloqueio de ataques em qualquer servlet (javax ou jakarta): Tomcat, Jetty, Undertow, WebLogic,
- * WebSphere, JBoss/WildFly e Jersey ou RESTEasy sobre servlet, como o Datadog faz pela instrumentação de Servlet.
+ * WebSphere, JBoss/WildFly e Jersey ou RESTEasy sobre servlet pela instrumentação de Servlet.
  * Início da requisição (cabeçalhos, cookies, query, endereço, IP, usuário do principal) e status no fim; o corpo
  * não é lido aqui para não consumir o que a aplicação vai ler. No Spring, as fases do Spring reaproveitam o estado.
  * A requisição começa na cadeia de filtros: requisições respondidas só por filtros (login do Spring Security,

@@ -13,8 +13,8 @@ import javax.net.ssl.SSLSocketFactory;
 
 /**
  * HTTP/1.1 mínimo sobre socket para falar com o coletor. O cliente HTTP do JDK é instrumentado pelo agente
- * OpenTelemetry, que transformaria cada envio do agente em trace da aplicação; o Datadog também não rastreia o
- * próprio agente.
+ * OpenTelemetry, que transformaria cada envio do agente em trace da aplicação; por isso o envio
+ * não é rastreado.
  */
 public final class CollectorHttp {
     public record Response(int status, String body) {}

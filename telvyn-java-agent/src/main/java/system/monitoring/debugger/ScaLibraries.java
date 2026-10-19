@@ -18,10 +18,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Runtime SCA (como o Datadog): as bibliotecas que a aplicação carregou de fato. Para cada jar de onde a JVM carregou
+ * Runtime SCA: as bibliotecas que a aplicação carregou de fato. Para cada jar de onde a JVM carregou
  * uma classe, o groupId, artifactId e versão do {@code META-INF/maven/.../pom.properties} (também dentro dos jars
  * aninhados do Spring Boot), enviados ao coletor; o casamento com os advisories roda no backend. Jar sem
- * pom.properties (Gradle, Ant): nome e versão deduzidos do manifest e do nome do arquivo, como o Datadog, e o SHA-1 do
+ * pom.properties (Gradle, Ant): nome e versão deduzidos do manifest e do nome do arquivo, e o SHA-1 do
  * jar, que o backend resolve no Maven Central. Liga com
  * {@code -Dtelvyn.sca.enabled=true} ou {@code TELVYN_SCA_ENABLED=true}. Nenhuma classe é alterada.
  */
@@ -176,7 +176,7 @@ final class ScaLibraries implements ClassFileTransformer {
     }
 
     /**
-     * Jar sem pom.properties, como o Datadog: artifactId do Bundle-Name ou Implementation-Title (ou do nome do arquivo),
+     * Jar sem pom.properties: artifactId do Bundle-Name ou Implementation-Title (ou do nome do arquivo),
      * versão do manifest ou do nome do arquivo, groupId do Bundle-SymbolicName quando ele é "groupId.artifactId", e o
      * SHA-1 do jar para o backend identificar o artefato no Maven Central.
      */

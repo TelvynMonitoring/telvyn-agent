@@ -14,8 +14,8 @@ na aplicação; não é instrumentação automática por Javaagent nem implement
 Não há ações de bloqueio nem leitura de corpo, cookies ou cabeçalhos de autenticação.
 
 `LocalAttackDetection` usa `io.sqreen:libsqreen:17.5.0` / libddwaf 2.0.1, com duas
-regras locais versionadas (`is_sqli`, `is_xss`). Não é o conjunto de regras do
-produto Datadog. A resposta nativa contém entradas: só IDs conhecidos são extraídos,
+regras locais versionadas (`is_sqli`, `is_xss`). Não é o conjunto de regras
+recomendado. A resposta nativa contém entradas: só IDs conhecidos são extraídos,
 sem registrar a resposta ou mensagens de exceção. Licenças ficam em
 `src/main/resources/META-INF/licenses/libddwaf`.
 

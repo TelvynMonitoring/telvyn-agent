@@ -1,5 +1,5 @@
 'use strict';
-// Remote configuration set in the Telvyn UI (as Datadog "Configuration at Runtime"): profiling and security per
+// Remote configuration set in the Telvyn UI: profiling and security per
 // service and environment, applied without restarting. An absent option keeps the application's own setting.
 // IAST can only be turned off: its instrumentation is installed when modules load.
 const PROFILING = ['enabled', 'wall', 'alloc'];

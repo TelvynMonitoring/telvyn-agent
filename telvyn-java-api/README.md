@@ -1,6 +1,6 @@
 # telvyn-java-api
 
-API pública para a aplicação Java (como o `dd-trace-api` do Datadog), sem dependências e sem efeito sozinha:
+API pública para a aplicação Java, sem dependências e sem efeito sozinha:
 o agente Java do Telvyn (`telvyn-java-agent`) instrumenta estes métodos quando está anexado à JVM.
 
 ```java

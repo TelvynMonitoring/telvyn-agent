@@ -10,8 +10,8 @@
     <packaging>jar</packaging>
 
     <!--
-      Telvyn Debugger — javaagent (live debugger estilo Datadog Dynamic
-      Instrumentation), SÓ JAVA. O cliente anexa este jar ao app dele com
+      Telvyn Debugger — javaagent (live debugger com instrumentação
+      dinâmica), SÓ JAVA. O cliente anexa este jar ao app dele com
       -javaagent:telvyn-debugger.jar. Ele "fotografa" entrada/saída/erro de
       métodos configurados, em runtime, SEM parar o app (ByteBuddy reescreve o
       bytecode). v1: prova de conceito — captura e imprime a foto.

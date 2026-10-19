@@ -10,11 +10,11 @@ import net.bytebuddy.asm.Advice;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
- * Corpo da requisição em qualquer servlet, como as instrumentações "Servlet Request Body" do Datadog: o corpo que a
+ * Corpo da requisição em qualquer servlet: o corpo que a
  * aplicação lê do {@code ServletInputStream} (guardado até {@link #LIMIT} bytes e inspecionado quando a leitura chega
  * ao fim; JSON é interpretado) e o formulário lido por {@code getParameter*}. Vale para servlets puros e para os
  * frameworks sobre eles; quem já leu o corpo interpretado (Spring, JAX-RS) não é inspecionado de novo. Upload
- * multipart (como o Datadog): nomes dos arquivos enviados ({@code server.request.body.filenames}) pelo
+ * multipart: nomes dos arquivos enviados ({@code server.request.body.filenames}) pelo
  * {@code getParts} do servlet e pelo Commons FileUpload ({@code ServletFileUpload.parseRequest}), que também entrega
  * os campos de texto como corpo. O bloqueio
  * responde e interrompe a leitura com a exceção de bloqueio, tratada no fim da requisição.

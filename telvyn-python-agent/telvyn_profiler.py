@@ -70,7 +70,7 @@ class Profiler:
         self.wall = os.environ.get("TELVYN_PROFILE_WALL_ENABLED") == "true"
         # Heap vivo rastreia toda alocação (tracemalloc não amostra): opt-in próprio, como alocação no Java/Node.
         self.heap = os.environ.get("TELVYN_PROFILE_HEAP_ENABLED") == "true"
-        # CPU como o Datadog: a thread do profiler amostra as pilhas e conta só as threads que usaram CPU no período.
+        # CPU: a thread do profiler amostra as pilhas e conta só as threads que usaram CPU no período.
         # Um gancho por chamada (sys.setprofile) custava uma chamada de sistema por função e a aplicação não subia.
         self.cpu = thread_cpu_ns(threading.get_native_id()) is not None
         self._reset()

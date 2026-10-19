@@ -42,7 +42,7 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 		}
 		for field := range report {
 			if signal == "security/libraries" {
-				// Runtime SCA (as Datadog): ecosystem, name and version of each library the service loaded.
+				// Runtime SCA: ecosystem, name and version of each library the service loaded.
 				switch field {
 				case "id", "service", "host", "environment", "service_version", "libraries":
 					continue
@@ -51,7 +51,7 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if signal == "security/api" {
-				// API Security schemas (as Datadog): field types and scanner tags, never the values.
+				// API Security schemas: field types and scanner tags, never the values.
 				switch field {
 				case "id", "service", "host", "environment", "service_version", "method", "route", "status", "schemas":
 					continue
@@ -60,7 +60,7 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if signal == "security/users" {
-				// User activity (login success/failure, signup), as Datadog user events: no credentials, only identity.
+				// User activity (login success/failure, signup): no credentials, only identity.
 				switch field {
 				case "id", "service", "host", "environment", "service_version", "event", "usr_id", "usr_login", "usr_exists", "client_ip", "user_agent", "framework", "collection_mode", "trace_id", "span_id":
 					continue
@@ -71,7 +71,7 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 			switch field {
 			case "id", "service", "host", "environment", "service_version", "outcome", "rule_id", "rules_version", "engine_version", "elapsed_us", "trace_id", "span_id":
 			case "request_method", "request_path", "user_agent":
-				// Attack events carry the request of a blocked or detected attack (as Datadog); code findings too.
+				// Attack events carry the request of a blocked or detected attack; code findings too.
 				if signal != "security/iast" && signal != "security/events" {
 					return http.StatusBadRequest, errors.New("unsupported security field")
 				}

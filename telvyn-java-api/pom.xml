@@ -10,7 +10,7 @@
     <packaging>jar</packaging>
 
     <!--
-      API pública para a aplicação (como o dd-trace-api do Datadog): eventos de usuário (login, cadastro), usuário da
+      API pública para a aplicação: eventos de usuário (login, cadastro), usuário da
       requisição e consulta de bloqueio. Sem dependências e sem efeito sozinha: o agente Java do Telvyn
       (telvyn-java-agent) instrumenta estes métodos quando está anexado à JVM.
     -->

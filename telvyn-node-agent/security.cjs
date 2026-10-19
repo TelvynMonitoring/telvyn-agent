@@ -9,7 +9,7 @@ const WAF_RULES = require('./waf-rules.json');
 const RULES_VERSION = 'waf-' + WAF_RULES.metadata.rules_version;
 const BUDGET_US = 10000;
 
-// Attack detection as Datadog App and API Protection: the recommended ruleset over every request — headers, cookies,
+// Attack detection and blocking: the recommended ruleset over every request — headers, cookies,
 // query, URI and client IP at request start; body, path parameters and user once the framework parsed them; response
 // status at the end. Reports name the rule and where it matched (address and key), never the input value.
 function startSecurity() {
@@ -101,12 +101,12 @@ function startSecurity() {
     protection.respond(request, response);
     if (by !== 'rule') report('blocked', undefined, elapsed, span, undefined, {...state.details, ...(state.user ? {usr_id: state.user} : {}), blocked: true, blocked_by: by});
   }
-  // Automatic user events (as Datadog's user activity): login success/failure and signup, never the password.
+  // Automatic user events: login success/failure and signup, never the password.
   // Mode: TELVYN_SECURITY_USER_TRACKING (identification, anonymization, disabled) or the UI; a local "disabled" always wins.
   const localTracking = String(process.env.TELVYN_SECURITY_USER_TRACKING || 'identification').trim().toLowerCase();
   const tracking = () => localTracking === 'disabled' ? 'disabled' : protection.state.tracking || (localTracking === 'anonymization' ? 'anonymization' : 'identification');
   const anonymize = protection.anonymize;
-  // User identifier as Datadog picks it from the user object: id, _id, email, username, login, user.
+  // User identifier from the user object: id, _id, email, username, login, user.
   const userIdentifier = user => {
     if (user == null || typeof user !== 'object') return undefined;
     for (const field of ['id', '_id', 'email', 'username', 'login', 'user']) {
@@ -134,7 +134,7 @@ function startSecurity() {
   }
   // Body worth a WAF run: a non-empty object or string (body parsers leave {} when they do not handle the type).
   const hasBody = body => typeof body === 'string' ? body.length > 0 : !!body && typeof body === 'object' && Object.keys(body).length > 0;
-  // API Security (as Datadog): the WAF extracts the schema of each endpoint (types of headers, query, path params,
+  // API Security: the WAF extracts the schema of each endpoint (types of headers, query, path params,
   // body and response headers, with sensitive data and credentials flagged by the scanners), sampled once per method,
   // route and status every 30 seconds.
   const API_SAMPLE_MS = 30000;
@@ -236,7 +236,7 @@ function startSecurity() {
       return false;
     },
     // Body parsed after the route matched (multer) or read by the application (Next.js NextRequest): inspected once.
-    // Returns true when blocked; the block response was already sent. blockable=false only detects (as Datadog on
+    // Returns true when blocked; the block response was already sent. blockable=false only detects (as on
     // the Next.js body, which blocks at request start only).
     inspectBody(request, body, blockable = true) {
       const state = request ? requests.get(request) : store.getStore();
@@ -246,7 +246,7 @@ function startSecurity() {
       blockRequest(state, state.request, state.response, state.span, 'rule');
       return true;
     },
-    // GraphQL (as Datadog: graphql.server.all_resolvers, every resolver with its arguments). Inside Apollo Server's
+    // GraphQL (graphql.server.all_resolvers, every resolver with its arguments). Inside Apollo Server's
     // HTTP handling a blocking match stops execution and Apollo answers with the block response; elsewhere it only
     // detects. Returns true when execution must stop.
     inspectGraphql(resolvers) {
@@ -265,7 +265,7 @@ function startSecurity() {
       const state = store.getStore();
       return state?.graphqlBlocked ? protection.blockPayload(state.request) : null;
     },
-    // Exploit prevention (as Datadog RASP): a dangerous operation (SQL, outgoing URL, file, command) checked against
+    // Exploit prevention: a dangerous operation (SQL, outgoing URL, file, command) checked against
     // the request's input. Returns true when a blocking rule matched: the block response was sent and the caller
     // aborts the operation.
     inspectOperation(data) {
@@ -286,7 +286,7 @@ function startSecurity() {
       if (!state) return;
       blockRequest(state, request, response, state.span, state.blockedBy || 'rule');
     },
-    // Public SDK API (as Datadog's tracer.setUser / appsec.isUserBlocked / appsec.blockRequest).
+    // Public SDK API (like tracer.setUser / appsec.isUserBlocked / appsec.blockRequest).
     setUser(user) {
       const state = store.getStore();
       if (!state) return false;
@@ -305,7 +305,7 @@ function startSecurity() {
       if (mode !== 'disabled' && (id || name)) reportUser(success ? 'login_success' : 'login_failure', id ?? (success ? name : undefined), name, success ? true : undefined, state, framework, mode);
       return !!(success && id && setUser(state, id, state.request, state.response, state.span));
     },
-    // Public SDK API for logins and signups outside Passport (as Datadog's eventTrackingV2): always reported, as given.
+    // Public SDK API for logins and signups outside Passport (like eventTrackingV2): always reported, as given.
     trackUser(event, login, user, exists) {
       const state = store.getStore();
       const name = typeof login === 'string' && login ? login.slice(0, 255) : undefined;

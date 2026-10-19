@@ -16,8 +16,8 @@ import system.monitoring.debugger.bootstrap.RaspBridge;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
- * Exploit prevention (como o RASP do Datadog para Java): cada operação perigosa feita durante uma requisição é
- * comparada com a entrada dessa requisição pelas regras rasp-* do Datadog (dados efêmeros do WAF). Arquivos
+ * Exploit prevention: cada operação perigosa feita durante uma requisição é
+ * comparada com a entrada dessa requisição pelas regras rasp-* (dados efêmeros do WAF). Arquivos
  * ({@code java.io} e {@code java.nio.file.Files}: {@code server.io.fs.file}); comandos ({@code ProcessImpl.start}, por onde passam
  * {@code ProcessBuilder} e {@code Runtime.exec}: {@code server.sys.exec.cmd}, ou {@code server.sys.shell.cmd} com sh/bash -c);
  * requisições de saída ({@code java.net.URL}, {@code java.net.http.HttpClient}, OkHttp, Apache HttpClient 4 e 5,
@@ -69,7 +69,7 @@ public final class JavaRasp {
                 .on(isStatic().and(isPublic()).and(takesArgument(0, named("java.nio.file.Path"))).and(namedOneOf("newInputStream", "newOutputStream",
                     "newByteChannel", "newBufferedReader", "newBufferedWriter", "readAllBytes", "readString", "readAllLines", "lines", "write", "writeString",
                     "copy", "move", "delete", "deleteIfExists", "list", "walk", "newDirectoryStream", "createFile", "createDirectories")))))
-            // ProcessImpl.start (como o Datadog): ProcessBuilder.start e Runtime.exec passam por ele.
+            // ProcessImpl.start: ProcessBuilder.start e Runtime.exec passam por ele.
             .type(named("java.lang.ProcessImpl"))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(ProcessStart.class).on(named("start").and(isStatic()).and(takesArgument(0, String[].class)))))
             .type(named("java.net.URL"))

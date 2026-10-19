@@ -14,7 +14,7 @@ Conversor: catálogo de profiles SNMP NDM -> formato Telvyn.
 - Emite YAML no formato Telvyn, com referência ao aviso jurídico consolidado.
 
 Uso:
-  convert.py <dd_default_profiles_dir> <out_dir> [--only n1,n2] [--verbose]
+  convert.py <source_profiles_dir> <out_dir> [--only n1,n2] [--verbose]
 """
 import os, sys, yaml
 from collections import OrderedDict as OD

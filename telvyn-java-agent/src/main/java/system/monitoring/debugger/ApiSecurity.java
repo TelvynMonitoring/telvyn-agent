@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 /**
- * API Security (como o Datadog): no fim da requisição, numa amostra por método, rota e status a cada 30 segundos, o
+ * API Security: no fim da requisição, numa amostra por método, rota e status a cada 30 segundos, o
  * WAF extrai o esquema do endpoint — tipos dos cabeçalhos, query, parâmetros de rota, corpo e cabeçalhos da resposta,
  * com dados sensíveis e credenciais marcados pelos scanners — e o agente envia ao coletor. Nunca os valores.
  */
@@ -64,7 +64,7 @@ final class ApiSecurity {
         if (!schemas.isEmpty()) reporter().reportApi(state.method, state.route != null ? state.route : state.path, code, schemas);
     }
 
-    /** A biblioteca Java do WAF entrega o esquema comprimido (gzip + base64, formato das tags do Datadog): volta a ser JSON. */
+    /** A biblioteca Java do WAF entrega o esquema comprimido (gzip + base64): volta a ser JSON. */
     static Object decode(Object value) {
         if (!(value instanceof String text) || !text.startsWith("H4sI")) return value;
         try (var input = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(java.util.Base64.getDecoder().decode(text)))) {

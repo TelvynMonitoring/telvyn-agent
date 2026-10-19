@@ -21,7 +21,7 @@ public final class SpringMvcSecurity {
     private static LocalAttackReporter iast;
     private static volatile LocalAttackDetection detector;
     private static volatile ThreadPoolExecutor worker;
-    /** Eventos das regras completas (conjunto recomendado do Datadog). */
+    /** Eventos das regras completas (conjunto recomendado). */
     private static volatile LocalAttackReporter waf;
     private static final String STATE="telvyn.security.waf";
     /** Requisição em curso nesta thread (requisição, resposta, estado), para os eventos de login do Spring Security. */
@@ -136,7 +136,7 @@ public final class SpringMvcSecurity {
     }
     private static Object attribute(Object request,String name){try{return request.getClass().getMethod("getAttribute",String.class).invoke(request,name);}catch(ReflectiveOperationException|RuntimeException unavailable){return null;}}
     private static void attribute(Object request,String name,Object value){try{request.getClass().getMethod("setAttribute",String.class,Object.class).invoke(request,name,value);}catch(ReflectiveOperationException|RuntimeException unavailable){ /* sem estado: só o início é inspecionado */ }}
-    /** Usuário logado como o Datadog no Java: Spring Security (exceto anônimo); senão o principal do servlet. */
+    /** Usuário logado no Java: Spring Security (exceto anônimo); senão o principal do servlet. */
     static String loggedUser(Object request){
         try{
             var holder=Class.forName("org.springframework.security.core.context.SecurityContextHolder",false,Thread.currentThread().getContextClassLoader());
@@ -156,7 +156,7 @@ public final class SpringMvcSecurity {
     /** Reporta as regras novas da fase e decide o bloqueio por regra. */
     static LocalAttackReporter wafReporter(){start();return waf;}
     static boolean decide(WafInspector.State state,WafInspector.Evaluation evaluation,LocalAttackReporter reporter){return decide(state,evaluation,reporter,true);}
-    /** blockable=false: só detecta (pontos onde o Datadog também não bloqueia, como o graphql-java e o gRPC). */
+    /** blockable=false: só detecta (pontos sem bloqueio, como o graphql-java e o gRPC). */
     static boolean decide(WafInspector.State state,WafInspector.Evaluation evaluation,LocalAttackReporter reporter,boolean blockable){
         if(!"match".equals(evaluation.outcome())){
             if(("timeout".equals(evaluation.outcome())&&!state.timeoutReported)||"error".equals(evaluation.outcome())){

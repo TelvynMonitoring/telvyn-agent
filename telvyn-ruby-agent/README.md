@@ -1,6 +1,6 @@
 # Agente Telvyn para Rack / Sinatra
 
-Gem reutilizável com inicialização antecipada e middleware Rack, apoiado no SDK OTel já usado no laboratório. O [DD Ruby](https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/ruby/) também usa bibliotecas próprias da linguagem; esta integração cobre Rack/Sinatra, não sua cobertura universal.
+Gem reutilizável com inicialização antecipada e middleware Rack, apoiado no SDK OTel já usado no laboratório. Esta integração cobre Rack/Sinatra, não sua cobertura universal.
 
 Instale por source/path no Gemfile (como na fixture) ou empacote com `gem build`; RubyGems não foi publicado.
 

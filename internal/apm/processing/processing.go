@@ -31,7 +31,7 @@ type Policy struct {
 
 type Processor struct {
 	policy atomic.Pointer[Policy]
-	// remote holds the tags set per service/env by remote configuration (Datadog DD_TAGS).
+	// remote holds the tags set per service/env by remote configuration.
 	remote atomic.Pointer[[]Rule]
 }
 

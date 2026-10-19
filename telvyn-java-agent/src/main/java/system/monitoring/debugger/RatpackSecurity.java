@@ -7,11 +7,11 @@ import net.bytebuddy.asm.Advice;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
- * Corpo e parâmetros de rota no Ratpack, como a instrumentação de Ratpack do Datadog (o início da requisição vem do
+ * Corpo e parâmetros de rota no Ratpack, como a instrumentação de Ratpack (o início da requisição vem do
  * Netty). Corpo: o resultado de {@code DefaultContext.parse(TypedData, Parse)} (JSON, formulário). Parâmetros de rota:
  * os {@code PathTokens} do contexto quando o handler da rota (envolvido no {@code PathHandler}) roda. O bloqueio responde pela API do
  * Ratpack; no corpo, a leitura falha com a exceção de bloqueio, que o tratamento de erro do contexto ignora (a resposta
- * já foi enviada), como o Datadog faz.
+ * já foi enviada).
  */
 public final class RatpackSecurity {
     private RatpackSecurity() {}
@@ -23,7 +23,7 @@ public final class RatpackSecurity {
                 .visit(Advice.to(Parse.class).on(named("parse").and(takesArguments(2)).and(takesArgument(0, named("ratpack.http.TypedData")))))
                 .visit(Advice.to(Error.class).on(named("error").and(takesArguments(1)).and(takesArgument(0, Throwable.class)))))
             .installOn(instrumentation);
-        // Handler da rota com parâmetros: envolvido no PathHandler (como o Datadog) para ver os parâmetros já resolvidos.
+        // Handler da rota com parâmetros: envolvido no PathHandler para ver os parâmetros já resolvidos.
         Agents.builder()
             .type(named("ratpack.path.internal.PathHandler"))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(PathRoute.class).on(isConstructor().and(takesArguments(2)))))
