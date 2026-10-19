@@ -778,7 +778,7 @@ func (r *Runtime) pushDiagnostics(checkID string, diagnostics DatabaseDiagnostic
 		ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 		defer cancel()
 		if err := pusher(ctx, diagnostics); err != nil {
-			r.log.Warn("postgres diagnostics: envio falhou", "check_id", checkID, "err", err)
+			r.log.Warn("database diagnostics: envio falhou", "engine", diagnostics.Engine, "check_id", checkID, "err", err)
 		}
 	}()
 }
@@ -816,7 +816,7 @@ func (r *Runtime) pushInstanceDiscovery(checkID string, discovery DatabaseInstan
 		ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 		defer cancel()
 		if err := pusher(ctx, discovery); err != nil {
-			r.log.Warn("postgres instance discovery: envio falhou", "check_id", checkID, "err", err)
+			r.log.Warn("database instance discovery: envio falhou", "engine", discovery.Engine, "check_id", checkID, "err", err)
 		}
 	}()
 }

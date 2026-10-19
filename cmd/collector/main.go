@@ -1159,7 +1159,8 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			})
 		}
 		return exporter.PostDatabaseCapabilities(postCtx, otlp.DatabaseCapabilitiesPayload{
-			InstallationID: diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
+			DatabaseSignalEnvelope: otlp.DatabaseSignalEnvelope{Engine: diagnostics.Engine},
+			InstallationID:         diagnostics.InstallationID, DatabaseID: diagnostics.DatabaseID,
 			DBServer: diagnostics.DBServer, DBName: diagnostics.DBName, ServerVersion: diagnostics.ServerVersion,
 			Capabilities: capabilities, Errors: diagnostics.Errors,
 		})
@@ -1217,6 +1218,12 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 					}
 				}()
 			}
+			// O Agent de Banco não tem receptor OTLP nem APM, e o backend só libera a ele a rota config: o relatório
+			// de fontes de primary tags levaria 403 e derrubaria todo o config-pull.
+			var primaryTagSources func() []string
+			if !isDatabaseAgent() {
+				primaryTagSources = receiver.PrimaryTagSources
+			}
 			go func() {
 				if err := configpull.Run(ctx, configpull.Config{
 					Endpoint:               base,
@@ -1241,7 +1248,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 						}
 						return apmConc.ApplyPrimaryTags(keys)
 					},
-					APMPrimaryTagSources: receiver.PrimaryTagSources,
+					APMPrimaryTagSources: primaryTagSources,
 					PolicyChanged: func(modules []string) {
 						exporter.SetEnabledModules(modules)
 						apmEnabled := false
