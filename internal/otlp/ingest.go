@@ -472,6 +472,7 @@ type DatabaseQueryStatsPayload struct {
 
 type DatabaseQueryStat struct {
 	QueryID string  `json:"query_id"`
+	User    string  `json:"user,omitempty"`
 	Text    string  `json:"text"`
 	Calls   int64   `json:"calls"`
 	TotalMS float64 `json:"total_ms"`
