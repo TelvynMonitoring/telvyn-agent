@@ -154,6 +154,9 @@ func (c *mysqlQueries) RunQuerySamples(ctx context.Context) (*DatabaseQueryStats
 		Samples: make([]DatabaseQuerySample, 0),
 	}
 	plansCollected := 0
+	// O EXPLAIN roda depois de fechar a leitura: a conexão das amostras volta ao pool do servidor antes, e
+	// nenhuma checagem segura duas conexões ao mesmo tempo (ver mysql_pool.go).
+	explains := map[int]string{}
 	for rows.Next() {
 		var threadID, eventID int64
 		var digest, text, rawQuery, user, client, state string
@@ -177,11 +180,18 @@ func (c *mysqlQueries) RunQuerySamples(ctx context.Context) (*DatabaseQueryStats
 			sample.PlanStatus = "rate_limited"
 		default:
 			plansCollected++
-			sample.PlanJSON, sample.PlanStatus = c.explainSample(ctx, rawQuery)
+			explains[len(out.Samples)] = rawQuery
 		}
 		out.Samples = append(out.Samples, sample)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	rows.Close()
+	for i, rawQuery := range explains {
+		out.Samples[i].PlanJSON, out.Samples[i].PlanStatus = c.explainSample(ctx, rawQuery)
+	}
+	return out, nil
 }
 
 func (c *mysqlQueries) allowPlan(digest string, now time.Time) bool {

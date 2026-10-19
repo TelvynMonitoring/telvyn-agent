@@ -99,8 +99,6 @@ func mariaDBReplicaFromFields(fields map[string]string) *DatabaseReplica {
 	return replica
 }
 
-var defaultMySQLPoolFactory = defaultSQLDatabasePoolFactory("mysql")
-
 type mysqlServer struct {
 	id         string
 	interval   time.Duration
