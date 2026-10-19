@@ -8,7 +8,7 @@ import (
 )
 
 // cAdvisor reports zero kernel memory on this cgroup-v2 runtime. Read the
-// same kernel counters as the Datadog cgroup-v2 collector, never substitute zero.
+// same kernel counters as the cgroup-v2 collectors, never substitute zero.
 func (c *k8sKubeletCheck) containerCgroupMemory(id string) map[string]float64 {
 	if !strings.HasPrefix(id, "/kubepods/") && !strings.HasPrefix(id, "/kubepods.slice/") {
 		return nil

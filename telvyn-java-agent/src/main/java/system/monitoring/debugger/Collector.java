@@ -1,6 +1,6 @@
 package system.monitoring.debugger;
 
-/** Coletor Telvyn local, como o Datadog Agent: todo envio da aplicação passa por ele, que repassa ao backend com a credencial dele. */
+/** Coletor Telvyn local: todo envio da aplicação passa por ele, que repassa ao backend com a credencial dele. */
 public final class Collector {
     private Collector() {}
 

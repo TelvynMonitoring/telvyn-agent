@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DataDog/sketches-go/ddsketch"
+	"github.com/ispwatch/collector/internal/sketch"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 

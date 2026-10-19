@@ -12,7 +12,7 @@ import net.bytebuddy.asm.Advice;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
- * GraphQL no graphql-java, como o Datadog (que só detecta, sem bloquear, nesse framework): na execução, os argumentos
+ * GraphQL no graphql-java (que só detecta, sem bloquear, nesse framework): na execução, os argumentos
  * de todos os resolvers da operação, com variáveis resolvidas, no endereço {@code graphql.server.all_resolvers}
  * ({@code {campo: [{argumento: valor}]}}). O documento é lido pelo parser do próprio graphql-java. Precisa da
  * requisição em curso (servlet ou Vert.x na mesma thread).

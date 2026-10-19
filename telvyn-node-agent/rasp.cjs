@@ -1,9 +1,9 @@
 'use strict';
-// Exploit prevention (as Datadog RASP for Node.js): each dangerous operation made while serving a request is checked
-// against that request's input by the Datadog rules for it (rasp-*): SQL statements (pg, mysql2), outgoing requests
+// Exploit prevention: each dangerous operation made while serving a request is checked
+// against that request's input by the exploit-prevention rules (rasp-*): SQL statements (pg, mysql2), outgoing requests
 // (http, https, fetch), file paths (fs) and commands (child_process). A rule in blocking mode answers the request with
 // the block response and aborts the operation with TelvynRaspAbortError; an abort that the application does not
-// handle is kept from crashing the process (as Datadog does), since the response was already sent.
+// handle is kept from crashing the process, since the response was already sent.
 const path = require('node:path');
 
 class TelvynRaspAbortError extends Error {

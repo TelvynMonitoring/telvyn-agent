@@ -14,7 +14,7 @@ import net.bytebuddy.asm.Advice;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
- * gRPC no servidor (grpc-java), como o Datadog, que só detecta (sem bloquear) no gRPC: no início da chamada, o
+ * gRPC no servidor (grpc-java), que só detecta (sem bloquear) no gRPC: no início da chamada, o
  * endereço do cliente, os metadados (como cabeçalhos) e o método ({@code grpc.server.method}); cada mensagem recebida
  * em {@code grpc.server.request.message} (protobuf convertido em mapa pelos nomes dos campos). Chamadas dos handlers
  * do grpc-stub (unárias e streaming).

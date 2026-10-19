@@ -1,6 +1,6 @@
 # Agente Telvyn para PHP HTTP
 
-Pacote Composer reutilizável: o autoload inicia o span HTTP, e o shutdown do request registra status/duração e log com IDs reais, exportando ao coletor Telvyn. A aplicação mantém seu `vendor/autoload.php`, sem bootstrap OTLP específico. Não é a extensão Zend do [DD PHP](https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/php/) nem certifica sua lista completa de frameworks/bancos.
+Pacote Composer reutilizável: o autoload inicia o span HTTP, e o shutdown do request registra status/duração e log com IDs reais, exportando ao coletor Telvyn. A aplicação mantém seu `vendor/autoload.php`, sem bootstrap OTLP específico. Não é uma extensão Zend nem certifica sua lista completa de frameworks/bancos.
 
 Para consumo local, use o repositório Composer `path` da fixture como exemplo; o pacote ainda não está no Packagist. Configure antes de iniciar a aplicação:
 

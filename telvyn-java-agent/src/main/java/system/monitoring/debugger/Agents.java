@@ -8,7 +8,7 @@ import net.bytebuddy.pool.TypePool;
 
 /**
  * Base das instrumentações por hierarquia (hasSuperType): um cache de tipos compartilhado por class loader, como o
- * OpenTelemetry e o Datadog fazem. Sem ele, cada classe carregada faz o ByteBuddy reler os arquivos de classe de
+ * OpenTelemetry faz. Sem ele, cada classe carregada faz o ByteBuddy reler os arquivos de classe de
  * toda a hierarquia em cada instrumentação, o que multiplicava o tempo de subida (Spring Boot de 5,6 s para 23,7 s).
  * O class loader fica em referência fraca e o cache em referência suave: sem vazamento quando a aplicação descarta
  * class loaders, e a JVM pode liberar o cache sob pressão de memória.

@@ -231,7 +231,7 @@ def _performance(client, resources, observed, metrics):
             item = metric("telvyn.proxmox." + field[0], value, field[1], row["id"], tags,
                           timestamp(datetime.fromtimestamp(at, timezone.utc)))
             identity = key(item)
-            # Prefer the timestamped export for load averages, like Datadog.
+            # Prefer the timestamped export for load averages.
             # /nodes/status is only a fallback when export is unavailable.
             status_load = (field[0].startswith("cpu.load") and identity in merged
                            and merged[identity]["timestamp"] == observed)

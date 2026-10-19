@@ -10,7 +10,7 @@ import net.bytebuddy.asm.Advice;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
- * Eventos automáticos de usuário do Spring Security, como o Datadog no Java: login com sucesso, login com
+ * Eventos automáticos de usuário do Spring Security no Java: login com sucesso, login com
  * falha (com usr_exists, pelo UserDetailsService) e cadastro (UserDetailsManager.createUser). Só login por
  * usuário e senha (UsernamePasswordAuthenticationToken), não a validação de token de cada requisição.
  * Login de usuário bloqueado recebe a resposta de bloqueio. Modo de coleta: identification (id e login como
@@ -40,7 +40,7 @@ public final class UserActivity {
                 LoaderMatchers.canSee("org.springframework.security.provisioning.UserDetailsManager"))
             .transform((builder, type, loader, module, domain) -> builder.visit(Advice.to(CreateUser.class).on(named("createUser").and(not(isAbstract())).and(takesArguments(1)))))
             .installOn(instrumentation);
-        // API manual (telvyn-java-api, como o EventTrackerV2 do Datadog): os métodos da API não fazem nada sem o agente.
+        // API manual (telvyn-java-api): os métodos da API não fazem nada sem o agente.
         Agents.builder()
             .type(named("system.monitoring.telvyn.TelvynSecurity"))
             .transform((builder, type, loader, module, domain) -> builder
@@ -59,7 +59,7 @@ public final class UserActivity {
         return "anonymization".equals(local) ? local : "identification";
     }
 
-    /** Mesmo formato do Datadog: "anon_" + os primeiros 128 bits do SHA-256, em hexadecimal. */
+    /** Formato de anonimização: "anon_" + os primeiros 128 bits do SHA-256, em hexadecimal. */
     static String anonymize(String value) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
@@ -68,7 +68,7 @@ public final class UserActivity {
     }
 
     private static LocalAttackReporter reporter() {
-        if (SpringMvcSecurity.wafReporter() == null) return null; // como no Datadog, exige a detecção de ataques ligada
+        if (SpringMvcSecurity.wafReporter() == null) return null; // exige a detecção de ataques ligada
         var current = reporter;
         if (current != null) return current;
         synchronized (UserActivity.class) {
@@ -94,7 +94,7 @@ public final class UserActivity {
 
     static boolean report(String event, String user, String login, Boolean userExists, String framework, String mode) {
         Object[] request = SpringMvcSecurity.current();
-        // Só dentro de uma requisição (como o Datadog, que anota o trace): usuários criados na subida não são cadastros.
+        // Só dentro de uma requisição: usuários criados na subida não são cadastros.
         if (request == null || "disabled".equals(mode) || user == null && login == null) return false;
         var out = reporter();
         if (out == null) return false;
@@ -104,7 +104,7 @@ public final class UserActivity {
         boolean anonymous = "anonymization".equals(mode);
         out.reportUser(event, user == null ? null : anonymous ? anonymize(user) : user, login == null ? null : anonymous ? anonymize(login) : login, userExists,
                 state.ip, state.userAgent, framework, mode, trace[0], trace[1]);
-        // Login com sucesso de usuário na lista de bloqueio: a requisição de login é barrada (como o Datadog).
+        // Login com sucesso de usuário na lista de bloqueio: a requisição de login é barrada.
         return "login_success".equals(event) && !state.blocked
                 && SpringMvcSecurity.userPhase(state, request[0], request[1], user, SpringMvcSecurity.wafReporter());
     }
@@ -153,7 +153,7 @@ public final class UserActivity {
         catch (RuntimeException | LinkageError failure) { LocalAttackReporter.reportLoss("user activity failure"); }
     }
 
-    /** Chamada da API manual: eventos sempre como informados (o modo de coleta só vale para o automático, como no Datadog). */
+    /** Chamada da API manual: eventos sempre como informados (o modo de coleta só vale para o automático). */
     public static void manual(String method, Object[] args) {
         try {
             String first = args.length > 0 && args[0] instanceof String value && !value.isBlank() ? value : null;

@@ -39,7 +39,7 @@ func (h *httpKubeletFetcher) prometheusBody(ctx context.Context, path string) ([
 	return body, err
 }
 
-// Use the same kubelet endpoints as DD's kubelet check. Durations remain in
+// Use the same kubelet endpoints as the usual kubelet checks. Durations remain in
 // seconds and counters remain cumulative; the portal applies rate()/increase().
 func (c *k8sKubeletCheck) parseOperational(body io.Reader, node string) ([]*collectorv1.Metric, error) {
 	gauges := map[string]string{
@@ -113,7 +113,7 @@ func (c *k8sKubeletCheck) parseOperational(body io.Reader, node string) ([]*coll
 		}
 		if strings.HasPrefix(name, "rest_client_request_duration_seconds_") {
 			if parsed, err := url.Parse(labels["url"]); err == nil && parsed.Path != "" {
-				// Match DD's REST dimension without retaining credentials or query parameters.
+				// Keep the REST dimension without retaining credentials or query parameters.
 				tags["url"] = parsed.Path
 			}
 		}

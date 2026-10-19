@@ -19,7 +19,7 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * Detecção e bloqueio de ataques no Akka HTTP e no Pekko HTTP (e no Play, que roda sobre o Akka HTTP), como a
- * instrumentação de Akka HTTP do Datadog. A função de atendimento ({@code HttpExt.bindAndHandleAsync}, usada pelas
+ * instrumentação de Akka HTTP. A função de atendimento ({@code HttpExt.bindAndHandleAsync}, usada pelas
  * rotas do Java DSL, pelo bind de função e pelo Play) é envolvida: início da requisição (IP, cabeçalhos, cookies,
  * query, endereço) com bloqueio, e status no fim. Corpo (JSON, formulário, texto): o que já chegou inteiro
  * ({@code HttpEntity.Strict}) no início, com bloqueio antes do handler; o restante quando é materializado para a

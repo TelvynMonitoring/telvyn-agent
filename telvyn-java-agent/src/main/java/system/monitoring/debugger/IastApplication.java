@@ -11,7 +11,7 @@ import net.bytebuddy.asm.Advice;
 import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
- * IAST findings that need no request input, as the Datadog Java tracer reports them:
+ * IAST findings that need no request input:
  * the configuration of each web application (web.xml, weblogic.xml, WebSphere files, JSP layout) once per servlet
  * context, the session tracking mode once a session exists, and at the end of each inspected request the missing
  * security headers and Basic/Digest authentication. Tomcat error pages that print a stack trace are a leak.
@@ -168,7 +168,7 @@ public final class IastApplication {
                 String value=start<0?null:between(xml,start+"<param-value>".length(),"</param-value>");
                 if("true".equalsIgnoreCase(value))IastRuntime.once("DIRECTORY_LISTING_LEAK",application+"WEB-INF/web.xml#"+(parameter.contains("listings")?"listings":"dirAllowed"),line(xml,index),null);
             }
-        // A security constraint without http-method, as the Datadog tracer judges it.
+        // A security constraint without http-method.
         for(int index=xml.indexOf("<security-constraint>");index>=0;index=xml.indexOf("<security-constraint>",index+1)){
             String inner=between(xml,index+"<security-constraint>".length(),"</security-constraint>");
             if(inner!=null&&!inner.contains("<http-method>"))IastRuntime.once("VERB_TAMPERING",application+"WEB-INF/web.xml#security-constraint",line(xml,index),null);

@@ -357,8 +357,8 @@ func (t *CRILogsTailer) handleLine(line string, meta criFileInfo, svc string, pa
 		if m := firstField(fields, "message", "msg", "body", "log", "@message", "event"); m != "" {
 			body = m
 		}
-		traceID = firstField(fields, "trace_id", "traceId", "traceID", "dd.trace_id", "otel.trace_id")
-		spanID = firstField(fields, "span_id", "spanId", "spanID", "dd.span_id", "otel.span_id")
+		traceID = firstField(fields, "trace_id", "traceId", "traceID", "otel.trace_id")
+		spanID = firstField(fields, "span_id", "spanId", "spanID", "otel.span_id")
 		if n, txt, ok := levelToSeverity(firstField(fields, "level", "severity", "severity_text", "levelname", "lvl")); ok {
 			sevNum, sevText = n, txt
 		}

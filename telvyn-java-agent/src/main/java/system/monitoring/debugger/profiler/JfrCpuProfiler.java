@@ -17,7 +17,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Profiler contínuo de CPU (estilo Datadog), 100% JFR (Java Flight Recorder),
+ * Profiler contínuo de CPU, 100% JFR (Java Flight Recorder),
  * embutido no JDK, sem dependência nativa. Para CPU:
  * só observa os eventos {@code jdk.ExecutionSample} (uma amostra da pilha de cada
  * thread em execução a cada ~10ms), dobra as pilhas em formato "collapsed"

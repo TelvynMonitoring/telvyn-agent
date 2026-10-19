@@ -7,7 +7,7 @@ canônica: `main`.
 
 - `v0.4.8`: checks reportam o motivo concreto de falha ao backend.
 - `v0.4.9`: o workflow de publicação produz a tag de série da imagem, seguindo o
-  modelo de distribuição do Datadog.
+  modelo usual de distribuição de agentes.
 - O agente usa HTTP/OTLP certless com Bearer token `iwI_...`.
 - Cada host executa uma instância com token próprio.
 

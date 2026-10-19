@@ -1,6 +1,6 @@
 # Agente Telvyn para Go
 
-Integração compilada, usando o SDK OTel HTTP existente e o coletor Telvyn. Como o [SDK Go do DD](https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/go/), esta forma exige inicialização e integração da biblioteca à aplicação; não injeta código em qualquer binário pronto.
+Integração compilada, usando o SDK OTel HTTP existente e o coletor Telvyn. Esta forma exige inicialização e integração da biblioteca à aplicação; não injeta código em qualquer binário pronto.
 
 O módulo está no repositório do agente: `github.com/TelvynMonitoring/telvyn-agent/telvyn-go-agent`. Os SDKs são distribuídos junto do coletor; a plataforma permanece separada. Para build local, use o `replace` da fixture. Não há tag de release deste módulo ainda.
 

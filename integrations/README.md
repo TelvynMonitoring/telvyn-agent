@@ -38,4 +38,4 @@ only from the official repository/registry over HTTPS and verify its checksum.
 Package protocol versions 0.1.0 and 0.1.2 are included for deployed backend
 compatibility. Unknown package versions fail closed. Partial API permissions
 produce partial coverage; missing values are not replaced with zero. Resource
-and response-size limits remain explicit. No claim of complete Datadog parity.
+and response-size limits remain explicit. No claim of complete parity.

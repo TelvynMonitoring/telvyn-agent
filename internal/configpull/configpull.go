@@ -65,7 +65,7 @@ type Config struct {
 	ApplyAPMSampling       func(float64, time.Duration) error
 	ApplyAPMSamplingPolicy func(sampler.Policy) error
 	// ApplyAPMRemoteConfig receives the per service/env sample rates and tags set in
-	// the Telvyn UI (Datadog remote configuration).
+	// the Telvyn UI (remote configuration).
 	ApplyAPMRemoteConfig func([]sampler.ServiceRate, []processing.Rule) error
 	Endpoint             string        // base URL do servidor (ex: https://quarkus:8444)
 	CollectorID          string        // UUID do collector (vai como query param + cert OU)

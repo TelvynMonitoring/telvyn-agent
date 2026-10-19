@@ -14,7 +14,7 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * Detecção e bloqueio de ataques no Netty 4 (e no que roda direto sobre ele: Ratpack, Micronaut, Play com backend
- * Netty), como a instrumentação de Netty do Datadog. Quando o decodificador HTTP do servidor produz uma requisição:
+ * Netty), como a instrumentação de Netty. Quando o decodificador HTTP do servidor produz uma requisição:
  * IP, cabeçalhos, cookies, query e endereço; status quando a resposta é codificada. O bloqueio responde pelo canal,
  * fecha a conexão e a requisição não chega à aplicação. Canais do Vert.x e do Reactor Netty (Spring WebFlux) ficam
  * com a inspeção dos próprios frameworks, para não inspecionar duas vezes.

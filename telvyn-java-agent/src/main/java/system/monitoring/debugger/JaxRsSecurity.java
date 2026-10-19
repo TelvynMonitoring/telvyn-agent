@@ -12,7 +12,7 @@ import static net.bytebuddy.matcher.ElementMatchers.*;
 
 /**
  * Corpo e parâmetros de rota no JAX-RS (Jersey, RESTEasy e Quarkus REST), como as instrumentações de Jersey e
- * RESTEasy do Datadog. Corpo: o objeto lido pelo Jersey (fim do encadeamento de leitura) ou injetado pelo RESTEasy
+ * RESTEasy. Corpo: o objeto lido pelo Jersey (fim do encadeamento de leitura) ou injetado pelo RESTEasy
  * (se a leitura for assíncrona, o RESTEasy devolve um CompletionStage e o corpo não é inspecionado). Quarkus REST: antes de
  * chamar o recurso, com parâmetros de rota, formulário e corpo já lidos. O bloqueio sai como
  * {@code WebApplicationException} com a resposta de bloqueio: o próprio framework responde, sem erro.

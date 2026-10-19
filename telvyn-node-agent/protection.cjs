@@ -1,7 +1,7 @@
 'use strict';
-// Attack blocking set in the Telvyn UI (as Datadog App and API Protection): "allow blocking" switch, block response,
+// Attack blocking set in the Telvyn UI: "allow blocking" switch, block response,
 // IP/CIDR denylist and passlist (with expiry), and each rule's mode (monitoring, blocking, disabled). Blocking needs
-// attack detection on, as in Datadog.
+// attack detection on.
 const net = require('node:net');
 const { randomUUID, createHash } = require('node:crypto');
 
@@ -44,8 +44,8 @@ function update(protection, rules) {
   rebuild();
 }
 
-// Client IP as Datadog resolves it: the first public address in the usual proxy headers, else the connection address.
-// TELVYN_CLIENT_IP_HEADER (as DD_TRACE_CLIENT_IP_HEADER): only that header is trusted, the others are ignored —
+// Client IP: the first public address in the usual proxy headers, else the connection address.
+// TELVYN_CLIENT_IP_HEADER: only that header is trusted, the others are ignored —
 // for applications behind a known proxy, so a client cannot forge its address with another header.
 const TRUSTED = String(process.env.TELVYN_CLIENT_IP_HEADER || '').trim().toLowerCase();
 const HEADERS = TRUSTED ? [TRUSTED] : ['x-forwarded-for', 'x-real-ip', 'true-client-ip', 'x-client-ip', 'x-forwarded', 'forwarded-for', 'x-cluster-client-ip', 'fastly-client-ip', 'cf-connecting-ip', 'cf-connecting-ipv6'];
@@ -76,13 +76,13 @@ function clientIp(request) {
 const listed = (list, ip) => !!ip && list.check(ip, net.isIPv6(ip) ? 'ipv6' : 'ipv4');
 const denied = ip => listed(state.deny, ip) && !listed(state.pass, ip);
 const passed = ip => listed(state.pass, ip);
-// Same format as Datadog's anonymization: "anon_" + the first 128 bits of SHA-256, in hex.
+// Anonymization format: "anon_" + the first 128 bits of SHA-256, in hex.
 const anonymize = value => 'anon_' + createHash('sha256').update(String(value)).digest('hex').slice(0, 32);
 // Logged-in user blocked in the UI (entries expire at their own time).
 const userListed = id => { if (!state.users.has(id)) return false; const expires = state.users.get(id); return expires == null || expires > Date.now(); };
 // A user blocked from an anonymized event is listed by its hash: both forms match.
 const userBlocked = id => state.users.size > 0 && id != null && (userListed(id) || userListed(anonymize(id)));
-// Rule mode from the UI; without a choice a rule only monitors, as Datadog's default policy.
+// Rule mode from the UI; without a choice a rule only monitors by default.
 const ruleMode = rule => ['monitoring', 'blocking', 'disabled'].includes(state.rules[rule]) ? state.rules[rule] : 'monitoring';
 
 const TITLE = "You've been blocked";

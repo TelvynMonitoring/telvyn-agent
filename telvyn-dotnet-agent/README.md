@@ -15,7 +15,7 @@ export OTEL_LOGS_EXPORTER=none
 dotnet MinhaApi.dll
 ```
 
-Se já houver outras hosting startup assemblies, acrescente `;Telvyn.Agent` à lista, preservando-as. Aplicações que impedem hosting startup não são alteradas por inferência. Não carregue outro SDK/tracer para as mesmas bibliotecas. O pacote é ASP.NET Core/net8.0; não é um profiler CLR universal como a [integração ampla do DD](https://docs.datadoghq.com/tracing/trace_collection/dd_libraries/dotnet-core/).
+Se já houver outras hosting startup assemblies, acrescente `;Telvyn.Agent` à lista, preservando-as. Aplicações que impedem hosting startup não são alteradas por inferência. Não carregue outro SDK/tracer para as mesmas bibliotecas. O pacote é ASP.NET Core/net8.0; não é um profiler CLR universal.
 
 Logs de conclusão usam os IDs reais da Activity SERVER. Query é removida dos atributos de URL antes da exportação; corpo/cookies/headers de autenticação não são capturados. Logs de negócio não recebem injeção nesta unidade. `OTEL_SDK_DISABLED=true` impede a configuração do SDK e dos logs do pacote na próxima inicialização. Sem configuração de destino, o default explícito é o coletor HTTP local `localhost:4318`, nunca gRPC.
 

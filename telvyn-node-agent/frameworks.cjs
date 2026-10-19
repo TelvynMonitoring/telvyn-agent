@@ -1,10 +1,10 @@
 'use strict';
-// Route phase of attack detection (as Datadog): once the framework parsed the body and matched the route, the WAF
+// Route phase of attack detection: once the framework parsed the body and matched the route, the WAF
 // sees the body, path parameters and the logged-in user (req.user / request.user, as set by Passport and similar),
 // and a blocking match stops the request before the route handler runs.
 const path = require('node:path');
 
-// Logged-in user identifier, as Datadog's automatic user collection: the user's id.
+// Logged-in user identifier: the user's id.
 const userId = user => user == null ? undefined : typeof user === 'object' ? (user.id ?? user._id) : undefined;
 
 function patchLayer(Layer, method, security) {
@@ -55,7 +55,7 @@ function wrapFastify(factory, security) {
   return wrapped;
 }
 
-// Passport login (as Datadog: passport-local and passport-http Basic): the strategy's verify callback tells the login
+// Passport login (passport-local and passport-http Basic): the strategy's verify callback tells the login
 // tried and whether it succeeded. A blocked user's successful login is answered with the block response and the
 // strategy does not continue.
 function patchStrategy(Strategy, framework, security) {
@@ -86,7 +86,7 @@ function patchStrategy(Strategy, framework, security) {
   Strategy.prototype.authenticate = authenticate;
 }
 
-// multer (as Datadog: body blocking on Express needs body-parser or multer): multipart fields are parsed by the
+// multer (body blocking on Express needs body-parser or multer): multipart fields are parsed by the
 // route's own middleware, after the route phase; they are inspected once multer finishes.
 function patchMulter(multer, security) {
   if (typeof multer !== 'function' || multer.telvynSecurity) return;
@@ -110,8 +110,8 @@ function patchMulter(multer, security) {
   proto._makeMiddleware = makeMiddleware;
 }
 
-// Next.js App Router (as Datadog): the body is inspected when the route handler reads the incoming request with
-// text(), json() or formData(). Detection only, as Datadog: Next.js is blocked at request start (IP, user, rules on
+// Next.js App Router: the body is inspected when the route handler reads the incoming request with
+// text(), json() or formData(). Detection only: Next.js is blocked at request start (IP, user, rules on
 // headers, query, URI); failing the read would make Next.js log an error and record the request as a 500.
 function patchWebRequest(security) {
   const proto = globalThis.Request?.prototype;
@@ -138,7 +138,7 @@ function patchWebRequest(security) {
   }
 }
 
-// GraphQL arguments as Datadog's graphql.server.all_resolvers: { field: [ { argument: value } ] } for every field of
+// GraphQL arguments as graphql.server.all_resolvers: { field: [ { argument: value } ] } for every field of
 // the executed operation, with variables resolved.
 function resolverArguments(document, variables, operationName) {
   const out = {}, fragments = {};
@@ -186,7 +186,7 @@ function patchGraphql(graphqlFile, security) {
   execution.execute = execute;
 }
 
-// Apollo Server (as Datadog: ApolloServer.executeHTTPGraphQLRequest): a request blocked during execution is
+// Apollo Server (ApolloServer.executeHTTPGraphQLRequest): a request blocked during execution is
 // answered by Apollo itself with the block response.
 function patchApollo(exported, security) {
   const proto = exported?.ApolloServer?.prototype;

@@ -4,7 +4,6 @@ go 1.25.0
 
 require (
 	github.com/ClickHouse/ch-go v0.62.0
-	github.com/DataDog/sketches-go v1.4.8
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/cilium/ebpf v0.20.0
 	github.com/docker/docker v28.5.1+incompatible
@@ -18,6 +17,7 @@ require (
 	github.com/prometheus-community/pro-bing v0.8.0
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/shirou/gopsutil/v4 v4.26.4
+	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/stretchr/testify v1.12.1
 	github.com/vishvananda/netlink v1.3.1-0.20250221194427-0af32151e72b
 	github.com/vishvananda/netns v0.0.5
@@ -35,6 +35,7 @@ require (
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
 	gopkg.in/yaml.v3 v3.0.1
 	inet.af/netaddr v0.0.0-20230525184311-b8eac61e914a
+	k8s.io/cri-api v0.34.0
 	k8s.io/klog/v2 v2.130.1
 )
 
@@ -83,7 +84,6 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
-	github.com/sijms/go-ora/v2 v2.9.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
@@ -107,5 +107,4 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
-	k8s.io/cri-api v0.34.0 // indirect
 )

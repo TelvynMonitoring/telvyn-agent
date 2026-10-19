@@ -11,7 +11,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
-// Um pool por servidor MySQL/MariaDB, como o Datadog: o usuário de monitoramento costuma ser criado com
+// Um pool por servidor MySQL/MariaDB: o usuário de monitoramento costuma ser criado com
 // MAX_USER_CONNECTIONS 5, e cada database descoberto ganha suas próprias checagens (server, queries, catálogo,
 // diagnóstico). Com um pool por checagem, dois databases já abriam até 18 conexões. Todas as checagens do mesmo
 // servidor (host, porta, usuário e parâmetros) dividem mysqlServerMaxConns conexões; cada uma continua vendo o

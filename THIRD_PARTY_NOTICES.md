@@ -7,8 +7,9 @@ for license compliance and source attribution.
 
 ## DDSketch
 
-Telvyn Agent uses `github.com/DataDog/sketches-go`, distributed under the
-Apache License, Version 2.0. The dependency source is available at:
+Telvyn Agent includes a modified copy of `github.com/DataDog/sketches-go` v1.4.8
+in `internal/sketch` (import paths changed, generated `go_package` option removed),
+distributed under the Apache License, Version 2.0. The original source is available at:
 
 https://github.com/DataDog/sketches-go
 

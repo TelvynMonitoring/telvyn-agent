@@ -191,7 +191,7 @@ func buildPostgresQuerySnapshotSQL(capabilities, activityCapabilities postgresRe
 	if capabilities.hasColumn("rows") {
 		rowsExpression = "s.rows::bigint"
 	}
-	// pg_stat_statements tem uma linha por (usuário, banco, consulta), como o Datadog agrupa: o usuário entra
+	// pg_stat_statements tem uma linha por (usuário, banco, consulta): o usuário entra
 	// na identidade da linha para os contadores de um usuário não sobrescreverem os de outro.
 	userExpression, userJoin := "''::text", ""
 	if capabilities.hasColumn("userid") {

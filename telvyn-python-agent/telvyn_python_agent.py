@@ -82,7 +82,7 @@ class TelvynDistro(OpenTelemetryDistro):
         elif entry_point.name in ("fastapi", "starlette", "tornado"):
             kwargs["server_request_hook"] = request_hook
         if entry_point.name == "fastapi":
-            # Sem os spans internos de cada envio/recebimento ASGI ("http send"), que o Datadog não cria: eles viravam
+            # Sem os spans internos de cada envio/recebimento ASGI ("http send"), que não são criados: eles viravam
             # recursos próprios na tela e somavam chamadas que não existiram.
             kwargs["exclude_spans"] = ["receive", "send"]
         if entry_point.name == "starlette":

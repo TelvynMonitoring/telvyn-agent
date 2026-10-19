@@ -3,8 +3,8 @@ package concentrator
 import (
 	"testing"
 
-	"github.com/DataDog/sketches-go/ddsketch"
-	"github.com/DataDog/sketches-go/ddsketch/store"
+	"github.com/ispwatch/collector/internal/sketch"
+	"github.com/ispwatch/collector/internal/sketch/store"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 

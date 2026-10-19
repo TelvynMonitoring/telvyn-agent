@@ -20,7 +20,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Detecção de ataques como o Datadog App and API Protection: o conjunto recomendado de regras do Datadog
+ * Detecção de ataques: o conjunto recomendado de regras
  * (/telvyn/waf-rules.json) sobre toda requisição, num contexto de WAF por requisição alimentado por fases
  * (início, rota, corpo, resposta). Reporta a regra e onde ela encontrou o ataque (endereço e chave),
  * nunca o valor recebido.

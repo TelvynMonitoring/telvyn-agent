@@ -12,10 +12,10 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Bloqueio de ataques definido na tela do Telvyn (como o App and API Protection do Datadog): chave
+ * Bloqueio de ataques definido na tela do Telvyn: chave
  * geral "permitir bloqueio", resposta de bloqueio, listas de IPs/CIDR (bloqueio com prazo e
  * liberação) e o modo de cada regra (monitoring, blocking, disabled). O bloqueio exige a detecção de
- * ataques ligada, como no Datadog. Responde pelo objeto de resposta do servlet (javax ou jakarta).
+ * ataques ligada. Responde pelo objeto de resposta do servlet (javax ou jakarta).
  */
 public final class JavaProtection {
     record Range(byte[] network, int prefix, Long expiresAtMs) {}
@@ -124,7 +124,7 @@ public final class JavaProtection {
     /** Usuário bloqueado a partir de um evento anonimizado fica na lista pelo hash: as duas formas valem. */
     static boolean userBlocked(String user) { return user != null && !users.isEmpty() && (listed(user) || listed(UserActivity.anonymize(user))); }
     private static boolean listed(String user) { Long expires = users.get(user); return expires != null && expires > System.currentTimeMillis(); }
-    /** Modo da regra; sem escolha na tela, a regra só monitora (padrão do Datadog). */
+    /** Modo da regra; sem escolha na tela, a regra só monitora (padrão). */
     static String ruleMode(String rule) {
         String mode = rules.get(rule);
         return "blocking".equals(mode) || "disabled".equals(mode) ? mode : "monitoring";
@@ -132,7 +132,7 @@ public final class JavaProtection {
     static boolean anyBlocking() { return rules.containsValue("blocking"); }
 
     /**
-     * telvyn.client-ip-header / TELVYN_CLIENT_IP_HEADER (como o DD_TRACE_CLIENT_IP_HEADER): só esse cabeçalho é confiável e os
+     * telvyn.client-ip-header / TELVYN_CLIENT_IP_HEADER: só esse cabeçalho é confiável e os
      * demais são ignorados — para aplicações atrás de um proxy conhecido, sem que o cliente forje o endereço por outro cabeçalho.
      */
     private static final String[] HEADERS = trustedHeader() != null ? new String[]{trustedHeader()} : new String[]{"x-forwarded-for", "x-real-ip", "true-client-ip", "x-client-ip", "x-forwarded", "forwarded-for",
@@ -144,7 +144,7 @@ public final class JavaProtection {
         return value == null || value.isBlank() ? null : value.trim().toLowerCase(java.util.Locale.ROOT);
     }
 
-    /** IP de origem como o Datadog: o primeiro público nos cabeçalhos de proxy; senão o da conexão. */
+    /** IP de origem: o primeiro público nos cabeçalhos de proxy; senão o da conexão. */
     static String clientIp(Object request) {
         return clientIp(name -> {
             try { return call(request, "getHeader", new Class<?>[]{String.class}, name) instanceof String value ? value : null; }

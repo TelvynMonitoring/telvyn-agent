@@ -82,7 +82,7 @@ public final class TelvynDebuggerAgent {
         try { GraphqlJavaSecurity.install(inst); } catch(Throwable failure) { startupFailure("graphql-java security",failure); }
         try { GrpcSecurity.install(inst); } catch(Throwable failure) { startupFailure("gRPC security",failure); }
         try { AkkaHttpSecurity.install(inst); } catch(Throwable failure) { startupFailure("Akka/Pekko HTTP security",failure); }
-        // Exploit prevention instrumenta classes do JDK: só com a detecção de ataques ligada na aplicação, como o Datadog.
+        // Exploit prevention instrumenta classes do JDK: só com a detecção de ataques ligada na aplicação.
         if (Boolean.parseBoolean(System.getProperty("telvyn.security.enabled", System.getenv().getOrDefault("TELVYN_SECURITY_ENABLED", "false"))))
             try { JavaRasp.install(inst); } catch(Throwable failure) { startupFailure("Exploit prevention",failure); }
         // Regras do WAF carregadas na subida, fora das threads da aplicação: a primeira requisição não espera
@@ -204,7 +204,7 @@ public final class TelvynDebuggerAgent {
         } catch (Throwable t) {
             System.err.println("[telvyn-profiler] lock desligado (falha, app segue normal): " + t);
         }
-        // Class Load (as in Datadog): classes loaded, counted per method that caused the load.
+        // Class Load: classes loaded, counted per method that caused the load.
         try {
             if ("true".equalsIgnoreCase(firstNonBlank(System.getProperty("telvyn.profiling.classload.enabled"), System.getenv("TELVYN_PROFILING_CLASSLOAD_ENABLED"), "false")))
                 system.monitoring.debugger.profiler.JfrGenericProfiler.start("class_load", "jdk.ClassLoad",

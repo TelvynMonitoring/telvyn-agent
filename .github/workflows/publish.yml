@@ -51,7 +51,7 @@ jobs:
           if ! printf '%s' "$v" | grep -Eq '^[0-9A-Za-z._-]+$'; then
             echo "::error::versão '$v' inválida"; exit 1
           fi
-          # Tag de SÉRIE, no modelo do Datadog (`agent:7`): uma tag móvel que
+          # Tag de SÉRIE (`agent:7`): uma tag móvel que
           # anda dentro da faixa compatível, pra quem quer correção sem pular
           # de major sem querer. Em 0.x quem marca compatibilidade é o MINOR
           # (0.4.8 → série "0.4"), não o major.

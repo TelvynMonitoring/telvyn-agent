@@ -2,7 +2,7 @@ package system.monitoring.telvyn;
 
 /**
  * Eventos de usuário e bloqueio para logins que o agente não reconhece sozinho (como o EventTrackerV2 e o
- * {@code Blocking} do Datadog). Sem o agente Java do Telvyn os métodos não fazem nada.
+ * {@code Blocking}). Sem o agente Java do Telvyn os métodos não fazem nada.
  *
  * <p>Com o agente: o evento sai com o IP, o navegador e o trace da requisição em curso. Quando o usuário de
  * {@link #trackUserLoginSuccess} ou {@link #setUser} está bloqueado na tela, o agente já responde com a página de

@@ -30,8 +30,8 @@ type Sampler struct {
 	mode          string
 	targetTPS     float64
 	adaptive      *adaptiveState
-	// serviceRates are per service/env rates set by remote configuration (Datadog
-	// DD_TRACE_SAMPLE_RATE): they override the collector policy for that scope.
+	// serviceRates are per service/env rates set by remote configuration:
+	// they override the collector policy for that scope.
 	serviceRates map[string]float64
 }
 

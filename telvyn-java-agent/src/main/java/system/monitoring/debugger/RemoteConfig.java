@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Configuração remota feita na tela do Telvyn (como o "Configuration at Runtime" do Datadog):
+ * Configuração remota feita na tela do Telvyn:
  * perfis e segurança por serviço e ambiente, aplicados sem reiniciar. Consulta o coletor a cada
  * 30 s ({@code /v1/sdk/remote-config}). Opção ausente = vale a configuração local da aplicação.
  *
