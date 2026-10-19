@@ -24,6 +24,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ispwatch/collector/internal/k8sidentity"
 )
 
 // Pusher é o subconjunto do IngestExporter que usamos (POST Bearer pro gateway).
@@ -339,7 +341,7 @@ func (l *imageLister) List(ctx context.Context) ([]RunningImage, error) {
 	}
 	var out []RunningImage
 	for _, p := range list.Items {
-		svc := p.Metadata.Labels["tags.datadoghq.com/service"]
+		svc := k8sidentity.Lookup(p.Metadata.Labels, nil, k8sidentity.Service)
 		for _, c := range p.Status.ContainerStatuses {
 			ref := strings.TrimSpace(c.Image)
 			digest := extractDigest(c.ImageID)

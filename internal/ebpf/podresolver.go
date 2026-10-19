@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/ispwatch/collector/internal/ebpf/cgroup"
+	"github.com/ispwatch/collector/internal/k8sidentity"
 	"github.com/ispwatch/collector/internal/k8smeta"
 )
 
@@ -341,10 +342,10 @@ func (h *httpPodLister) List(ctx context.Context) (PodIndex, error) {
 		// o log com o mesmo service dos traces.
 		{
 			byNsPod[p.Metadata.Namespace+"/"+p.Metadata.Name] = PodSvcMeta{
-				Service: p.Metadata.Labels["tags.datadoghq.com/service"],
+				Service: k8sidentity.Lookup(p.Metadata.Labels, nil, k8sidentity.Service),
 				Labels:  p.Metadata.Labels,
-				Version: p.Metadata.Labels["tags.datadoghq.com/version"],
-				Env:     p.Metadata.Labels["tags.datadoghq.com/env"],
+				Version: k8sidentity.Lookup(p.Metadata.Labels, nil, k8sidentity.Version),
+				Env:     k8sidentity.Lookup(p.Metadata.Labels, nil, k8sidentity.Env),
 			}
 		}
 		for _, c := range p.Status.ContainerStatuses {

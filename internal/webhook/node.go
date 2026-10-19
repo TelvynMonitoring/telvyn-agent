@@ -3,10 +3,16 @@ package webhook
 import (
 	"fmt"
 	"strings"
+
+	"github.com/ispwatch/collector/internal/k8sidentity"
 )
 
+func podIdentity(pod podMeta, kind string) string {
+	return k8sidentity.Lookup(pod.Metadata.Labels, pod.Metadata.Annotations, kind)
+}
+
 func runtimeServiceName(pod podMeta, containerName string) string {
-	if service := pod.Metadata.Labels["tags.datadoghq.com/service"]; service != "" {
+	if service := podIdentity(pod, "service"); service != "" {
 		return service
 	}
 	if pod.serviceName != "" {
@@ -116,8 +122,8 @@ func runtimePatch(pod podMeta, selected, image, endpoint, language, optionsName,
 		attributes := []string{"k8s.pod.name=$(TELVYN_POD_NAME)", "k8s.namespace.name=$(TELVYN_POD_NAMESPACE)", "k8s.container.name=" + c.Name}
 		for _, tag := range []struct{ key, value string }{
 			{"k8s.cluster.name", pod.clusterName},
-			{"deployment.environment", pod.Metadata.Labels["tags.datadoghq.com/env"]},
-			{"service.version", pod.Metadata.Labels["tags.datadoghq.com/version"]},
+			{"deployment.environment", podIdentity(pod, "env")},
+			{"service.version", podIdentity(pod, "version")},
 		} {
 			if tag.value != "" && !strings.ContainsAny(tag.value, ",=\r\n") {
 				attributes = append(attributes, tag.key+"="+tag.value)

@@ -6,7 +6,7 @@ const os = require('node:os');
 // Findings that need no input (weak algorithms, cookie attributes) have their own rule set.
 const FLAW_RULES = new Set(['WEAK_HASH', 'WEAK_CIPHER', 'INSECURE_COOKIE', 'NO_HTTPONLY_COOKIE', 'NO_SAMESITE_COOKIE', 'WEAK_RANDOMNESS', 'HSTS_HEADER_MISSING', 'XCONTENTTYPE_HEADER_MISSING', 'HARDCODED_SECRET', 'HARDCODED_PASSWORD']);
 const WAF_RULES = require('./waf-rules.json');
-const RULES_VERSION = 'datadog-' + WAF_RULES.metadata.rules_version;
+const RULES_VERSION = 'waf-' + WAF_RULES.metadata.rules_version;
 const BUDGET_US = 10000;
 
 // Attack detection as Datadog App and API Protection: the recommended ruleset over every request — headers, cookies,
