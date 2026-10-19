@@ -43,7 +43,7 @@ public final class WafInspector {
         } catch (Exception failure) { throw new IllegalStateException("WAF rules unavailable", failure); }
         RULES = rules;
         @SuppressWarnings("unchecked") var metadata = (Map<String, Object>) rules.get("metadata");
-        RULES_VERSION = "datadog-" + metadata.get("rules_version");
+        RULES_VERSION = "waf-" + metadata.get("rules_version");
     }
 
     private WafInspector() {}

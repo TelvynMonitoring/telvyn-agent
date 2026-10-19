@@ -203,7 +203,12 @@ func (s *Server) decide(req *AdmissionRequest) *AdmissionResponse {
 		return out
 	}
 
-	patch := buildPatch(pod, javaContainers, s.cfg.AgentImage, s.cfg.JavaAgentImage, s.cfg.OtlpEndpointEnv, s.cfg.OtlpProtocol, workload)
+	// Mesmo nome de serviço dos outros runtimes: o rótulo do pod vence o nome do workload.
+	serviceName := workload
+	if service := podIdentity(pod, "service"); service != "" {
+		serviceName = service
+	}
+	patch := buildPatch(pod, javaContainers, s.cfg.AgentImage, s.cfg.JavaAgentImage, s.cfg.OtlpEndpointEnv, s.cfg.OtlpProtocol, serviceName)
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
 		s.cfg.Log.Warn("webhook patch marshal failed", "err", err)
@@ -307,7 +312,7 @@ func podDisplayName(p podMeta) string {
 //  4. adiciona env vars OTel + JAVA_TOOL_OPTIONS nos containers Java
 //     (sem sobrescrever se cliente já tem JAVA_TOOL_OPTIONS — append)
 //  5. com javaAgentImage, faz o mesmo com o agente Java Telvyn do bundle
-//     (/opt/telvyn/java), como o Datadog injeta o dd-java-agent
+//     (/opt/telvyn/java)
 func buildPatch(pod podMeta, javaIdx []int, agentImage, javaAgentImage, otlpEnvValue, otlpProtocol, serviceName string) []patchOp {
 	ops := []patchOp{}
 
@@ -397,8 +402,8 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, javaAgentImage, otlpEnvV
 		attributes := []string{"k8s.namespace.name=$(POD_NAMESPACE)", "k8s.pod.name=$(POD_NAME)", "k8s.container.name=" + c.Name}
 		for _, tag := range []struct{ key, value string }{
 			{"k8s.cluster.name", pod.clusterName},
-			{"deployment.environment", pod.Metadata.Labels["tags.datadoghq.com/env"]},
-			{"service.version", pod.Metadata.Labels["tags.datadoghq.com/version"]},
+			{"deployment.environment", podIdentity(pod, "env")},
+			{"service.version", podIdentity(pod, "version")},
 		} {
 			if tag.value != "" && !strings.ContainsAny(tag.value, ",=\r\n") {
 				attributes = append(attributes, tag.key+"="+tag.value)
