@@ -31,8 +31,54 @@ public final class WafInspector {
     /** Motor do WAF (no class loader isolado, ver WafEngines). */
     private static volatile Object handle;
     private static volatile String engine;
+    static final int DEFAULT_TIMEOUT_US = 10_000;
     /** Profundidade, elementos, tamanho de texto, tempo do WAF e tempo total (µs). */
-    private static final int[] LIMITS = {20, 256, 4096, 10000, 10000};
+    private static final int[] LIMITS = limits(wafTimeoutUs());
+    private static final long TIMEOUT_REPORT_INTERVAL_MS = 60_000;
+    private static final java.util.concurrent.atomic.AtomicLong lastTimeoutReport = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong timeoutsSinceReport = new java.util.concurrent.atomic.AtomicLong();
+
+    static int[] limits(int timeoutUs) { return new int[]{20, 256, 4096, timeoutUs, timeoutUs}; }
+
+    /**
+     * Tempo máximo do WAF por avaliação (µs): -Dtelvyn.security.waf-timeout-us ou TELVYN_SECURITY_WAF_TIMEOUT_US,
+     * entre 1 ms e 1 s. Processo com pouca CPU estoura o padrão de 10 ms até em requisição vazia.
+     */
+    static int wafTimeoutUs() {
+        String value = System.getProperty("telvyn.security.waf-timeout-us");
+        if (value == null) value = System.getenv("TELVYN_SECURITY_WAF_TIMEOUT_US");
+        return parseTimeoutUs(value);
+    }
+
+    static int parseTimeoutUs(String value) {
+        if (value == null || value.isBlank()) return DEFAULT_TIMEOUT_US;
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            if (parsed >= 1_000 && parsed <= 1_000_000) return parsed;
+        } catch (NumberFormatException ignored) {
+            // cai no aviso abaixo
+        }
+        System.err.println("[telvyn] invalid telvyn.security.waf-timeout-us (" + value
+                + "); expected 1000 to 1000000 microseconds. Using " + DEFAULT_TIMEOUT_US + ".");
+        return DEFAULT_TIMEOUT_US;
+    }
+
+    /**
+     * Uma requisição que estoura o tempo não é inspecionada por inteiro. Quando muitas estouram, relatar uma a uma
+     * enche o painel; deixa passar um relato por minuto e diz no log o que fazer.
+     */
+    static boolean shouldReportTimeout(long nowMs) {
+        long skipped = timeoutsSinceReport.incrementAndGet();
+        long last = lastTimeoutReport.get();
+        if (nowMs - last < TIMEOUT_REPORT_INTERVAL_MS || !lastTimeoutReport.compareAndSet(last, nowMs)) return false;
+        timeoutsSinceReport.addAndGet(-skipped);
+        if (skipped > 1) {
+            System.err.println("[telvyn] the WAF exceeded its analysis time limit (" + LIMITS[3] + " microseconds) on " + skipped
+                    + " requests in the last minute; they were not fully inspected. The process may be short of CPU:"
+                    + " give it more, or raise telvyn.security.waf-timeout-us.");
+        }
+        return true;
+    }
 
     static {
         Map<String, Object> rules;

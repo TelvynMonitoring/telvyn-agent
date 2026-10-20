@@ -7,7 +7,33 @@ const os = require('node:os');
 const FLAW_RULES = new Set(['WEAK_HASH', 'WEAK_CIPHER', 'INSECURE_COOKIE', 'NO_HTTPONLY_COOKIE', 'NO_SAMESITE_COOKIE', 'WEAK_RANDOMNESS', 'HSTS_HEADER_MISSING', 'XCONTENTTYPE_HEADER_MISSING', 'HARDCODED_SECRET', 'HARDCODED_PASSWORD']);
 const WAF_RULES = require('./waf-rules.json');
 const RULES_VERSION = 'waf-' + WAF_RULES.metadata.rules_version;
-const BUDGET_US = 10000;
+const DEFAULT_BUDGET_US = 10000;
+const TIMEOUT_REPORT_INTERVAL_MS = 60000;
+
+// Tempo máximo do WAF por avaliação (µs), de 1 ms a 1 s. Processo com pouca CPU estoura os 10 ms até numa
+// requisição vazia, e a requisição passa sem inspeção completa.
+function parseBudget(value) {
+  if (value === undefined || String(value).trim() === '') return DEFAULT_BUDGET_US;
+  const parsed = Number(String(value).trim());
+  if (Number.isInteger(parsed) && parsed >= 1000 && parsed <= 1000000) return parsed;
+  console.warn(`[telvyn] invalid TELVYN_SECURITY_WAF_TIMEOUT_US (${value}); expected 1000 to 1000000 microseconds. Using ${DEFAULT_BUDGET_US}.`);
+  return DEFAULT_BUDGET_US;
+}
+const BUDGET_US = parseBudget(process.env.TELVYN_SECURITY_WAF_TIMEOUT_US);
+
+// Relatar cada timeout enche o painel quando muitos estouram: um relato por minuto, e o log diz o que fazer.
+let lastTimeoutReport = 0;
+let timeoutsSinceReport = 0;
+function shouldReportTimeout(now) {
+  timeoutsSinceReport += 1;
+  if (now - lastTimeoutReport < TIMEOUT_REPORT_INTERVAL_MS) return false;
+  if (timeoutsSinceReport > 1) {
+    console.warn(`[telvyn] the WAF exceeded its analysis time limit (${BUDGET_US} microseconds) on ${timeoutsSinceReport} requests in the last minute; they were not fully inspected. The process may be short of CPU: give it more, or raise TELVYN_SECURITY_WAF_TIMEOUT_US.`);
+  }
+  lastTimeoutReport = now;
+  timeoutsSinceReport = 0;
+  return true;
+}
 
 // Attack detection and blocking: the recommended ruleset over every request — headers, cookies,
 // query, URI and client IP at request start; body, path parameters and user once the framework parsed them; response
@@ -83,7 +109,7 @@ function startSecurity() {
     try { result = state.context.run(ephemeral ? {ephemeral: data} : {persistent: data}, BUDGET_US); }
     catch (_) { report('error', undefined, Number((process.hrtime.bigint() - started) / 1000n), span, undefined, state.details); return false; }
     const elapsed = Number((process.hrtime.bigint() - started) / 1000n);
-    if (result.timeout && !state.timeoutReported) { state.timeoutReported = true; report('timeout', undefined, elapsed, span, undefined, state.details); }
+    if (result.timeout && !state.timeoutReported) { state.timeoutReported = true; if (shouldReportTimeout(Date.now())) report('timeout', undefined, elapsed, span, undefined, state.details); }
     state.derivatives = result.derivatives ?? result.attributes;
     if (result.errorCode) { report('error', undefined, elapsed, span, undefined, state.details); return false; }
     const matches = (result.events || []).filter(event => event.rule?.id && !state.reported.has(event.rule.id) && protection.ruleMode(event.rule.id) !== 'disabled');
