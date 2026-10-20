@@ -11,9 +11,15 @@ import (
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 
+// O resumo por digest não guarda o usuário: as consultas de monitoramento saem do ranking pelo formato que só o
+// agente usa (dicionários do servidor, SHOW, USE, variáveis e versão). Consultas da aplicação a esses
+// dicionários também ficam de fora — são introspecção, não carga.
 const sqlMySQLQueryDigests = `SELECT DIGEST, DIGEST_TEXT, COUNT_STAR, SUM_TIMER_WAIT, SUM_ROWS_SENT
 FROM performance_schema.events_statements_summary_by_digest
 WHERE SCHEMA_NAME = DATABASE() AND DIGEST IS NOT NULL AND COUNT_STAR > 0
+AND DIGEST_TEXT NOT LIKE '%%performance_schema%%' AND DIGEST_TEXT NOT LIKE '%%information_schema%%'
+AND DIGEST_TEXT NOT LIKE 'SHOW %%' AND DIGEST_TEXT NOT LIKE 'USE %%' AND DIGEST_TEXT NOT LIKE 'SELECT @@%%'
+AND DIGEST_TEXT NOT LIKE 'SELECT _VERSION_ ( )%%' AND DIGEST_TEXT NOT LIKE 'SELECT VERSION ( )%%'
 ORDER BY SUM_TIMER_WAIT DESC LIMIT %d`
 
 // events_statements_current muda enquanto é lido: uma linha que passou por DIGEST IS NOT NULL pode chegar com o
@@ -26,6 +32,7 @@ FROM performance_schema.events_statements_current e
 JOIN performance_schema.threads t ON t.THREAD_ID=e.THREAD_ID
 WHERE e.CURRENT_SCHEMA=DATABASE() AND e.DIGEST IS NOT NULL AND e.END_EVENT_ID IS NULL
 AND t.PROCESSLIST_ID <> CONNECTION_ID()
+AND COALESCE(t.PROCESSLIST_USER,'') <> SUBSTRING_INDEX(CURRENT_USER(),'@',1)
 ORDER BY e.TIMER_WAIT DESC LIMIT %d`
 
 type mysqlQueries struct {

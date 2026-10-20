@@ -193,9 +193,11 @@ func buildPostgresQuerySnapshotSQL(capabilities, activityCapabilities postgresRe
 	}
 	// pg_stat_statements tem uma linha por (usuário, banco, consulta): o usuário entra
 	// na identidade da linha para os contadores de um usuário não sobrescreverem os de outro.
-	userExpression, userJoin := "''::text", ""
+	userExpression, userJoin, selfFilter := "''::text", "", ""
 	if capabilities.hasColumn("userid") {
 		userExpression, userJoin = "COALESCE(r.rolname::text, '')", "\n      LEFT JOIN pg_roles r ON r.oid = s.userid"
+		// As consultas do próprio usuário de monitoramento não entram no ranking do banco.
+		selfFilter = "\n       AND s.userid <> (SELECT oid FROM pg_roles WHERE rolname = current_user)"
 	}
 
 	statsLimit = boundedInt(statsLimit, 1, postgresQueryStatsLimit, postgresQueryStatsLimit)
@@ -211,7 +213,7 @@ func buildPostgresQuerySnapshotSQL(capabilities, activityCapabilities postgresRe
       FROM %s s
       JOIN pg_database d ON d.oid = s.dbid%s
      WHERE d.datname = current_database()
-       AND s.calls > 0
+       AND s.calls > 0%s
      ORDER BY total_ms DESC
      LIMIT %d
 	), %s
@@ -225,6 +227,7 @@ SELECT json_build_object(
 		rowsExpression,
 		capabilities.qualifiedName,
 		userJoin,
+		selfFilter,
 		statsLimit,
 		sampleCTE,
 	), nil
@@ -253,10 +256,14 @@ func postgresQuerySamplesCTE(capabilities postgresRelationCapabilities, sampleLi
 		return fallback
 	}
 	stateFilter := ""
+	if capabilities.hasColumn("application_name") {
+		// As conexões do agente (application_name definido no pool) não são amostras do banco.
+		stateFilter = " AND COALESCE(a.application_name, '') <> 'telvyn-agent'"
+	}
 	if capabilities.hasColumn("state") {
-		stateFilter = " AND COALESCE(a.state, '') <> 'idle'"
+		stateFilter += " AND COALESCE(a.state, '') <> 'idle'"
 	} else if queryColumn == "current_query" {
-		stateFilter = " AND a.current_query <> '<IDLE>'"
+		stateFilter += " AND a.current_query <> '<IDLE>'"
 	}
 	duration := "0::float8"
 	order := ""
