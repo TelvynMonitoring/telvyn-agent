@@ -62,12 +62,15 @@ type pgxPool interface {
 // pra defaultPgxPoolFactory (pgxpool.NewWithConfig). Em test, pra stub.
 type pgxPoolFactory func(ctx context.Context, dsn string) (pgxPool, error)
 
-// defaultPgxPoolFactory cria um pool real via pgxpool.NewWithConfig.
-// Aplica MaxConns=2, MinConns=0. O Ping é responsabilidade do caller
+// defaultPgxPoolFactory entrega a parte da checagem no pool do database
+// (MaxConns=2, MinConns=0, compartilhado por DSN). O Ping é responsabilidade do caller
 // (newPostgresServerCheckWithFactory) — isso permite que stub factories
 // retornem um pool "pronto" sem precisar simular Ping internamente, e
 // move o "fechar em fail" para um único site (Pitfall 5).
-var defaultPgxPoolFactory pgxPoolFactory = func(ctx context.Context, dsn string) (pgxPool, error) {
+var defaultPgxPoolFactory pgxPoolFactory = sharedPgxPool
+
+// newPgxPool cria um pool próprio; os checks recebem uma parte de um pool compartilhado (postgres_pool.go).
+func newPgxPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	poolCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("DSN inválido: %w", err)
@@ -95,21 +98,8 @@ var defaultPgxPoolFactory pgxPoolFactory = func(ctx context.Context, dsn string)
 	if err != nil {
 		return nil, fmt.Errorf("pool: %w", err)
 	}
-	return &realPgxPool{p: pool}, nil
+	return pool, nil
 }
-
-// realPgxPool wrap *pgxpool.Pool pra casar com a interface pgxPool.
-// (Pool.QueryRow já retorna pgx.Row e Pool.Close já é void — só satisfaz.)
-type realPgxPool struct{ p *pgxpool.Pool }
-
-func (r *realPgxPool) Ping(ctx context.Context) error { return r.p.Ping(ctx) }
-func (r *realPgxPool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	return r.p.QueryRow(ctx, sql, args...)
-}
-func (r *realPgxPool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	return r.p.BeginTx(ctx, options)
-}
-func (r *realPgxPool) Close() { r.p.Close() }
 
 // postgresServer é a implementação concreta de Check para "postgres.server".
 type postgresServer struct {
