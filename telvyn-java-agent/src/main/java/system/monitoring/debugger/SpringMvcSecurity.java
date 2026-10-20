@@ -159,8 +159,10 @@ public final class SpringMvcSecurity {
     /** blockable=false: só detecta (pontos sem bloqueio, como o graphql-java e o gRPC). */
     static boolean decide(WafInspector.State state,WafInspector.Evaluation evaluation,LocalAttackReporter reporter,boolean blockable){
         if(!"match".equals(evaluation.outcome())){
-            if(("timeout".equals(evaluation.outcome())&&!state.timeoutReported)||"error".equals(evaluation.outcome())){
-                state.timeoutReported|="timeout".equals(evaluation.outcome());
+            boolean timeout="timeout".equals(evaluation.outcome());
+            boolean report=timeout?!state.timeoutReported:"error".equals(evaluation.outcome());
+            if(timeout&&report){state.timeoutReported=true;report=WafInspector.shouldReportTimeout(System.currentTimeMillis());}
+            if(report){
                 reporter.reportWaf(evaluation.outcome(),null,null,evaluation.elapsedUs(),WafInspector.engineVersion(),state.ip,state.method,state.path,state.userAgent,state.user,null,state.trace[0],state.trace[1]);
             }
             return false;
