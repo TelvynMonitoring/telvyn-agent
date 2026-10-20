@@ -137,16 +137,22 @@ public final class SpringMvcSecurity {
     private static Object attribute(Object request,String name){try{return request.getClass().getMethod("getAttribute",String.class).invoke(request,name);}catch(ReflectiveOperationException|RuntimeException unavailable){return null;}}
     private static void attribute(Object request,String name,Object value){try{request.getClass().getMethod("setAttribute",String.class,Object.class).invoke(request,name,value);}catch(ReflectiveOperationException|RuntimeException unavailable){ /* sem estado: só o início é inspecionado */ }}
     /** Usuário logado no Java: Spring Security (exceto anônimo); senão o principal do servlet. */
+    /** Class loaders onde o Spring Security não existe: sem isto, toda requisição repetia a busca e gerava 4 ClassNotFoundException. */
+    private static final java.util.Set<ClassLoader> WITHOUT_SPRING_SECURITY=java.util.Collections.newSetFromMap(java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>()));
     static String loggedUser(Object request){
-        try{
-            var holder=Class.forName("org.springframework.security.core.context.SecurityContextHolder",false,Thread.currentThread().getContextClassLoader());
-            Object context=holder.getMethod("getContext").invoke(null);
-            Object auth=context==null?null:context.getClass().getMethod("getAuthentication").invoke(context);
-            if(auth!=null&&!auth.getClass().getName().endsWith("AnonymousAuthenticationToken")&&Boolean.TRUE.equals(auth.getClass().getMethod("isAuthenticated").invoke(auth))){
-                Object name=auth.getClass().getMethod("getName").invoke(auth);
-                if(name instanceof String value&&!value.isBlank())return value;
-            }
-        }catch(ReflectiveOperationException|RuntimeException|LinkageError unavailable){ /* sem Spring Security */ }
+        var loader=Thread.currentThread().getContextClassLoader();
+        if(!WITHOUT_SPRING_SECURITY.contains(loader)){
+            try{
+                var holder=Class.forName("org.springframework.security.core.context.SecurityContextHolder",false,loader);
+                Object context=holder.getMethod("getContext").invoke(null);
+                Object auth=context==null?null:context.getClass().getMethod("getAuthentication").invoke(context);
+                if(auth!=null&&!auth.getClass().getName().endsWith("AnonymousAuthenticationToken")&&Boolean.TRUE.equals(auth.getClass().getMethod("isAuthenticated").invoke(auth))){
+                    Object name=auth.getClass().getMethod("getName").invoke(auth);
+                    if(name instanceof String value&&!value.isBlank())return value;
+                }
+            }catch(ClassNotFoundException absent){ WITHOUT_SPRING_SECURITY.add(loader);
+            }catch(ReflectiveOperationException|RuntimeException|LinkageError unavailable){ /* Spring Security presente mas sem contexto */ }
+        }
         try{
             Object principal=request.getClass().getMethod("getUserPrincipal").invoke(request);
             Object name=principal==null?null:principal.getClass().getMethod("getName").invoke(principal);
