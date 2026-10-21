@@ -49,8 +49,21 @@ public final class WafEngine {
         } catch (TimeoutWafException timeout) {
             return new Object[]{"timeout", null};
         } catch (Exception | LinkageError failure) {
+            logFailure(failure);
             return new Object[]{"error", null};
         }
+    }
+
+    /** Uma linha por tipo de falha do motor e no máximo uma por minuto: o resultado "error" não diz o motivo. */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> LOGGED = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static void logFailure(Throwable failure) {
+        String type = failure.getClass().getName();
+        long now = System.currentTimeMillis();
+        Long last = LOGGED.get(type);
+        if (last != null && now - last < 60_000) return;
+        LOGGED.put(type, now);
+        System.err.println("[telvyn] WAF analysis failed: " + type + (failure.getMessage() == null ? "" : " (" + failure.getMessage() + ")"));
     }
 
     public static void close(Object resource) throws Exception { ((AutoCloseable) resource).close(); }
