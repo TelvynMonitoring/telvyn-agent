@@ -10,9 +10,24 @@ public final class ProfileEndpointContext {
 
     /** OpenTelemetry API type: the application's own, or the copy the OpenTelemetry Java agent relocates. */
     static Class<?> api(String suffix, ClassLoader loader) throws ClassNotFoundException {
-        try { return Class.forName("io.opentelemetry." + suffix, false, loader); }
-        catch (ClassNotFoundException absent) { return Class.forName("io.opentelemetry.javaagent.shaded.io.opentelemetry." + suffix, false, loader); }
+        // Com o agente OpenTelemetry o nome sem relocação nunca existe; tentá-lo primeiro a cada span gerava 2 a 4
+        // ClassNotFoundException por chamada. Guarda-se o prefixo que funcionou em cada class loader.
+        String known = PREFIX.get(loader);
+        if (known != null) return Class.forName(known + suffix, false, loader);
+        try {
+            Class<?> found = Class.forName(APP_PREFIX + suffix, false, loader);
+            PREFIX.put(loader, APP_PREFIX);
+            return found;
+        } catch (ClassNotFoundException absent) {
+            Class<?> found = Class.forName(SHADED_PREFIX + suffix, false, loader);
+            PREFIX.put(loader, SHADED_PREFIX);
+            return found;
+        }
     }
+
+    private static final String APP_PREFIX = "io.opentelemetry.";
+    private static final String SHADED_PREFIX = "io.opentelemetry.javaagent.shaded.io.opentelemetry.";
+    private static final java.util.Map<ClassLoader, String> PREFIX = java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
 
     public static void observe(Object span) {
         if (span == null) return;
