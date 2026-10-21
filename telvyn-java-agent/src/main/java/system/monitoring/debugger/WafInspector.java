@@ -180,6 +180,9 @@ public final class WafInspector {
             if (attributes != null) state.derivatives = attributes;
             if ("ok".equals(result[0])) return new Evaluation("no_match", List.of(), elapsed);
             if ("timeout".equals(result[0])) return new Evaluation("timeout", List.of(), elapsed);
+            // A extração de esquema da API Security (waf.context.processor) volta como "match" sem dados de regra;
+            // ler esse null como JSON virava um "erro" falso a cada amostra (30 s por rota). O esquema já está em attributes.
+            if ("match".equals(result[0]) && result[1] == null) return new Evaluation("no_match", List.of(), elapsed);
             if (!"match".equals(result[0])) return new Evaluation("error", List.of(), elapsed);
             List<Match> matches = new ArrayList<>();
             // Os dados de match trazem o valor recebido: só a regra, o endereço e a chave saem daqui.
