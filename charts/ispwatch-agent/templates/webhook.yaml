@@ -6,7 +6,7 @@
   Mutating Webhook stack (auto-injeção do -javaagent por admission controller
   controller):
    - TLS gerado pelo Helm e renovado em upgrades; cert-manager é opcional.
-   - Deployment: 1 réplica do agent rodando --webhook (certless/Bearer).
+   - Deployment: 2 réplicas (webhook.replicas) do agent rodando --webhook (certless/Bearer).
    - Service: ClusterIP, porta 443 → 8443.
    - MutatingWebhookConfiguration: Pod CREATE → /mutate; failurePolicy Ignore
      (se o webhook cair, pods sobem normal — tracing é nice-to-have).
@@ -58,7 +58,14 @@ metadata:
     app.kubernetes.io/name: ispwatch-agent
     app.kubernetes.io/component: webhook
 spec:
-  replicas: 1
+  # 2 réplicas + maxUnavailable 0: reiniciar ou atualizar o webhook não deixa janela em que
+  # pods novos sobem SEM o agente (failurePolicy Ignore não avisa quando isso acontece).
+  replicas: {{ .Values.webhook.replicas | default 2 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: ispwatch-agent
@@ -124,6 +131,20 @@ spec:
         - name: tls
           secret:
             secretName: {{ include "ispwatch-agent.fullname" . }}-webhook-tls
+{{- if gt (int (.Values.webhook.replicas | default 2)) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ispwatch-agent.fullname" . }}-webhook
+  namespace: {{ .Release.Namespace }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ispwatch-agent
+      app.kubernetes.io/component: webhook
+{{- end }}
 ---
 apiVersion: v1
 kind: Service

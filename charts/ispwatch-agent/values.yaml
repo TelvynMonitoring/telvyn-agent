@@ -114,6 +114,9 @@ profiling:
 # explicitamente. Usa a MESMA imagem do agent rodando com --webhook flag.
 webhook:
   enabled: false
+  # Réplicas do webhook de injeção. Com 1, reiniciar ou atualizar o webhook abre uma janela em que
+  # pods novos sobem sem o agente (failurePolicy Ignore não avisa). Com 2+, há também PodDisruptionBudget.
+  replicas: 2
   # Helm creates and renews TLS on upgrades; cert-manager remains available
   # for installations that already manage automatic certificate renewal.
   certificateProvider: helm
