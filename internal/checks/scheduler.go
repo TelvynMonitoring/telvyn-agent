@@ -17,7 +17,6 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ispwatch/collector/internal/inventory"
@@ -27,8 +26,8 @@ import (
 )
 
 // circuitBreakThreshold is the number of consecutive errors before a check
-// is circuit-broken (Run() calls are skipped until a successful run resets
-// the counter).
+// is circuit-broken. While broken, runs are skipped except one probe per cooldown
+// (see circuitBreaker); a successful probe resets the counter.
 const circuitBreakThreshold = int32(5)
 
 const (
@@ -535,7 +534,7 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 		defer func() { <-done }()
 	}
 
-	var consecutiveErrors atomic.Int32
+	breaker := newCircuitBreaker(circuitBreakThreshold, interval)
 	runTimeout := r.runTimeout(interval)
 
 	// Seleciona o semáforo de worker pool de acordo com o kind.
@@ -572,7 +571,7 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 	}
 
 	runOnce := func() {
-		if consecutiveErrors.Load() >= circuitBreakThreshold {
+		if !breaker.allow(time.Now()) {
 			clog.Debug("circuit-break active, skipping tick")
 			return
 		}
@@ -633,7 +632,7 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			if failure, ok := any(c).(ExplainFailureProvider); ok {
 				r.pushExplain(c, failure.ExplainFailure(err))
 			}
-			n := consecutiveErrors.Add(1)
+			n := breaker.failure(time.Now())
 			clog.Warn("check run error", "err", err, "consecutive", n, "run_timeout", runTimeout.String())
 			r.emitCheckError(c)
 			reportar(false, err.Error())
@@ -641,7 +640,7 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			return
 		}
 		if timedOut {
-			n := consecutiveErrors.Add(1)
+			n := breaker.failure(time.Now())
 			clog.Warn("check run exceeded timeout", "consecutive", n, "run_timeout", runTimeout.String())
 			r.emitCheckError(c)
 			reportar(false, "sem resposta em "+runTimeout.String())
@@ -650,7 +649,9 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			))
 			return
 		}
-		consecutiveErrors.Store(0)
+		if breaker.success() {
+			clog.Info("circuit-break closed: check recovered")
+		}
 		reportar(true, "")
 		r.reportExecution(databaseExecutionReport(c, true, false, "", duration))
 		if queryStats != nil {
