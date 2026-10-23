@@ -96,6 +96,11 @@ public final class SpringMvcSecurity {
         }
         routes=Set.copyOf(configured);
         boolean enabled=Boolean.parseBoolean(setting("enabled","false"));
+        // The remote configuration polls from the agent start and may already have decided before the first request
+        // runs this method; the screen's choice wins over the local default, otherwise it is overwritten here and,
+        // as its revision does not change, never applied again.
+        Boolean remote=RemoteConfig.security("attack");
+        if(remote!=null)enabled=remote;
         if(enabled)startAttack();
         SecuritySensorState.attack(enabled);
         if(Boolean.getBoolean("telvyn.iast.enabled")){
