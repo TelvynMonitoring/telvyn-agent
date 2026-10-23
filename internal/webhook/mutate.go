@@ -420,7 +420,8 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, javaAgentImage, otlpEnvV
 			{Name: "OTEL_SERVICE_NAME", Value: serviceName},
 			{Name: "OTEL_RESOURCE_ATTRIBUTES", Value: strings.Join(attributes, ",")},
 			{Name: "OTEL_LOGS_EXPORTER", Value: "none"},
-			{Name: "OTEL_METRICS_EXPORTER", Value: "none"},
+			// Java exports its JVM runtime metrics (heap, GC, threads, CPU) over OTLP: the Runtime (JVM) panel reads them.
+			{Name: "OTEL_METRICS_EXPORTER", Value: "otlp"},
 			{Name: "OTEL_TRACES_EXPORTER", Value: "otlp"},
 		}
 
