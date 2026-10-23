@@ -6,7 +6,7 @@
 //   - postgres.slow_queries            — active queries com query_start > 1s atrás
 //   - postgres.replication_lag_seconds — NOW() - pg_last_xact_replay_timestamp()
 //   - postgres.wal_lag_bytes           — pg_wal_lsn_diff(receive_lsn, replay_lsn)
-//   - postgres.vacuum_stale_tables     — tabelas sem autovacuum há 24h+
+//   - postgres.vacuum_stale_tables     — tabelas acima do gatilho do autovacuum sem vacuum há 24h+
 //   - postgres.total_connections       — todas as conexões do database atual
 //   - postgres.max_connections         — pg_settings max_connections (saturação)
 //   - postgres.cache_hit_ratio         — blks_hit / (blks_hit + blks_read), 0..1
@@ -128,8 +128,14 @@ const (
 	sqlWalLagBytes = `SELECT ` +
 		`COALESCE(pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()), 0)::BIGINT`
 
+	// Tables that crossed the autovacuum trigger (threshold + scale factor * live rows) and were not vacuumed in 24h,
+	// by autovacuum or by hand. A table below the trigger is correctly left alone, so it is not counted: counting
+	// every table without a recent autovacuum flags any quiet database forever.
 	sqlVacuumStaleTables = `SELECT count(*)::BIGINT FROM pg_stat_user_tables ` +
-		`WHERE last_autovacuum < NOW() - INTERVAL '24 hours' OR last_autovacuum IS NULL`
+		`WHERE n_dead_tup > current_setting('autovacuum_vacuum_threshold')::BIGINT ` +
+		`+ current_setting('autovacuum_vacuum_scale_factor')::FLOAT8 * n_live_tup ` +
+		`AND (GREATEST(last_vacuum, last_autovacuum) IS NULL ` +
+		`OR GREATEST(last_vacuum, last_autovacuum) < NOW() - INTERVAL '24 hours')`
 
 	sqlTotalConnections = `SELECT count(*)::BIGINT FROM pg_stat_activity ` +
 		`WHERE datname = current_database()`
