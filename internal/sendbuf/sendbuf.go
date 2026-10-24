@@ -75,6 +75,12 @@ type Queue struct {
 	// so a process restart during the request cannot lose them.
 	unflushedOffers int
 	db              *bolt.DB
+
+	// dmu protege delivery e lastStats separado de mu: FlushBatch segura mu durante o
+	// POST, e quem só observa a fila não pode esperar por ele.
+	dmu       sync.Mutex
+	delivery  Delivery
+	lastStats Stats
 }
 
 // Stats é um snapshot lock-safe usado no heartbeat operacional do collector.
@@ -97,7 +103,9 @@ func New(name string, maxBytes int, log *slog.Logger) *Queue {
 	if maxBytes < 0 {
 		maxBytes = 0
 	}
-	return &Queue{name: name, maxBytes: maxBytes, log: log.With("sendbuf", name)}
+	q := &Queue{name: name, maxBytes: maxBytes, log: log.With("sendbuf", name)}
+	register(q)
+	return q
 }
 
 // NewPersistent creates a durable queue in dir. If the path cannot be opened,
@@ -231,7 +239,9 @@ func (q *Queue) Flush(ctx context.Context, post func(context.Context, []byte) er
 		}
 		q.incrementRetry()
 
-		if err := post(ctx, body); err != nil {
+		err := post(ctx, body)
+		q.recordDelivery(err)
+		if err != nil {
 			if q.noteTerminal(err) {
 				q.popFront(true) // auth/franquia: reenviar não conserta
 			}
