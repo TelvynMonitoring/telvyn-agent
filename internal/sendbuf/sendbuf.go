@@ -232,12 +232,18 @@ func (q *Queue) Flush(ctx context.Context, post func(context.Context, []byte) er
 		retainedToLog = 0
 	}
 	retainedLogged := 0
+	sent := 0
 	for {
 		body, ok := q.peek()
 		if !ok {
 			return nil
 		}
-		q.incrementRetry()
+		// Só o que já estava retido antes deste ciclo é reenvio; o resto é o primeiro envio.
+		isRetry := sent < retainedToLog
+		sent++
+		if isRetry {
+			q.incrementRetry()
+		}
 
 		err := post(ctx, body)
 		q.recordDelivery(err)
@@ -247,7 +253,9 @@ func (q *Queue) Flush(ctx context.Context, post func(context.Context, []byte) er
 			}
 			return err
 		}
-		q.incrementRetrySuccess()
+		if isRetry {
+			q.incrementRetrySuccess()
+		}
 		q.popFront(false)
 		if retainedLogged < retainedToLog {
 			q.log.Info("payload retido reenviado com sucesso", "restantes", q.pending())
@@ -270,10 +278,13 @@ func (q *Queue) Offer(body []byte, err error) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.db != nil {
-		return q.offerPersistentLocked(body)
+		return q.offerPersistentLocked(body, err == nil)
 	}
 	q.items = append(q.items, body)
-	q.unflushedOffers++
+	// Com err != nil o envio já falhou antes de chegar aqui: já é reenvio, não conta como novo.
+	if err == nil {
+		q.unflushedOffers++
+	}
 	q.bytes += len(body)
 	q.retained++
 	dropped := 0
@@ -426,7 +437,7 @@ func (q *Queue) snapshotPersistentLocked() Stats {
 	return stats
 }
 
-func (q *Queue) offerPersistentLocked(body []byte) error {
+func (q *Queue) offerPersistentLocked(body []byte, fresh bool) error {
 	droppedCount := uint64(0)
 	err := q.db.Update(func(tx *bolt.Tx) error {
 		payloads := tx.Bucket(payloadsBucket)
@@ -473,7 +484,9 @@ func (q *Queue) offerPersistentLocked(body []byte) error {
 		q.log.Error("falha ao persistir payload na fila durável", "err", err)
 		return err
 	}
-	q.unflushedOffers++
+	if fresh {
+		q.unflushedOffers++
+	}
 	stats := q.snapshotPersistentLocked()
 	if droppedCount > 0 {
 		q.log.Warn("fila de reenvio cheia — payloads mais antigos descartados",
