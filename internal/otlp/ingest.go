@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ispwatch/collector/internal/agentstats"
 	"github.com/ispwatch/collector/internal/clock"
 	"github.com/ispwatch/collector/internal/sendbuf"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
@@ -102,6 +103,72 @@ type CollectorRuntimeStats struct {
 	// NtpOffsetSeconds is optional because the host may not be able to reach
 	// any configured NTP server. The check never changes the system clock.
 	NtpOffsetSeconds *float64 `json:"ntp_offset_seconds,omitempty"`
+	// Queues detalha cada fila de envio (métricas, logs, estatísticas de APM), inclusive o
+	// último erro de envio. Process é o consumo do próprio agent. Ambos sem segredos.
+	Queues  []QueueRuntime  `json:"queues,omitempty"`
+	Process *ProcessRuntime `json:"process,omitempty"`
+}
+
+// QueueRuntime é o retrato de uma fila de envio no heartbeat.
+type QueueRuntime struct {
+	Name           string `json:"name"`
+	PendingPayload int64  `json:"pending_payloads"`
+	PendingBytes   int64  `json:"pending_bytes"`
+	RetryAttempts  int64  `json:"retry_attempts"`
+	RetrySuccesses int64  `json:"retry_successes"`
+	Dropped        int64  `json:"dropped_payloads"`
+	Blocked        bool   `json:"blocked"`
+	LastError      string `json:"last_error,omitempty"`
+	LastErrorAt    string `json:"last_error_at,omitempty"`
+	FailingSince   string `json:"failing_since,omitempty"`
+	LastSuccessAt  string `json:"last_success_at,omitempty"`
+}
+
+// ProcessRuntime é o consumo do processo do agent no heartbeat.
+type ProcessRuntime struct {
+	Goroutines     int64    `json:"goroutines"`
+	HeapAllocBytes int64    `json:"heap_alloc_bytes"`
+	SysBytes       int64    `json:"sys_bytes"`
+	UptimeSeconds  int64    `json:"uptime_seconds"`
+	CPUSeconds     *float64 `json:"cpu_seconds,omitempty"`
+	QueueDiskBytes int64    `json:"queue_disk_bytes"`
+}
+
+func rfc3339OrEmpty(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// queueRuntimes converte o registro de filas do sendbuf para o contrato do heartbeat.
+func queueRuntimes() []QueueRuntime {
+	stats := sendbuf.Queues()
+	out := make([]QueueRuntime, 0, len(stats))
+	for _, s := range stats {
+		out = append(out, QueueRuntime{
+			Name:           s.Name,
+			PendingPayload: int64(s.Pending),
+			PendingBytes:   int64(s.Bytes),
+			RetryAttempts:  s.RetryAttempts,
+			RetrySuccesses: s.RetrySuccesses,
+			Dropped:        s.DroppedTotal,
+			Blocked:        s.Blocked,
+			LastError:      s.LastError,
+			LastErrorAt:    rfc3339OrEmpty(s.LastErrorAt),
+			FailingSince:   rfc3339OrEmpty(s.FailingSince),
+			LastSuccessAt:  rfc3339OrEmpty(s.LastSuccessAt),
+		})
+	}
+	return out
+}
+
+func processRuntime() *ProcessRuntime {
+	p := agentstats.Read(sendbuf.DefaultDir())
+	return &ProcessRuntime{
+		Goroutines: p.Goroutines, HeapAllocBytes: p.HeapAllocBytes, SysBytes: p.SysBytes,
+		UptimeSeconds: p.UptimeSeconds, CPUSeconds: p.CPUSeconds, QueueDiskBytes: p.QueueDiskBytes,
+	}
 }
 
 // SetCollectorRuntimeStatsProvider liga o scheduler ao heartbeat sem criar
@@ -1276,6 +1343,8 @@ func (e *IngestExporter) RegisterCollector(ctx context.Context, name string, cap
 		runtime.DroppedPayloads = queue.DroppedTotal
 		runtime.IngestBlocked = queue.Blocked
 	}
+	runtime.Queues = queueRuntimes()
+	runtime.Process = processRuntime()
 	runtime.AgentTime = time.Now().UTC().Format(time.RFC3339Nano)
 	if offset, ok := clock.OffsetSeconds(ctx); ok {
 		runtime.NtpOffsetSeconds = &offset

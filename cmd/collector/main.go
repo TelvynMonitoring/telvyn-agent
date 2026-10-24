@@ -386,6 +386,7 @@ func runIngestMode(ingestURL string) {
 	startSelfMetrics := func() {
 		selfMetricsOnce.Do(func() {
 			selfmetrics.Start(ctx, log, out, hostID, selfmetrics.DefaultInterval)
+			selfmetrics.StartAgentStats(ctx, log, out, selfmetrics.DefaultInterval)
 		})
 	}
 	// Para os perfis comuns não há vínculo pendente. O Agent de Banco só começa

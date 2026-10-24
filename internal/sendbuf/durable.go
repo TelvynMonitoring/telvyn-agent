@@ -64,7 +64,9 @@ func (q *Queue) FlushBatch(ctx context.Context, limit int, post func(context.Con
 			return nil
 		}
 		q.updateCounterLocked(metaRetries)
-		if err := post(ctx, bodies); err != nil {
+		err = post(ctx, bodies)
+		q.recordDelivery(err)
+		if err != nil {
 			return err
 		}
 		if err := q.db.Update(func(tx *bolt.Tx) error {
