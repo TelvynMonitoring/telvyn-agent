@@ -28,7 +28,7 @@ func (q *Queue) OfferDurable(body []byte) error {
 	if stats.Bytes+len(body) > q.maxBytes {
 		return fmt.Errorf("durable queue full: %d bytes", stats.Bytes)
 	}
-	return q.offerPersistentLocked(body)
+	return q.offerPersistentLocked(body, true)
 }
 
 // FlushBatch retains every unacknowledged record, including rejected HTTP requests.
@@ -42,6 +42,9 @@ func (q *Queue) FlushBatch(ctx context.Context, limit int, post func(context.Con
 	if limit < 1 {
 		return fmt.Errorf("invalid batch size")
 	}
+	// Só o que já estava retido antes deste ciclo é reenvio; o que acabou de entrar é o primeiro envio.
+	retained := q.snapshotPersistentLocked().Pending - q.unflushedOffers
+	q.unflushedOffers = 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -63,7 +66,11 @@ func (q *Queue) FlushBatch(ctx context.Context, limit int, post func(context.Con
 		if len(bodies) == 0 {
 			return nil
 		}
-		q.updateCounterLocked(metaRetries)
+		isRetry := retained > 0
+		retained -= len(bodies)
+		if isRetry {
+			q.updateCounterLocked(metaRetries)
+		}
 		err = post(ctx, bodies)
 		q.recordDelivery(err)
 		if err != nil {
@@ -81,6 +88,9 @@ func (q *Queue) FlushBatch(ctx context.Context, limit int, post func(context.Con
 			}
 			if err := writeMeta(meta, metaBytes, readMeta(meta, metaBytes)-uint64(size)); err != nil {
 				return err
+			}
+			if !isRetry {
+				return nil
 			}
 			return writeMeta(meta, metaRetryOK, readMeta(meta, metaRetryOK)+1)
 		}); err != nil {
