@@ -52,12 +52,11 @@ function startSecurity() {
   const endpoint = new URL(process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4318');
   if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('Invalid collector endpoint');
   endpoint.pathname = endpoint.pathname.replace(/\/$/, '') + '/v1/security/events';
-  const { DDWAF } = require('@datadog/native-appsec');
+  const { Waf } = require('./waf.cjs');
   const protection = require('./protection.cjs');
   const createWaf = () => {
-    const created = new DDWAF(WAF_RULES, 'telvyn-recommended');
-    if (!created.diagnostics.rules?.loaded?.length || created.diagnostics.rules?.failed?.length) { created.dispose(); throw new Error('Security rules unavailable'); }
-    return created;
+    try { return new Waf(WAF_RULES); }
+    catch (_) { throw new Error('Security rules unavailable'); }
   };
   let waf = enabled ? createWaf() : null;
   const pending = new Set();
@@ -69,7 +68,7 @@ function startSecurity() {
     const context = span?.spanContext();
     const body = JSON.stringify({id: randomUUID(), service, host: process.env.POD_NAME || os.hostname(), environment,
       service_version: attributes['service.version'], outcome, rule_id: rule, rules_version: finding ? (rule === 'SQL_INJECTION' ? 'iast-q-node-sql-1' : FLAW_RULES.has(rule) ? 'iast-node-flaws-1' : 'iast-q-node-sinks-1') : RULES_VERSION,
-      engine_version: DDWAF.version(), elapsed_us: elapsed,
+      engine_version: Waf.version(), elapsed_us: elapsed,
       ...finding, ...request,
       ...(context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? {trace_id: context.traceId, span_id: context.spanId} : {})});
     const destination = new URL(endpoint);
@@ -110,8 +109,7 @@ function startSecurity() {
     catch (_) { report('error', undefined, Number((process.hrtime.bigint() - started) / 1000n), span, undefined, state.details); return false; }
     const elapsed = Number((process.hrtime.bigint() - started) / 1000n);
     if (result.timeout && !state.timeoutReported) { state.timeoutReported = true; if (shouldReportTimeout(Date.now())) report('timeout', undefined, elapsed, span, undefined, state.details); }
-    state.derivatives = result.derivatives ?? result.attributes;
-    if (result.errorCode) { report('error', undefined, elapsed, span, undefined, state.details); return false; }
+    state.derivatives = result.derivatives;
     const matches = (result.events || []).filter(event => event.rule?.id && !state.reported.has(event.rule.id) && protection.ruleMode(event.rule.id) !== 'disabled');
     if (!matches.length) return false;
     const block = blockable && protection.state.allow && !protection.passed(state.ip) && !state.blocked && matches.some(event => protection.ruleMode(event.rule.id) === 'blocking');
@@ -178,7 +176,7 @@ function startSecurity() {
   }
   function reportApi(state, status, derivatives) {
     const schemas = {};
-    for (const [name, value] of Object.entries(derivatives || {})) if (name.startsWith('_dd.appsec.s.')) schemas[name.slice('_dd.appsec.s.'.length)] = value;
+    for (const [name, value] of Object.entries(derivatives || {})) if (name.startsWith('schema.')) schemas[name.slice('schema.'.length)] = value;
     if (!Object.keys(schemas).length || pending.size >= 32) return;
     const body = JSON.stringify({id: randomUUID(), service, host: process.env.POD_NAME || os.hostname(), environment, service_version: attributes['service.version'],
       method: state.request.method, route: String(state.route || state.details.request_path).slice(0, 1024), status, schemas});

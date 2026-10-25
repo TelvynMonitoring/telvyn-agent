@@ -17,6 +17,8 @@ import secrules as sr
 
 REQUEST_FILES = "REQUEST-9[1-4]*.conf"
 EXCLUDED_TERMS = ("datadog",)
+# Regras de higiene de protocolo que disparam em tráfego legítimo de agentes e serviços internos (Host com IP numérico).
+NOISY_RULES = {"920350"}
 
 ADDRESSES = {
     "ARGS": ["server.request.query", "server.request.body", "server.request.path_params"],
@@ -201,6 +203,9 @@ def main():
                 continue
             if not any(k == "block" for k, _ in head["actions"]):
                 continue  # as sem block são regras de controle do CRS (paranoia, exceções), não detecção
+            if sr.action(head, "id")[0] in NOISY_RULES:
+                skipped.setdefault("tráfego interno legítimo", []).append(sr.action(head, "id")[0])
+                continue
             if sr.paranoia(rule) > max_paranoia:
                 skipped.setdefault("paranoia acima do limite", []).append(sr.action(head, "id")[0])
                 continue
@@ -209,6 +214,8 @@ def main():
             except Skip as reason:
                 skipped.setdefault(str(reason), []).append(sr.action(head, "id")[0])
     extras = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "api-schema.json"), encoding="utf-8"))
+    extras["rasp"] = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "rasp-rules.json"), encoding="utf-8"))["rules"]
+    converted += extras.pop("rasp")
     document = {"version": "2.2", "metadata": {"rules_version": "crs-" + version}, "rules": converted, **extras}
     with open(output, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(document, handle, ensure_ascii=False, indent=1)

@@ -412,37 +412,6 @@
    "transformers": []
   },
   {
-   "id": "crs-920350",
-   "name": "Host header is a numeric IP address",
-   "tags": {
-    "type": "http_protocol_violation",
-    "category": "attack_attempt",
-    "paranoia_level": "1",
-    "source": "owasp-crs"
-   },
-   "conditions": [
-    {
-     "operator": "match_regex",
-     "parameters": {
-      "regex": "(?:^([\\d.]+|\\[[\\da-f:]+\\]|[\\da-f:]+)(:[\\d]+)?$)",
-      "options": {
-       "case_sensitive": true,
-       "min_length": 1
-      },
-      "inputs": [
-       {
-        "address": "server.request.headers.no_cookies",
-        "key_path": [
-         "host"
-        ]
-       }
-      ]
-     }
-    }
-   ],
-   "transformers": []
-  },
-  {
    "id": "crs-920470",
    "name": "Illegal Content-Type header",
    "tags": {
@@ -21492,6 +21461,211 @@
    "transformers": [
     "urlDecodeUni"
    ]
+  },
+  {
+   "id": "rasp-930-100",
+   "name": "Inclusão de arquivo local pela entrada da requisição",
+   "tags": {
+    "type": "lfi",
+    "category": "vulnerability_trigger",
+    "cwe": "22",
+    "module": "rasp",
+    "source": "telvyn"
+   },
+   "conditions": [
+    {
+     "operator": "lfi_detector",
+     "parameters": {
+      "resource": [
+       {
+        "address": "server.io.fs.file"
+       }
+      ],
+      "params": [
+       {
+        "address": "server.request.query"
+       },
+       {
+        "address": "server.request.body"
+       },
+       {
+        "address": "server.request.path_params"
+       },
+       {
+        "address": "graphql.server.all_resolvers"
+       },
+       {
+        "address": "graphql.server.resolver"
+       }
+      ]
+     }
+    }
+   ],
+   "transformers": []
+  },
+  {
+   "id": "rasp-932-100",
+   "name": "Injeção de comando de shell pela entrada da requisição",
+   "tags": {
+    "type": "command_injection",
+    "category": "vulnerability_trigger",
+    "cwe": "77",
+    "module": "rasp",
+    "source": "telvyn"
+   },
+   "conditions": [
+    {
+     "operator": "shi_detector",
+     "parameters": {
+      "resource": [
+       {
+        "address": "server.sys.shell.cmd"
+       }
+      ],
+      "params": [
+       {
+        "address": "server.request.query"
+       },
+       {
+        "address": "server.request.body"
+       },
+       {
+        "address": "server.request.path_params"
+       },
+       {
+        "address": "graphql.server.all_resolvers"
+       },
+       {
+        "address": "graphql.server.resolver"
+       }
+      ]
+     }
+    }
+   ],
+   "transformers": []
+  },
+  {
+   "id": "rasp-932-110",
+   "name": "Injeção de comando do sistema pela entrada da requisição",
+   "tags": {
+    "type": "command_injection",
+    "category": "vulnerability_trigger",
+    "cwe": "77",
+    "module": "rasp",
+    "source": "telvyn"
+   },
+   "conditions": [
+    {
+     "operator": "cmdi_detector",
+     "parameters": {
+      "resource": [
+       {
+        "address": "server.sys.exec.cmd"
+       }
+      ],
+      "params": [
+       {
+        "address": "server.request.query"
+       },
+       {
+        "address": "server.request.body"
+       },
+       {
+        "address": "server.request.path_params"
+       },
+       {
+        "address": "graphql.server.all_resolvers"
+       },
+       {
+        "address": "graphql.server.resolver"
+       }
+      ]
+     }
+    }
+   ],
+   "transformers": []
+  },
+  {
+   "id": "rasp-934-100",
+   "name": "Requisição forjada pelo servidor (SSRF) a partir da entrada",
+   "tags": {
+    "type": "ssrf",
+    "category": "vulnerability_trigger",
+    "cwe": "918",
+    "module": "rasp",
+    "source": "telvyn"
+   },
+   "conditions": [
+    {
+     "operator": "ssrf_detector",
+     "parameters": {
+      "resource": [
+       {
+        "address": "server.io.net.url"
+       }
+      ],
+      "params": [
+       {
+        "address": "server.request.query"
+       },
+       {
+        "address": "server.request.body"
+       },
+       {
+        "address": "server.request.path_params"
+       },
+       {
+        "address": "graphql.server.all_resolvers"
+       },
+       {
+        "address": "graphql.server.resolver"
+       }
+      ]
+     }
+    }
+   ],
+   "transformers": []
+  },
+  {
+   "id": "rasp-942-100",
+   "name": "Injeção de SQL pela entrada da requisição",
+   "tags": {
+    "type": "sql_injection",
+    "category": "vulnerability_trigger",
+    "cwe": "89",
+    "module": "rasp",
+    "source": "telvyn"
+   },
+   "conditions": [
+    {
+     "operator": "sqli_detector",
+     "parameters": {
+      "resource": [
+       {
+        "address": "server.db.statement"
+       }
+      ],
+      "params": [
+       {
+        "address": "server.request.query"
+       },
+       {
+        "address": "server.request.body"
+       },
+       {
+        "address": "server.request.path_params"
+       },
+       {
+        "address": "graphql.server.all_resolvers"
+       },
+       {
+        "address": "graphql.server.resolver"
+       }
+      ]
+     }
+    }
+   ],
+   "transformers": []
   }
  ],
  "schemas": {

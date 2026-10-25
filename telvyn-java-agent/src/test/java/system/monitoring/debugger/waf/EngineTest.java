@@ -64,4 +64,19 @@ class EngineTest {
         assertTrue(json.contains("password"), json);
         assertFalse(json.contains("ana@example.com"), json);
     }
+
+    @Test
+    void prevencaoDeExploitComparaOperacaoComEntrada() {
+        var context = engine.open();
+        Map<String, Object> query = Map.of("server.request.query", Map.of("file", List.of("../../etc/shadow")));
+        context.run(query, LIMITS, 200_000, false);
+        var attack = context.run(Map.of("server.io.fs.file", "/srv/app/uploads/../../etc/shadow"), LIMITS, 200_000, true);
+        assertEquals("match", attack.outcome(), String.valueOf(attack.events()));
+        var clean = context.run(Map.of("server.io.fs.file", "/srv/app/uploads/photo.png"), LIMITS, 200_000, true);
+        assertEquals("ok", clean.outcome());
+        var sql = engine.open();
+        sql.run(Map.of("server.request.query", Map.of("id", List.of("1' OR '1'='1"))), LIMITS, 200_000, false);
+        var injected = sql.run(Map.of("server.db.statement", "SELECT * FROM t WHERE id = '1' OR '1'='1'", "server.db.system", "mysql"), LIMITS, 200_000, true);
+        assertTrue(injected.events().stream().anyMatch(e -> String.valueOf(e).contains("rasp-942-100")), String.valueOf(injected.events()));
+    }
 }
