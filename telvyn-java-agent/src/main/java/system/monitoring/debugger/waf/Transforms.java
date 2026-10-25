@@ -17,6 +17,7 @@ final class Transforms {
     /** Transformação pelo nome; null para nome desconhecido (a regra é rejeitada na carga). */
     static UnaryOperator<String> of(String name) {
         return switch (name) {
+            case "length" -> value -> String.valueOf(value.length());
             case "lowercase" -> value -> value.toLowerCase(Locale.ROOT);
             case "removeNulls" -> value -> value.indexOf('\0') < 0 ? value : value.replace("\0", "");
             case "urlDecode" -> value -> urlDecode(value, false);
@@ -36,7 +37,8 @@ final class Transforms {
             case "unicode_normalize" -> value -> Normalizer.normalize(value, Normalizer.Form.NFKC);
             case "escapeSeqDecode" -> Transforms::escapeSeqDecode;
             // Strings Java já são Unicode: as duas são identidade aqui.
-            case "utf8toUnicode", "none" -> value -> value;
+            case "utf8toUnicode" -> Transforms::utf8toUnicode;
+            case "none" -> value -> value;
             default -> null;
         };
     }
@@ -57,7 +59,7 @@ final class Transforms {
             char c = value.charAt(i);
             if (c == '%' && unicode && i + 5 < value.length() && (value.charAt(i + 1) == 'u' || value.charAt(i + 1) == 'U') && hex(value, i + 2, 4) >= 0) {
                 flush(bytes, out);
-                out.append((char) hex(value, i + 2, 4));
+                out.append(fromUnicodeEscape(hex(value, i + 2, 4)));
                 i += 5;
             } else if (c == '%' && i + 2 < value.length() && hex(value, i + 1, 2) >= 0) {
                 bytes.write(hex(value, i + 1, 2));
@@ -68,6 +70,25 @@ final class Transforms {
             }
         }
         flush(bytes, out);
+        return out.toString();
+    }
+
+    /** %uHHHH como o ModSecurity: largura total (FFxx) vira ASCII (xx + 0x20), até 0xFF é o byte, o resto fica como está. */
+    private static char fromUnicodeEscape(int code) {
+        if ((code & 0xFF00) == 0xFF00) return (char) ((code & 0xFF) + 0x20);
+        return (char) code;
+    }
+
+    /** Cada caractere fora do ASCII vira %uHHHH (a transformação urlDecodeUni que vem depois o reduz). */
+    static String utf8toUnicode(String value) {
+        boolean ascii = true;
+        for (int i = 0; i < value.length() && ascii; i++) ascii = value.charAt(i) < 0x80;
+        if (ascii) return value;
+        var out = new StringBuilder(value.length() + 8);
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < 0x80) out.append(c); else out.append(String.format("%%u%04x", (int) c));
+        }
         return out.toString();
     }
 
@@ -159,8 +180,9 @@ final class Transforms {
     }
 
     static String base64Decode(String value) {
-        String clean = value.replaceAll("[^A-Za-z0-9+/=_-]", "");
-        if (clean.length() < 4) return value;
+        // Só decodifica o que é base64 inteiro (quebras de linha à parte); texto com outro caractere fica como está.
+        String clean = value.replaceAll("[\r\n]", "");
+        if (clean.length() < 4 || !clean.matches("[A-Za-z0-9+/_-]+={0,2}")) return value;
         try {
             byte[] decoded = clean.indexOf('-') >= 0 || clean.indexOf('_') >= 0 ? Base64.getUrlDecoder().decode(clean.replace("=", "")) : Base64.getMimeDecoder().decode(clean);
             return new String(decoded, StandardCharsets.UTF_8);

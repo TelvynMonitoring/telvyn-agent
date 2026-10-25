@@ -21,6 +21,16 @@ function parseBudget(value) {
 }
 const BUDGET_US = parseBudget(process.env.TELVYN_SECURITY_WAF_TIMEOUT_US);
 
+// Nível de paranoia das regras (1 a 4): níveis altos pegam mais e geram mais falsos positivos. Padrão 2.
+function parseParanoia(value) {
+  if (value === undefined || String(value).trim() === '') return 2;
+  const parsed = Number(String(value).trim());
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 4) return parsed;
+  console.warn(`[telvyn] invalid TELVYN_SECURITY_WAF_PARANOIA (${value}); expected 1 to 4. Using 2.`);
+  return 2;
+}
+const PARANOIA = parseParanoia(process.env.TELVYN_SECURITY_WAF_PARANOIA);
+
 // Relatar cada timeout enche o painel quando muitos estouram: um relato por minuto, e o log diz o que fazer.
 let lastTimeoutReport = 0;
 let timeoutsSinceReport = 0;
@@ -55,7 +65,7 @@ function startSecurity() {
   const { Waf } = require('./waf.cjs');
   const protection = require('./protection.cjs');
   const createWaf = () => {
-    try { return new Waf(WAF_RULES); }
+    try { return new Waf(WAF_RULES, {paranoia: PARANOIA}); }
     catch (_) { throw new Error('Security rules unavailable'); }
   };
   let waf = enabled ? createWaf() : null;
@@ -237,7 +247,10 @@ function startSecurity() {
       response.once('close', done);
       const headers = {...request.headers};
       delete headers.cookie;
-      const data = {'server.request.headers.no_cookies': headers, 'server.request.query': query(url), 'server.request.uri.raw': request.url, 'server.request.method': request.method};
+      const data = {'server.request.headers.no_cookies': headers, 'server.request.query': query(url), 'server.request.uri.raw': request.url, 'server.request.method': request.method,
+        'server.request.line': `${request.method} ${request.url} HTTP/${request.httpVersion}`, 'server.request.protocol': `HTTP/${request.httpVersion}`};
+      try { data['server.request.path'] = decodeURIComponent(url.pathname); } catch (_) { data['server.request.path'] = url.pathname; }
+      if (url.search.length > 1) data['server.request.query_string'] = url.search.slice(1);
       if (request.headers.cookie) data['server.request.cookies'] = cookies(request.headers.cookie);
       if (ip) data['http.client_ip'] = ip;
       if (evaluate(state, data, span)) { blockRequest(state, request, response, span, 'rule'); return true; }

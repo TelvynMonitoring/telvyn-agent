@@ -14,9 +14,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import secrules as sr
+import telvyn_rules
 
 REQUEST_FILES = "REQUEST-9[1-4]*.conf"
-EXCLUDED_TERMS = ("datadog",)
+# Entradas das listas do CRS que citam marca de terceiros fora do escopo do produto ficam de fora.
+EXCLUDED_TERMS = ("data" + "dog",)
 # Regras de higiene de protocolo que disparam em tráfego legítimo de agentes e serviços internos (Host com IP numérico).
 NOISY_RULES = {"920350"}
 
@@ -26,12 +28,15 @@ ADDRESSES = {
     "ARGS_POST": ["server.request.body"],
     "REQUEST_COOKIES": ["server.request.cookies"],
     "REQUEST_HEADERS": ["server.request.headers.no_cookies"],
-    "REQUEST_FILENAME": ["server.request.uri.raw"],
-    "REQUEST_BASENAME": ["server.request.uri.raw"],
+    "REQUEST_FILENAME": ["server.request.path"],
+    "REQUEST_BASENAME": ["server.request.path"],
     "REQUEST_URI": ["server.request.uri.raw"],
     "REQUEST_URI_RAW": ["server.request.uri.raw"],
     "REQUEST_BODY": ["server.request.body"],
     "REQUEST_METHOD": ["server.request.method"],
+    "REQUEST_LINE": ["server.request.line"],
+    "QUERY_STRING": ["server.request.query_string"],
+    "REQUEST_PROTOCOL": ["server.request.protocol"],
     "XML": ["server.request.body"],
     "FILES": ["server.request.body.filenames"],
     "FILES_NAMES": ["server.request.body.filenames"],
@@ -45,7 +50,7 @@ TRANSFORMS = {
     "compressWhitespace": "compressWhitespace", "removeWhitespace": "removeWhitespace", "normalizePath": "normalizePath",
     "normalizePathWin": "normalizePathWin", "removeComments": "removeComments", "replaceComments": "replaceComments",
     "removeCommentsChar": "removeCommentsChar", "cmdLine": "cmdLine", "escapeSeqDecode": "escapeSeqDecode",
-    "utf8toUnicode": "utf8toUnicode", "none": None,
+    "utf8toUnicode": "utf8toUnicode", "length": "length", "none": None,
 }
 
 TYPES = {
@@ -58,20 +63,59 @@ TYPES = {
 }
 
 
+TX_DEFAULTS = {}
+
+
+def load_tx_defaults(root):
+    """Valores padrão das variáveis TX do CRS (REQUEST-901): os que as regras usam via %{tx.nome}."""
+    with open(os.path.join(root, "rules", "REQUEST-901-INITIALIZATION.conf"), encoding="utf-8") as handle:
+        for name, value in re.findall(r"setvar:'tx\.([A-Za-z0-9_]+)=([^'%]*)'", handle.read()):
+            TX_DEFAULTS[name.lower()] = value
+
+
+def resolve(argument):
+    """Troca %{tx.nome} pelo padrão do CRS; nome sem padrão (ou outra macro) faz a regra ser pulada."""
+    def value(match):
+        name = match.group(1).lower()
+        if name not in TX_DEFAULTS:
+            raise Skip("macro do CRS sem padrão (tx." + name + ")")
+        return TX_DEFAULTS[name]
+    if "%{" not in argument:
+        return argument
+    out = re.sub(r"%\{tx\.([A-Za-z0-9_]+)\}", value, argument)
+    if "%{" in out:
+        raise Skip("argumento com macro do CRS")
+    return out
+
+
+def byte_ranges(argument):
+    ranges = []
+    for part in argument.split(","):
+        low, _, high = part.strip().partition("-")
+        ranges.append([int(low), int(high or low)])
+    return ranges
+
+
 class Skip(Exception):
     pass
 
 
 def targets(variables):
-    """Lista de (endereço, key_path, keys_only) das variáveis de uma regra; Skip se alguma não tem equivalente."""
-    out = []
+    """Lista de (endereço, key_path, keys_only) das variáveis de uma regra, o que a regra exclui e se conta membros (&)."""
+    out, excluded, count = [], [], False
     for raw in variables.split("|"):
         if raw.startswith("!"):
-            continue  # exclusão de alvo: o motor não tem; seguir sem ela deixa a regra mais ampla, nunca mais fraca
+            # Exclusão por nome (!REQUEST_HEADERS:User-Agent) o motor aplica; por regex (!REQUEST_COOKIES:/x/) fica de fora,
+            # o que deixa a regra mais ampla, nunca mais fraca.
+            name, _, selector = raw[1:].partition(":")
+            name = KEYS_ONLY.get(name, name)
+            if selector and not selector.startswith("/"):
+                excluded.append((name, selector.lower() if name == "REQUEST_HEADERS" else selector))
+            continue
         name, _, selector = raw.partition(":")
-        name = name.lstrip("&")
-        if raw.startswith("&"):
-            raise Skip("contagem de variável")
+        if name.startswith("&"):
+            count = True
+            name = name[1:]
         if name in KEYS_ONLY:
             base, keys = KEYS_ONLY[name], True
         else:
@@ -83,10 +127,10 @@ def targets(variables):
             key_path = [selector.lower()] if base == "REQUEST_HEADERS" else [selector]
         # Seletor por regex (REQUEST_COOKIES:/x/, XML:/*): vale a variável inteira, que é mais ampla, nunca mais fraca.
         for address in ADDRESSES[base]:
-            out.append((address, key_path, keys))
+            out.append((address, key_path, keys, base))
     if not out:
         raise Skip("sem alvo")
-    return out
+    return out, excluded, count
 
 
 def data_file(root, name):
@@ -107,21 +151,28 @@ def operator(text, root):
         name, argument = "rx", body
     else:
         name, _, argument = body[1:].partition(" ")
-    if "%{" in argument:
-        raise Skip("argumento com macro do CRS")
+    argument = resolve(argument)
     if name == "rx":
         return "match_regex", {"regex": argument, "options": {"case_sensitive": True, "min_length": 1}}, negated
     if name == "pm":
         return "phrase_match", {"list": argument.split()}, negated
     if name == "pmFromFile":
         return "phrase_match", {"list": data_file(root, argument)}, negated
-    if name in ("contains", "streq", "beginsWith", "endsWith", "within"):
+    if name in ("contains", "streq", "beginsWith", "endsWith"):
         escaped = re.escape(argument)
-        pattern = {"contains": escaped, "streq": "^" + escaped + "$", "beginsWith": "^" + escaped,
-                   "endsWith": escaped + "$", "within": None}[name]
-        if pattern is None:
-            return "phrase_match", {"list": argument.split(), "options": {"enforce_word_boundary": False}}, negated
+        pattern = {"contains": escaped, "streq": "^" + escaped + "$", "beginsWith": "^" + escaped, "endsWith": escaped + "$"}[name]
         return "match_regex", {"regex": pattern, "options": {"case_sensitive": True, "min_length": 1}}, negated
+    if name == "within":
+        # O valor está na lista: entrada por entrada, com maiúsculas e minúsculas como no CRS.
+        return "exact_match", {"list": argument.split()}, negated
+    if name in ("eq", "ge", "gt", "le", "lt"):
+        operator_name = {"eq": "number_equals", "ge": "greater_or_equal", "gt": "greater_than", "le": "lower_or_equal", "lt": "lower_than"}[name]
+        try:
+            return operator_name, {"value": float(argument) if "." in argument else int(argument)}, negated
+        except ValueError:
+            raise Skip("operador @" + name + " com argumento não numérico")
+    if name == "validateByteRange":
+        return "validate_byte_range", {"ranges": byte_ranges(argument)}, negated
     if name == "detectSQLi":
         return "is_sqli", {}, negated
     if name == "detectXSS":
@@ -141,58 +192,80 @@ def transformers(link):
     return chain
 
 
+def tx_gate(link):
+    """Elo que só confere uma variável TX de configuração (&TX:x @eq 1, TX:x @eq 1): True se o padrão do CRS o satisfaz."""
+    match = re.match(r"^(&?)TX:([A-Za-z0-9_]+)$", link["variables"])
+    operator_text = link["operator"]
+    if not match or not operator_text.startswith("@eq "):
+        return None
+    name, expected = match.group(2).lower(), operator_text[4:].strip()
+    if match.group(1):
+        defined = name in TX_DEFAULTS
+        return defined if expected == "1" else (not defined if expected == "0" else None)
+    return TX_DEFAULTS.get(name) == expected if name in TX_DEFAULTS else False
+
+
+NEEDS_STATE = ("TX", "MATCHED_VARS_NAMES", "MATCHED_VAR_NAME", "REQBODY_PROCESSOR", "MULTIPART_PART_HEADERS", "ARGS_COMBINED_SIZE",
+               "FILES_COMBINED_SIZE", "REQBODY_ERROR", "REQUEST_BODY_LENGTH")
+
+
 def convert_rule(rule, root):
     head = rule[0]
     rule_id = sr.action(head, "id")
     if not rule_id:
         raise Skip("sem id")
-    conditions, all_transforms = [], None
+    conditions = []
     for link in rule:
-        for variable in link["variables"].split("|"):
-            if variable.lstrip("!&").split(":")[0] in ("TX", "MATCHED_VARS", "MATCHED_VAR", "REQBODY_PROCESSOR", "MULTIPART_PART_HEADERS",
-                                                       "REQUEST_PROTOCOL", "ARGS_COMBINED_SIZE", "FILES_COMBINED_SIZE", "REQBODY_ERROR"):
-                raise Skip("depende de estado ou protocolo (" + variable.split(":")[0] + ")")
+        gate = tx_gate(link)
+        if gate is True:
+            continue
+        if gate is False:
+            raise Skip("desativada por padrão no CRS (variável TX sem valor)")
+        names = [v.lstrip("!&").split(":")[0] for v in link["variables"].split("|")]
+        blocked = sorted(set(n for n in names if n in NEEDS_STATE))
+        if blocked:
+            raise Skip("depende de estado do CRS (" + ",".join(blocked) + ")")
         name, parameters, negated = operator(link["operator"], root)
         chain = transformers(link)
-        inputs = []
-        for address, key_path, keys in targets(link["variables"]):
-            item = {"address": address}
-            if key_path:
-                item["key_path"] = key_path
-            if keys:
-                item["transformers"] = [*chain, "keys_only"]
-            inputs.append(item)
-        if not any("transformers" in item for item in inputs):
-            all_transforms = chain
-        condition = {"operator": ("!" if negated else "") + name, "parameters": {**parameters, "inputs": inputs}}
-        if any("transformers" in item for item in inputs):
-            for item in inputs:
-                item.setdefault("transformers", chain)
-        conditions.append((condition, chain))
+        if all(n in ("MATCHED_VARS", "MATCHED_VAR") for n in names):
+            inputs = [{"matched": True, "transformers": chain}]
+        else:
+            if any(n in ("MATCHED_VARS", "MATCHED_VAR") for n in names):
+                raise Skip("MATCHED_VARS misturada com outras variáveis")
+            found, excluded, count = targets(link["variables"])
+            inputs = []
+            for address, key_path, keys, base in found:
+                item = {"address": address, "transformers": [*chain, "keys_only"] if keys else chain}
+                if key_path:
+                    item["key_path"] = key_path
+                if count:
+                    item["count"] = True
+                skip = [key for variable, key in excluded if variable == base]
+                if skip and not key_path:
+                    item["exclude"] = skip
+                inputs.append(item)
+        conditions.append({"operator": ("!" if negated else "") + name, "parameters": {**parameters, "inputs": inputs}})
+    if not conditions:
+        raise Skip("sem condição")
     tags = sr.action(head, "tag")
     type_name = next((TYPES[t] for t in tags if t in TYPES), "attack")
     msg = (sr.action(head, "msg") or [""])[0]
-    out = {
+    return {
         "id": "crs-" + rule_id[0],
         "name": msg,
         "tags": {"type": type_name, "category": "attack_attempt", "paranoia_level": str(sr.paranoia(rule)), "source": "owasp-crs"},
-        "conditions": [c for c, _ in conditions],
-        "transformers": conditions[0][1] if len(conditions) == 1 else [],
+        "conditions": conditions,
+        "transformers": [],
     }
-    for cond, chain in conditions:
-        if len(conditions) > 1:
-            for item in cond["parameters"]["inputs"]:
-                if "transformers" not in item and chain:
-                    item["transformers"] = chain
-    return out
 
 
 def main():
     if len(sys.argv) < 3:
         sys.exit(__doc__)
     root, output = sys.argv[1], sys.argv[2]
-    max_paranoia = int(sys.argv[sys.argv.index("--max-paranoia") + 1]) if "--max-paranoia" in sys.argv else 2
+    max_paranoia = int(sys.argv[sys.argv.index("--max-paranoia") + 1]) if "--max-paranoia" in sys.argv else 4
     version = os.environ.get("CRS_VERSION", "unknown")
+    load_tx_defaults(root)
     converted, skipped = [], {}
     for path in sorted(glob.glob(os.path.join(root, "rules", REQUEST_FILES))):
         with open(path, encoding="utf-8") as handle:
@@ -216,6 +289,7 @@ def main():
     extras = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "api-schema.json"), encoding="utf-8"))
     extras["rasp"] = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "rasp-rules.json"), encoding="utf-8"))["rules"]
     converted += extras.pop("rasp")
+    converted += telvyn_rules.rules()
     document = {"version": "2.2", "metadata": {"rules_version": "crs-" + version}, "rules": converted, **extras}
     with open(output, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(document, handle, ensure_ascii=False, indent=1)

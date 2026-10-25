@@ -20,17 +20,21 @@ public final class Engine {
     public static final String VERSION = "telvyn-waf/1.0.0";
 
     /** Uma condição compilada: endereços de entrada, operador e a seleção (chaves ou valores). */
-    record Condition(String operator, List<Input> inputs, Operator test, List<Input> resource) {}
+    /** collect: a condição seguinte testa os valores que esta achou (MATCHED_VARS), então ela os junta todos. */
+    record Condition(String operator, List<Input> inputs, Operator test, List<Input> resource, boolean collect) {}
 
-    record Input(String address, List<String> keyPath, boolean keys, List<UnaryOperator<String>> transforms) {}
+    /** count: o valor testado é quantos membros o endereço tem (&VAR); matched: testa o valor que a condição anterior achou. */
+    record Input(String address, List<String> keyPath, boolean keys, List<UnaryOperator<String>> transforms, boolean count, boolean matched, List<String> exclude) {}
 
     record Rule(String id, String name, Map<String, Object> tags, List<Condition> conditions, List<String> actions, Set<String> addresses) {}
 
     /** Onde um operador casou. */
-    record Hit(String address, List<Object> keyPath, String resourceAddress) {}
+    record Hit(String address, List<Object> keyPath, String resourceAddress, String value, List<String> values) {
+        Hit(String address, List<Object> keyPath, String resourceAddress, String value) { this(address, keyPath, resourceAddress, value, value == null ? List.of() : List.of(value)); }
+    }
 
     /** Operador sobre os dados acumulados: devolve onde casou ou null. */
-    interface Operator { Hit test(Condition condition, Map<String, Object> data, Values.Limits limits, Values.Budget budget); }
+    interface Operator { Hit test(Condition condition, Map<String, Object> data, Values.Limits limits, Values.Budget budget, Hit previous); }
 
     private final List<Rule> rules;
     private final Schemas schemas;
@@ -50,13 +54,18 @@ public final class Engine {
 
     /** Compila o conjunto de regras; regra inválida falha a carga inteira (não sobe WAF pela metade). */
     @SuppressWarnings("unchecked")
-    public static Engine load(Map<String, Object> document) {
+    public static Engine load(Map<String, Object> document) { return load(document, 4); }
+
+    /** maxParanoia: regras com tags.paranoia_level acima disso não entram (sem a tag, entram sempre). */
+    @SuppressWarnings("unchecked")
+    public static Engine load(Map<String, Object> document, int maxParanoia) {
         var metadata = (Map<String, Object>) document.getOrDefault("metadata", Map.of());
         List<Rule> compiled = new ArrayList<>();
         Set<String> ids = new LinkedHashSet<>();
         for (Object raw : (List<Object>) document.getOrDefault("rules", List.of())) {
             var rule = (Map<String, Object>) raw;
             if (Boolean.FALSE.equals(rule.get("enabled"))) continue;
+            if (rule.get("tags") instanceof Map<?, ?> ruleTags && ruleTags.get("paranoia_level") instanceof String level && level.matches("[0-9]") && Integer.parseInt(level) > maxParanoia) continue;
             String id = (String) rule.get("id");
             if (id == null || !ids.add(id)) throw new IllegalArgumentException("rule without id or duplicated: " + id);
             try { compiled.add(compile(rule)); }
@@ -80,16 +89,20 @@ public final class Engine {
         }
         List<Condition> conditions = new ArrayList<>();
         Set<String> addresses = new LinkedHashSet<>();
-        for (Object raw : (List<Object>) rule.get("conditions")) {
-            var condition = (Map<String, Object>) raw;
+        var rawConditions = (List<Object>) rule.get("conditions");
+        for (int index = 0; index < rawConditions.size(); index++) {
+            var condition = (Map<String, Object>) rawConditions.get(index);
+            boolean collect = index + 1 < rawConditions.size()
+                    && ((Map<String, Object>) ((Map<String, Object>) rawConditions.get(index + 1)).getOrDefault("parameters", Map.of())).get("inputs") instanceof List<?> next
+                    && next.stream().anyMatch(item -> item instanceof Map<?, ?> m && Boolean.TRUE.equals(m.get("matched")));
             String operator = (String) condition.get("operator");
             var parameters = (Map<String, Object>) condition.getOrDefault("parameters", Map.of());
             List<Input> inputs = inputs(parameters.get(parameters.containsKey("params") ? "params" : "inputs"), keys, transforms);
             List<Input> resource = inputs(parameters.get("resource"), false, List.of());
             for (Input input : resource) addresses.add(input.address());
             // Detector de exploit avalia quando a operação (resource) chega; a regra comum, quando chega a entrada.
-            if (resource.isEmpty()) for (Input input : inputs) addresses.add(input.address());
-            conditions.add(new Condition(operator, inputs, Operators.compile(operator, parameters), resource));
+            if (resource.isEmpty()) for (Input input : inputs) if (!input.matched()) addresses.add(input.address());
+            conditions.add(new Condition(operator, inputs, Operators.compile(operator, parameters), resource, collect));
         }
         if (conditions.isEmpty()) throw new IllegalArgumentException("no conditions");
         var tags = (Map<String, Object>) rule.getOrDefault("tags", Map.of());
@@ -115,7 +128,9 @@ public final class Engine {
                 }
             }
             List<String> path = input.get("key_path") instanceof List<?> keysPath ? keysPath.stream().map(String::valueOf).toList() : null;
-            out.add(new Input((String) input.get("address"), path, selectKeys, List.copyOf(transforms)));
+            out.add(new Input((String) input.get("address"), path, selectKeys, List.copyOf(transforms),
+                    Boolean.TRUE.equals(input.get("count")), Boolean.TRUE.equals(input.get("matched")),
+                    input.get("exclude") instanceof List<?> skip ? skip.stream().map(String::valueOf).toList() : List.of()));
         }
         return out;
     }
@@ -153,7 +168,7 @@ public final class Engine {
                     if (!ephemeral && matched.contains(rule.id())) continue;
                     List<Hit> hits = new ArrayList<>();
                     for (Condition condition : rule.conditions()) {
-                        Hit hit = condition.test().test(condition, view, limits, budget);
+                        Hit hit = condition.test().test(condition, view, limits, budget, hits.isEmpty() ? null : hits.get(hits.size() - 1));
                         if (hit == null) { hits = null; break; }
                         hits.add(hit);
                     }

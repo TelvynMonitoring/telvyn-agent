@@ -42,10 +42,29 @@ final class Operators {
                 String expected = String.valueOf(parameters.get("value"));
                 yield (value, budget) -> expected.equalsIgnoreCase(value);
             }
-            case "greater_than", "lower_than" -> {
+            case "greater_than", "lower_than", "greater_or_equal", "lower_or_equal", "number_equals" -> {
                 double limit = ((Number) parameters.get("value")).doubleValue();
-                boolean greater = operator.equals("greater_than");
-                yield (value, budget) -> { try { double parsed = Double.parseDouble(value.trim()); return greater ? parsed > limit : parsed < limit; } catch (NumberFormatException no) { return false; } };
+                String comparison = operator;
+                yield (value, budget) -> {
+                    double parsed;
+                    try { parsed = Double.parseDouble(value.trim()); } catch (NumberFormatException no) { return false; }
+                    return switch (comparison) {
+                        case "greater_than" -> parsed > limit;
+                        case "lower_than" -> parsed < limit;
+                        case "greater_or_equal" -> parsed >= limit;
+                        case "lower_or_equal" -> parsed <= limit;
+                        default -> parsed == limit;
+                    };
+                };
+            }
+            case "validate_byte_range" -> {
+                boolean[] allowed = new boolean[256];
+                for (Object range : (List<Object>) parameters.get("ranges")) {
+                    var bounds = (List<Object>) range;
+                    for (int b = ((Number) bounds.get(0)).intValue(); b <= ((Number) bounds.get(1)).intValue(); b++) allowed[b] = true;
+                }
+                // Casa quando algum byte (UTF-8) cai fora das faixas permitidas.
+                yield (value, budget) -> { for (byte b : value.getBytes(java.nio.charset.StandardCharsets.UTF_8)) if (!allowed[b & 0xff]) return true; return false; };
             }
             case "is_sqli" -> (value, budget) -> Injection.isSqli(value);
             case "is_xss" -> (value, budget) -> Injection.isXss(value);
@@ -54,40 +73,84 @@ final class Operators {
         };
         if (test == null) return exploit(operator, parameters);
         Test finalTest = test;
-        return negated ? (condition, data, limits, budget) -> negatedHit(condition, data, limits, budget, finalTest)
-                : (condition, data, limits, budget) -> hit(condition, data, limits, budget, finalTest);
+        return negated ? (condition, data, limits, budget, previous) -> negatedHit(condition, data, limits, budget, previous, finalTest)
+                : (condition, data, limits, budget, previous) -> hit(condition, data, limits, budget, previous, finalTest);
     }
 
-    private static Engine.Hit hit(Engine.Condition condition, Map<String, Object> data, Values.Limits limits, Values.Budget budget, Test test) {
+    private static Engine.Hit hit(Engine.Condition condition, Map<String, Object> data, Values.Limits limits, Values.Budget budget, Engine.Hit previous, Test test) {
+        List<String> collected = new ArrayList<>();
+        Engine.Hit[] first = new Engine.Hit[1];
         for (Engine.Input input : condition.inputs()) {
+            if (input.matched()) {
+                if (previous == null) continue;
+                for (String candidate : previous.values())
+                    if (test.test(Transforms.apply(input.transforms(), candidate), budget)) return new Engine.Hit(previous.address(), previous.keyPath(), null, candidate);
+                continue;
+            }
             Object value = data.get(input.address());
             if (value == null) continue;
+            if (input.count()) {
+                String text = String.valueOf(members(value, input, limits, budget));
+                if (test.test(Transforms.apply(input.transforms(), text), budget)) return new Engine.Hit(input.address(), input.keyPath() == null ? List.of() : List.copyOf(input.keyPath()), null, text);
+                continue;
+            }
             Engine.Hit[] found = new Engine.Hit[1];
             Values.walk(value, input.keyPath(), input.keys(), limits, budget, leaf -> {
+                if (excluded(input, leaf.path())) return false;
                 String text = Transforms.apply(input.transforms(), leaf.text());
                 if (!test.test(text, budget)) return false;
-                found[0] = new Engine.Hit(input.address(), leaf.path(), null);
-                return true;
+                if (!condition.collect()) { found[0] = new Engine.Hit(input.address(), leaf.path(), null, text); return true; }
+                if (collected.size() < MAX_COLLECTED) collected.add(text);
+                if (first[0] == null) first[0] = new Engine.Hit(input.address(), leaf.path(), null, text);
+                return false;
             });
             if (found[0] != null) return found[0];
         }
+        if (first[0] != null) return new Engine.Hit(first[0].address(), first[0].keyPath(), null, first[0].value(), List.copyOf(collected));
         return null;
     }
 
+    /** Quantos valores casados uma condição junta para a seguinte (MATCHED_VARS). */
+    private static final int MAX_COLLECTED = 32;
+
     /** Negado: casa quando a entrada existe e nenhum valor dela satisfaz o teste. */
-    private static Engine.Hit negatedHit(Engine.Condition condition, Map<String, Object> data, Values.Limits limits, Values.Budget budget, Test test) {
+    private static Engine.Hit negatedHit(Engine.Condition condition, Map<String, Object> data, Values.Limits limits, Values.Budget budget, Engine.Hit previous, Test test) {
         for (Engine.Input input : condition.inputs()) {
+            if (input.matched()) {
+                if (previous == null) continue;
+                for (String candidate : previous.values())
+                    if (!test.test(Transforms.apply(input.transforms(), candidate), budget)) return new Engine.Hit(previous.address(), previous.keyPath(), null, candidate);
+                continue;
+            }
             Object value = data.get(input.address());
             if (value == null) continue;
+            if (input.count()) {
+                String text = String.valueOf(members(value, input, limits, budget));
+                if (!test.test(Transforms.apply(input.transforms(), text), budget)) return new Engine.Hit(input.address(), input.keyPath() == null ? List.of() : List.copyOf(input.keyPath()), null, text);
+                continue;
+            }
             boolean[] any = {false}, seen = {false};
             Values.walk(value, input.keyPath(), input.keys(), limits, budget, leaf -> {
+                if (excluded(input, leaf.path())) return false;
                 seen[0] = true;
                 if (test.test(Transforms.apply(input.transforms(), leaf.text()), budget)) { any[0] = true; return true; }
                 return false;
             });
-            if (seen[0] && !any[0]) return new Engine.Hit(input.address(), input.keyPath() == null ? List.of() : List.copyOf(input.keyPath()), null);
+            if (seen[0] && !any[0]) return new Engine.Hit(input.address(), input.keyPath() == null ? List.of() : List.copyOf(input.keyPath()), null, null);
         }
         return null;
+    }
+
+    /** A regra tira esta chave da variável (!REQUEST_HEADERS:User-Agent). */
+    private static boolean excluded(Engine.Input input, List<Object> path) {
+        return !input.exclude().isEmpty() && !path.isEmpty() && input.exclude().contains(String.valueOf(path.get(0)));
+    }
+
+    /** &VARIÁVEL: quantos valores (ou chaves, com keys_only) o endereço tem. */
+    private static int members(Object value, Engine.Input input, Values.Limits limits, Values.Budget budget) {
+        int[] count = {0};
+        Values.walk(value, input.keyPath(), input.keys(), limits, budget, leaf -> { count[0]++; return false; });
+        return count[0];
     }
 
     private static java.util.function.Predicate<String> ipMatch(List<String> list) {
@@ -117,7 +180,7 @@ final class Operators {
     }
 
     private static Engine.Operator exploit(String operator, Map<String, Object> parameters) {
-        return (condition, data, limits, budget) -> {
+        return (condition, data, limits, budget, previous) -> {
             for (Engine.Input resource : condition.resource()) {
                 Object operation = data.get(resource.address());
                 if (operation == null) continue;
@@ -128,7 +191,7 @@ final class Operators {
                     Engine.Hit[] found = new Engine.Hit[1];
                     Values.walk(value, input.keyPath(), false, limits, budget, leaf -> {
                         if (!Exploits.detect(operator, operation, leaf.text(), system)) return false;
-                        found[0] = new Engine.Hit(input.address(), leaf.path(), resource.address());
+                        found[0] = new Engine.Hit(input.address(), leaf.path(), resource.address(), leaf.text());
                         return true;
                     });
                     if (found[0] != null) return found[0];

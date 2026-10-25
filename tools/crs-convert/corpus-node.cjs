@@ -28,11 +28,22 @@ function request(c) {
     if (name === 'content-type') contentType = value.toLowerCase();
     headers[name] = value;
   }
+  // O go-ftw manda corpo de formulário quando o teste não diz o tipo.
+  if (c.body != null && !contentType) contentType = 'application/x-www-form-urlencoded';
+  if (c.body != null && !Object.keys(c.headers).some(key => key.toLowerCase() === 'content-length')) headers['content-length'] = String(Buffer.byteLength(c.body));
   const data = { 'server.request.headers.no_cookies': headers, 'server.request.method': c.method, 'server.request.uri.raw': c.uri };
   if (Object.keys(cookies).length) data['server.request.cookies'] = cookies;
   const question = c.uri.indexOf('?');
+  try { data['server.request.path'] = decodeURIComponent(question < 0 ? c.uri : c.uri.slice(0, question)); } catch (_) { data['server.request.path'] = c.uri; }
+  if (question >= 0) data['server.request.query_string'] = c.uri.slice(question + 1);
+  data['server.request.line'] = `${c.method} ${c.uri} HTTP/1.1`;
+  data['server.request.protocol'] = 'HTTP/1.1';
   data['server.request.query'] = form(question < 0 ? '' : c.uri.slice(question + 1));
-  if (c.body != null) data['server.request.body'] = contentType.includes('x-www-form-urlencoded') ? form(c.body) : c.body;
+  if (c.body != null) {
+    let body = contentType.includes('x-www-form-urlencoded') ? form(c.body) : c.body;
+    if (contentType.includes('json')) { try { body = JSON.parse(c.body); } catch (_) { /* fica como texto */ } }
+    data['server.request.body'] = body;
+  }
   return data;
 }
 

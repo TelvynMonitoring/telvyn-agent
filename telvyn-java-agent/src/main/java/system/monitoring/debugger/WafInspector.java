@@ -253,7 +253,20 @@ public final class WafInspector {
         String uri = (String) type.getMethod("getRequestURI").invoke(request);
         data.put("server.request.uri.raw", query == null ? uri : uri + "?" + query);
         data.put("server.request.method", type.getMethod("getMethod").invoke(request));
+        data.put("server.request.path", decodePath(uri));
+        if (query != null) data.put("server.request.query_string", query);
+        Object protocol = type.getMethod("getProtocol").invoke(request);
+        if (protocol != null) {
+            data.put("server.request.protocol", protocol);
+            data.put("server.request.line", type.getMethod("getMethod").invoke(request) + " " + (query == null ? uri : uri + "?" + query) + " " + protocol);
+        }
         return data;
+    }
+
+    /** Caminho da requisição já decodificado (o "+" fica como está; só a query o trata como espaço). */
+    static String decodePath(String uri) {
+        try { return URLDecoder.decode(uri.replace("+", "%2B"), StandardCharsets.UTF_8); }
+        catch (IllegalArgumentException malformed) { return uri; }
     }
 
     /** Query a partir do texto bruto, sem ler o corpo (getParameterMap leria um formulário). */

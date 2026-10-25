@@ -15,9 +15,22 @@ final class WafEngines {
 
     /** Motor com as regras (expected > 0: número exato de regras carregadas). */
     static Object build(Map<String, Object> rules, String name, int expected) {
-        Engine engine = Engine.load(rules);
+        Engine engine = Engine.load(rules, paranoia());
         if (expected > 0 && engine.size() != expected) throw new IllegalStateException("invalid WAF rules: " + name);
         return engine;
+    }
+
+    /** Nível de paranoia das regras (1 a 4): -Dtelvyn.security.waf-paranoia ou TELVYN_SECURITY_WAF_PARANOIA; padrão 2. */
+    static int paranoia() {
+        String value = System.getProperty("telvyn.security.waf-paranoia");
+        if (value == null) value = System.getenv("TELVYN_SECURITY_WAF_PARANOIA");
+        if (value == null || value.isBlank()) return 2;
+        try {
+            int level = Integer.parseInt(value.trim());
+            if (level >= 1 && level <= 4) return level;
+        } catch (NumberFormatException invalid) { /* cai no aviso abaixo */ }
+        System.err.println("[telvyn] invalid telvyn.security.waf-paranoia (" + value + "); expected 1 to 4. Using 2.");
+        return 2;
     }
 
     static String version() { return Engine.VERSION; }

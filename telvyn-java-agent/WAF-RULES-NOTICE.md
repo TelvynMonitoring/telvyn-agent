@@ -1,8 +1,10 @@
 Telvyn WAF rules (src/main/resources/telvyn/waf-rules.json)
 
 The attack detection rules are generated from the OWASP Core Rule Set (CRS) by tools/crs-convert/convert.py
-(rules of the REQUEST-911 to REQUEST-944 files, paranoia levels 1 and 2). Copyright the OWASP CRS project contributors,
+(rules of the REQUEST-911 to REQUEST-944 files, all paranoia levels; the agent loads up to the configured level, 2 by default). Copyright the OWASP CRS project contributors,
 licensed under Apache-2.0 (META-INF/licenses/owasp-crs/LICENSE, https://github.com/coreruleset/coreruleset).
+
+Rules with the tlv- and rasp- prefixes (scanner and out-of-band hosts, SSRF, template and expression injection, scan detection by response status, exploit prevention) are Telvyn's own (tools/crs-convert/telvyn_rules.py, rasp-rules.json).
 
 The API Security scanners (payment, personal data and credentials) are Telvyn's own (tools/crs-convert/api-schema.json).
 
