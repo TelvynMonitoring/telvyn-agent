@@ -669,7 +669,7 @@ func runIngestMode(ingestURL string) {
 
 	// Trace-agent: resume os spans NA BORDA. O corpo cru segue
 	// sendo repassado normalmente; em paralelo, cada span é higienizado e
-	// contado num DDSketch por bucket de 10s, e o resumo (hits/errors/latência
+	// contado num resumo de latência por bucket de 10s, e o resumo (hits/errors/latência
 	// exatos) vai pro /api/ingest/v1/apm/stats. Não-destrutivo: nada de span se
 	// perde; só passa a existir a métrica agregada.
 	apmConc := concentrator.New(log)

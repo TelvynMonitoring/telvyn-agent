@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { fileURLToPath, pathToFileURL } = require('node:url');
 const profileContext = require('./profile-context.cjs');
+const { originalPosition } = require('./sourcemap.cjs');
 
 // node:inspector/promises exists from Node.js 19; Node.js 18 only has the callback API.
 function inspectorSession() {
@@ -19,7 +20,7 @@ function inspectorSession() {
 
 // Original sources of transpiled code (TypeScript and similar) are valid frame files too.
 const SOURCE_FILE = /^(?:[\w$.-]+\/)*[\w$.-]+\.(?:cjs|mjs|js|jsx|ts|tsx|mts|cts)$/;
-let sourceMapper;
+let sourceMapper = false;
 const mappedFiles = new Map();
 const relativeSource = file => {
   const relative = path.relative(path.resolve(process.env.TELVYN_PROFILE_SOURCE_ROOT), file).split(path.sep).join('/');
@@ -32,18 +33,8 @@ function mappedPosition(file, line, column) {
   if (mappedFiles.has(key)) return mappedFiles.get(key);
   let result = {file, line};
   try {
-    // With the IAST on, application modules run rewritten: V8 positions belong to that code, and the rewriter keeps
-    // the way back (to the compiled file, or to the original source when it chains a source map).
-    let original = {path: file, line, column};
-    if (process.env.TELVYN_IAST_ENABLED === 'true') {
-      try { original = require('@datadog/wasm-js-rewriter/js/source-map').getSourcePathAndLineFromSourceMaps(file, line, column) || original; } catch (_) { /* IAST unavailable */ }
-    }
-    if (original.path && original.path !== file) { if (path.isAbsolute(original.path) && relativeSource(original.path)) result = {file: original.path, line: original.line > 0 ? original.line : -1}; }
-    else {
-      const info = sourceMapper?.mappingInfo({file, line: original.line > 0 ? original.line : line, column: original.column > 0 ? original.column : column});
-      if (info?.file && path.isAbsolute(info.file) && relativeSource(info.file)) result = {file: info.file, line: info.line > 0 ? info.line : -1};
-      else if (original.line > 0) result = {file, line: original.line};
-    }
+    const original = originalPosition(file, line, column);
+    if (original && path.isAbsolute(original.path) && relativeSource(original.path)) result = {file: original.path, line: original.line > 0 ? original.line : -1};
   } catch (_) { /* keep the compiled position */ }
   if (mappedFiles.size >= 20000) mappedFiles.clear();
   mappedFiles.set(key, result);
@@ -60,13 +51,10 @@ function sourceFile(frame) {
   } catch (_) { return ''; }
 }
 // Executed line (1-based) of a frame, -1 when it cannot be tied to the source file the frame name carries.
-// V8 reports lines of the compiled code, and the source maps give the way back. With the IAST on the code runs rewritten and
-// V8 reports a line without a column, which the rewriter cannot map back reliably (measured: lines of neighbouring statements),
-// so no executed line is recorded then; file names still come from the function start position.
+// V8 reports lines of the compiled code, and the source maps give the way back.
 function frameLine(frame, line) {
   if (!(line > 0) || !process.env.TELVYN_PROFILE_SOURCE_ROOT || !frame.url?.startsWith('file:')) return -1;
   try {
-    if (process.env.TELVYN_IAST_ENABLED === 'true') return -1;
     const file = fileURLToPath(frame.url);
     const position = sourceMapper ? mappedPosition(file, line, 1) : {file, line};
     const named = sourceFile(frame);
@@ -76,7 +64,7 @@ function frameLine(frame, line) {
 // Line ranges of the functions in a compiled file (1-based, inclusive), read once per file. Optimized code reports the lines
 // of functions inlined into a caller on the caller's node, so a line outside the caller's own range is not its executed line.
 const functionRanges = new Map();
-// Looked up by the position V8 gives (line and column) or, when only the function name is known, by that name.
+// Looked up by the position V8 gives (line and column).
 function functionRange(url, line, column) {
   if (!url?.startsWith('file:')) return undefined;
   let ranges = functionRanges.get(url);
@@ -112,11 +100,6 @@ function functionRange(url, line, column) {
     functionRanges.set(url, ranges);
   }
   if (!ranges) return undefined;
-  if (typeof line === 'string') {
-    // Only the name is known (native wall profiler): the one function with that name in the file, none when ambiguous.
-    const named = ranges.filter(range => range.name === line.split('.').pop());
-    return named.length === 1 ? {start: named[0].loc.start.line, end: named[0].loc.end.line} : undefined;
-  }
   // V8 places a function at a position inside its own node (the parameter list); the innermost enclosing function is it.
   const inside = loc => (line > loc.start.line || line === loc.start.line && column - 1 >= loc.start.column) && (line < loc.end.line || line === loc.end.line && column - 1 <= loc.end.column);
   let best;
@@ -143,15 +126,15 @@ function lineStacksDetails(entries) {
   }
   return kept.length ? {line_stacks: kept} : undefined;
 }
-// Reads the source maps found under the source root, once. Disable with TELVYN_PROFILE_SOURCE_MAPS=false.
-async function loadSourceMapper() {
-  if (!process.env.TELVYN_PROFILE_SOURCE_ROOT || process.env.TELVYN_PROFILE_SOURCE_MAPS === 'false') return;
-  try { sourceMapper = await require('@datadog/pprof').SourceMapper.create([path.resolve(process.env.TELVYN_PROFILE_SOURCE_ROOT)]); }
-  catch (_) { sourceMapper = undefined; }
+// Source maps are read the first time a compiled file shows up in a profile. Disable with TELVYN_PROFILE_SOURCE_MAPS=false.
+function enableSourceMaps() {
+  sourceMapper = !!process.env.TELVYN_PROFILE_SOURCE_ROOT && process.env.TELVYN_PROFILE_SOURCE_MAPS !== 'false';
 }
 
 const frameNames = new Map();
 function frameName(frame) {
+  // The heap profiler names the script by its path, the CPU profiler by a file URL.
+  if (frame.url && path.isAbsolute(frame.url)) frame = {...frame, url: pathToFileURL(frame.url).href};
   // Inspector frames carry 0-based positions; callers that already know the 1-based position pass line and column.
   const line = frame.line ?? (Number.isInteger(frame.lineNumber) ? frame.lineNumber + 1 : 0);
   const column = frame.column ?? (Number.isInteger(frame.columnNumber) ? frame.columnNumber + 1 : 0);
@@ -180,64 +163,24 @@ function heapProfile(profile) {
   return [...stacks].map(([stack, size]) => `${stack} ${size}`).join('\n');
 }
 
-// withLines: only the native profiler started with lineNumbers records executed lines; with trace context it reports the
-// line where the function starts, which would read as an executed line, so those are left unrecorded.
-function wallSamples(profile, withLines = false) {
-  const strings = profile.stringTable.strings;
-  const index = profile.sampleType.findIndex(type => strings[type.type] === 'wall' && strings[type.unit] === 'nanoseconds');
-  if (index < 0) throw new Error('Native wall profile unit unavailable');
-  const functions = new Map(profile.function.map(fn => [fn.id, fn]));
-  const locations = new Map(profile.location.map(location => [location.id, location]));
-  const samples = [];
-  for (const sample of profile.sample) {
-    const weight = sample.value[index];
-    if (!Number.isSafeInteger(weight) || weight <= 0) continue;
-    // Without trace context the native profiler records the line of every frame (call site, or the running line for the last one).
-    const located = sample.locationId.slice().reverse().flatMap(id => (locations.get(id)?.line || []).map(line => {
-      const fn = functions.get(line.functionId);
-      if (!fn) return null;
-      const filename = strings[fn.filename];
-      const frame = {url: filename && path.isAbsolute(filename) ? pathToFileURL(filename).href : '', functionName: strings[fn.name], line: Number(fn.startLine) || Number(line.line) || 0, column: 1};
-      const executed = Number(line.line), range = withLines && frame.functionName ? functionRange(frame.url, frame.functionName) : undefined;
-      // Same inlining guard as the CPU profile: a line outside the function's own range is not recorded.
-      const own = range && executed >= range.start && executed <= range.end;
-      return {name: frameName(frame), line: own ? frameLine(frame, executed) : -1};
-    })).filter(frame => frame?.name);
-    const frames = located.map(frame => frame.name);
-    if (!frames.length) continue;
-    const labels = Object.fromEntries((sample.label || []).map(label => [strings[label.key], strings[label.str]]));
-    samples.push({stack: frames.join(';'), weight, lines: located.map(frame => frame.line), trace: labels[profileContext.TRACE_LABEL], span: labels[profileContext.SPAN_LABEL]});
-  }
-  return samples;
-}
-
-function foldWall(samples) {
-  const stacks = new Map();
-  for (const { stack, weight } of samples) stacks.set(stack, (stacks.get(stack) || 0) + weight);
-  return [...stacks].map(([stack, weight]) => `${stack} ${weight}`).join('\n');
-}
-
-function wallProfile(profile) { return foldWall(wallSamples(profile)); }
-
-function allocationProfiles(root) {
-  const allocated = new Map(), live = new Map(), objects = new Map();
+// Estimated number of live objects per stack from the samples of the heap profile: a sample of `size` bytes stands for
+// 1 / (1 - e^(-size / interval)) objects (the same scale V8 applies to bytes).
+function heapObjects(profile) {
+  const frames = new Map();
   const visit = (node, parent) => {
-    const frame = frameName({functionName: node.name, url: node.scriptName && path.isAbsolute(node.scriptName) ? pathToFileURL(node.scriptName).href : '', line: node.lineNumber > 0 ? node.lineNumber : 0, column: node.columnNumber > 0 ? node.columnNumber : 1});
-    const frames = node.name === '(root)' || !node.name ? parent : [...parent, frame];
-    for (const allocation of node.allocations || []) {
-      for (const [map, key] of [[allocated, 'allocSpaceBytes'], [live, 'inuseSpaceBytes']]) {
-        const weight = allocation[key];
-        if (frames.length && Number.isSafeInteger(weight) && weight > 0) { const stack = frames.join(';'); map.set(stack, (map.get(stack) || 0) + weight); }
-      }
-      // Live objects: Node 26 reports inuseObjects, older versions report the live sample count.
-      const count = Math.round(allocation.inuseObjects ?? allocation.count);
-      if (frames.length && Number.isSafeInteger(count) && count > 0) { const stack = frames.join(';'); objects.set(stack, (objects.get(stack) || 0) + count); }
-    }
-    for (const child of node.children || []) visit(child, frames);
+    const names = node.callFrame.functionName === '(root)' ? parent : [...parent, frameName(node.callFrame)];
+    frames.set(node.id, names);
+    for (const child of node.children || []) visit(child, names);
   };
-  visit(root, []);
-  const folded = map => [...map].map(([stack, weight]) => `${stack} ${weight}`).join('\n');
-  return {allocated: folded(allocated), live: folded(live), objects: folded(objects)};
+  visit(profile.head, []);
+  const interval = profile.samplingInterval || 524288, counts = new Map();
+  for (const {nodeId, size} of profile.samples || []) {
+    const names = frames.get(nodeId);
+    if (!names?.length || !(size > 0)) continue;
+    const stack = names.join(';');
+    counts.set(stack, (counts.get(stack) || 0) + 1 / (1 - Math.exp(-size / interval)));
+  }
+  return [...counts].map(([stack, count]) => [stack, Math.round(count)]).filter(([, count]) => count > 0).map(([stack, count]) => `${stack} ${count}`).join('\n');
 }
 
 // Keep actual sample counts: V8 intervals are not exact CPU durations.
@@ -285,9 +228,69 @@ function cpuProfile(profile) {
       lineEntries.push({folded: stack, weight: share, lines: [...Array(frames.length - 1).fill(-1), mapped]});
     }
   }
-  return {folded: [...stacks].map(([stack, count]) => `${stack} ${count}`).join('\n'), details: lineStacksDetails(lineEntries)};
+  return {folded: [...stacks].map(([stack, count]) => `${stack} ${count}`).join('\n'), details: lineStacksDetails(lineEntries), lineEntries};
 }
 function foldedProfile(profile) { return cpuProfile(profile).folded; }
+
+// Time on the thread, in nanoseconds per stack: each sample stands for the time until the next one. A sample is
+// linked to the span the timeline says was active at its time (`offset` moves profile time onto the timeline's clock).
+function wallSamples(profile, notes = [], offset = 0) {
+  const nodes = new Map(profile.nodes.map(node => [node.id, node]));
+  const parents = new Map();
+  for (const node of profile.nodes) for (const child of node.children || []) parents.set(child, node.id);
+  const stackOf = new Map();
+  const stackFor = id => {
+    if (stackOf.has(id)) return stackOf.get(id);
+    const frames = [], seen = new Set();
+    for (let current = id; nodes.has(current) && !seen.has(current); current = parents.get(current)) {
+      seen.add(current);
+      const frame = nodes.get(current).callFrame;
+      if (frame.functionName !== '(root)') frames.unshift(frameName(frame));
+    }
+    const stack = frames.join(';');
+    stackOf.set(id, stack);
+    return stack;
+  };
+  const samples = profile.samples || [], deltas = profile.timeDeltas || [];
+  const grouped = new Map();
+  let at = profile.startTime;
+  for (let i = 0; i < samples.length; i++) {
+    at += deltas[i] || 0;
+    const node = nodes.get(samples[i]);
+    if (!node || node.callFrame.functionName === '(idle)') continue;
+    // Capped: a stalled profiler must not turn into hours of "time".
+    const weight = Math.min(Math.round((deltas[i + 1] ?? deltas[i] ?? 0) * 1000), 1e9);
+    const stack = stackFor(samples[i]);
+    if (!(weight > 0) || !stack) continue;
+    const holder = notes.length ? profileContext.holderAt(notes, at / 1000 + offset) : undefined;
+    const key = `${stack}\n${holder?.trace ?? ''}:${holder?.span ?? ''}`;
+    const known = grouped.get(key);
+    if (known) known.weight += weight; else grouped.set(key, {stack, weight, trace: holder?.trace, span: holder?.span});
+  }
+  return [...grouped.values()];
+}
+
+function foldWall(samples) {
+  const stacks = new Map();
+  for (const { stack, weight } of samples) stacks.set(stack, (stacks.get(stack) || 0) + weight);
+  return [...stacks].map(([stack, weight]) => `${stack} ${weight}`).join('\n');
+}
+
+function wallProfile(profile) { return foldWall(wallSamples(profile)); }
+
+// Executed lines of the wall profile: the lines the CPU profile recorded, weighted by the time each stack took.
+function wallDetails(cpu, samples) {
+  const time = new Map();
+  for (const { stack, weight } of samples) time.set(stack, (time.get(stack) || 0) + weight);
+  const ticks = new Map();
+  for (const entry of cpu.lineEntries) ticks.set(entry.folded, (ticks.get(entry.folded) || 0) + entry.weight);
+  const entries = [];
+  for (const entry of cpu.lineEntries) {
+    const total = time.get(entry.folded);
+    if (total) entries.push({...entry, weight: Math.round(total * entry.weight / ticks.get(entry.folded))});
+  }
+  return lineStacksDetails(entries);
+}
 
 // Same names, ranges and fallback as the Javaagent (JfrCpuProfiler.intConf): an out-of-range integer is clamped,
 // anything that is not a 32-bit integer uses the default.
@@ -324,41 +327,25 @@ function startProfiler(options = {}) {
   const flushMs = intSetting('TELVYN_PROFILING_FLUSH_SEC', 15, 2, 600) * 1000;
   const session = inspectorSession();
   session.connect();
-  let wall, wallContexts = false;
-  if (options.wall ?? process.env.TELVYN_PROFILE_WALL_ENABLED === 'true') {
-    try {
-      wall = require('@datadog/pprof').time;
-      // Span context needs V8 continuation-preserved data; otherwise Wall Time starts without it.
-      try { wall.start({intervalMicros: periodMs * 1000, withContexts: true, useCPED: true}); wallContexts = true; }
-      catch (_) { wall.start({intervalMicros: periodMs * 1000, lineNumbers: true}); }
-    } catch (_) { wall = undefined; console.warn('[Telvyn] Native wall profiler unavailable; CPU/heap remain enabled.'); }
-    if (wallContexts) profileContext.enable(wall).then(supported => {
-      if (supported) return;
-      wallContexts = false;
-      try { wall.stop(); wall.start({intervalMicros: periodMs * 1000, lineNumbers: true}); }
-      catch (_) { wall = undefined; console.warn('[Telvyn] Native wall profiler unavailable; CPU/heap remain enabled.'); }
-    });
-  }
-  let allocation, allocationFrom, liveHeap;
-  if (options.alloc ?? process.env.TELVYN_PROFILE_ALLOCATION_ENABLED === 'true') {
-    try {
-      if (Number(process.versions.node.split('.')[0]) < 26) throw new Error('Allocation profiling requires Node.js 26 or newer');
-      allocation = require('@datadog/pprof').heap;
-      allocation.start(524288, 64, true); allocationFrom = Date.now();
-    } catch (_) { allocation = undefined; console.warn('[Telvyn] Allocation profiling unavailable (requires Node.js 26+ and native addon); CPU/heap remain enabled.'); }
-  }
-  let stopped = false, timer, startedAt, rotating = Promise.resolve();
+  // Wall Time comes from the same sampling as CPU, weighted by elapsed time; its samples are linked to spans through
+  // the timeline of active spans. Allocated memory samples every allocation, live heap only the objects still alive.
+  const wall = !!(options.wall ?? process.env.TELVYN_PROFILE_WALL_ENABLED === 'true');
+  const allocation = !!(options.alloc ?? process.env.TELVYN_PROFILE_ALLOCATION_ENABLED === 'true');
+  const wallContexts = wall && profileContext.enable();
+  enableSourceMaps();
+  let allocationFrom;
+  let stopped = false, timer, startedAt, startedClock, rotating = Promise.resolve();
   const warn = () => console.warn('[Telvyn] Profile could not be collected or delivered.');
   async function begin() {
     await session.post('Profiler.start');
-    startedAt = Date.now();
+    startedAt = Date.now(); startedClock = profileContext.clock();
     if (stopped) return;
     timer = setTimeout(() => { rotating = rotate(); }, flushMs); timer.unref();
   }
   async function rotate() {
     try {
       const { profile } = await session.post('Profiler.stop');
-      const from = startedAt;
+      const from = startedAt, started = startedClock, notes = wallContexts ? profileContext.take() : [];
       const seconds = Math.max(1, Math.round((Date.now() - from) / 1000));
       if (stopped) return;
       await begin();
@@ -366,24 +353,25 @@ function startProfiler(options = {}) {
       const uploads = [upload('cpu', cpu.folded, from, seconds, periodMs, [], cpu.details)];
       if (wall) {
         try {
-          const samples = wallSamples(wallContexts ? wall.stop(true, profileContext.generateLabels) : wall.stop(true), !wallContexts);
-          uploads.push(upload('wall', foldWall(samples), from, seconds, 0, wallContexts ? profileContext.links(samples) : [], lineStacksDetails(samples.map(sample => ({folded: sample.stack, lines: sample.lines, weight: sample.weight})))));
+          // The profile and the timeline share a clock on most systems; when they do not, the start of the window aligns them.
+          const gap = started - profile.startTime / 1000;
+          const samples = wallSamples(profile, notes, Math.abs(gap) < 1000 ? 0 : gap);
+          uploads.push(upload('wall', foldWall(samples), from, seconds, 0, wallContexts ? profileContext.links(samples) : [], wallDetails(cpu, samples)));
         }
         catch (_) { warn(); }
       }
       try {
         if (allocation) {
-          const profiles = allocationProfiles(allocation.v8Profile());
+          // Every allocation since the window began, including objects already collected.
+          const { profile: allocated } = await session.post('HeapProfiler.stopSampling');
           const allocationSeconds = Math.max(1, Math.round((Date.now() - allocationFrom) / 1000));
-          allocation.stop(); allocation.start(524288, 64, true);
           const previousFrom = allocationFrom; allocationFrom = Date.now();
-          uploads.push(upload('alloc', profiles.allocated, previousFrom, allocationSeconds, 0));
-          uploads.push(upload('heap', profiles.live, previousFrom, allocationSeconds, 0));
-          uploads.push(upload('heap_objects', profiles.objects, previousFrom, allocationSeconds, 0));
+          await startHeapSampling();
+          uploads.push(upload('alloc', heapProfile(allocated), previousFrom, allocationSeconds, 0));
         } else {
           const { profile: heap } = await session.post('HeapProfiler.getSamplingProfile');
           uploads.push(upload('heap', heapProfile(heap), from, seconds, 0));
-          if (liveHeap) uploads.push(upload('heap_objects', allocationProfiles(liveHeap.v8Profile()).objects, from, seconds, 0));
+          uploads.push(upload('heap_objects', heapObjects(heap), from, seconds, 0));
         }
       } catch (_) { warn(); }
       for (const result of await Promise.allSettled(uploads)) if (result.status === 'rejected') warn();
@@ -404,15 +392,10 @@ function startProfiler(options = {}) {
       if (!response.ok) throw new Error('Profile delivery failed');
       await response.arrayBuffer();
   }
-  // The first window waits (briefly) for the maps so one function keeps one file name across windows.
-  const mapsReady = Promise.race([loadSourceMapper(), new Promise(resolve => setTimeout(resolve, 10000).unref())]);
-  const ready = mapsReady.then(() => session.post('Profiler.enable')).then(() => session.post('Profiler.setSamplingInterval', {interval: periodMs * 1000}))
-    .then(async () => {
-      if (allocation) return;
-      await session.post('HeapProfiler.startSampling', {samplingInterval: 524288});
-      // The native heap profiler reads the sampler started above, which is where live object counts come from.
-      try { liveHeap = require('@datadog/pprof').heap; liveHeap.start(524288, 64); } catch (_) { liveHeap = undefined; }
-    }).then(begin).catch(() => { warn(); session.disconnect(); });
-  return { running: true, wall: !!wall, alloc: !!allocation, stop: async () => { stopped = true; await ready; clearTimeout(timer); await rotating; try { await session.post('Profiler.stop'); if (allocation) allocation.stop(); else await session.post('HeapProfiler.stopSampling'); } catch (_) {} try { liveHeap?.stop(); } catch (_) {} profileContext.disable(); try { if (wall?.isStarted()) wall.stop(); } catch (_) {} session.disconnect(); } };
+  // V8 keeps one heap sampler: it runs in the mode the settings ask for.
+  const startHeapSampling = () => session.post('HeapProfiler.startSampling', {samplingInterval: 524288, ...(allocation ? {includeObjectsCollectedByMajorGC: true, includeObjectsCollectedByMinorGC: true} : {})});
+  const ready = session.post('Profiler.enable').then(() => session.post('Profiler.setSamplingInterval', {interval: periodMs * 1000}))
+    .then(() => { allocationFrom = Date.now(); return startHeapSampling(); }).then(begin).catch(() => { warn(); session.disconnect(); });
+  return { running: true, wall, alloc: allocation, stop: async () => { stopped = true; await ready; clearTimeout(timer); await rotating; try { await session.post('Profiler.stop'); await session.post('HeapProfiler.stopSampling'); } catch (_) {} profileContext.disable(); session.disconnect(); } };
 }
-module.exports = { startProfiler, cpuProfile, foldedProfile, heapProfile, wallProfile, wallSamples, allocationProfiles };
+module.exports = { startProfiler, cpuProfile, foldedProfile, heapProfile, heapObjects, wallProfile, wallSamples };

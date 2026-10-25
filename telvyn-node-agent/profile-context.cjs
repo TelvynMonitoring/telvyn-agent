@@ -1,35 +1,62 @@
 'use strict';
-// Links Wall Time samples to the span that was active in their async continuation. The native
-// profiler keeps the context in V8 continuation-preserved data, which only exists with
-// AsyncContextFrame (Node.js 24+, or 22/23 with --experimental-async-context-frame). Without it
-// no context is attached and samples stay unattributed.
-const { trace, isSpanContextValid } = require('@opentelemetry/api');
+// Links Wall Time samples to the span that was running when each sample was taken. The context manager and the
+// async hooks note every change of the active span with a timestamp; the profiler looks each sample's time up in that
+// timeline. Nothing is attached to the samples themselves, so it works on every supported Node.js version.
+const { createHook } = require('node:async_hooks');
+const { context, trace, isSpanContextValid } = require('@opentelemetry/api');
 
-const TRACE_LABEL = 'telvyn.trace', SPAN_LABEL = 'telvyn.span';
-const SPAN_LIMIT = 8192, LINK_LIMIT = 128, LINK_CHARS = 250000;
+const SPAN_LIMIT = 8192, LINK_LIMIT = 128, LINK_CHARS = 250000, TIMELINE_LIMIT = 262144;
 const spans = new Map();
 const holders = new WeakMap();
-let run;
+let recording = false, current = null, timeline = [], hook;
 
-// Checks, with a real continuation, that the profiler context survives an await.
-async function enable(time) {
+const clock = () => Number(process.hrtime.bigint()) / 1e6;
+function note(holder) {
+  if (!recording || holder === current && timeline.length) return;
+  current = holder;
+  if (timeline.length < TIMELINE_LIMIT) timeline.push({at: clock(), holder});
+}
+
+function enable() {
+  if (recording) return true;
   try {
-    const seen = await time.runWithContext({probe: true}, async () => { await null; return time.getContext(); });
-    if (!seen?.probe) return false;
-    run = time.runWithContext;
+    // The continuation of an await runs without the context manager being called: the hooks note it.
+    hook = createHook({
+      before() { try { note(holderFor(context.active())); } catch (_) { /* the sample stays unattributed */ } },
+      after() { note(null); },
+    });
+    hook.enable();
+    recording = true; current = null; timeline = [];
     return true;
   } catch (_) { return false; }
 }
 
-function disable() { run = undefined; spans.clear(); }
+function disable() { recording = false; hook?.disable(); hook = undefined; spans.clear(); timeline = []; current = null; }
 
-function holderFor(context) {
-  const span = trace.getSpan(context);
-  if (!span) return undefined;
+// The notes since the last call, oldest first; the next ones start from the span that is active now.
+function take() {
+  const taken = timeline;
+  timeline = current === null ? [] : [{at: clock(), holder: current}];
+  return taken;
+}
+
+// The span active at the given time (ms, same clock as process.hrtime), by binary search.
+function holderAt(notes, at) {
+  let low = 0, high = notes.length - 1, found;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (notes[middle].at <= at) { found = notes[middle]; low = middle + 1; } else high = middle - 1;
+  }
+  return found?.holder ?? undefined;
+}
+
+function holderFor(ctx) {
+  const span = trace.getSpan(ctx);
+  if (!span) return null;
   let holder = holders.get(span);
   if (holder) return holder;
   const spanContext = span.spanContext();
-  if (!isSpanContextValid(spanContext)) return undefined;
+  if (!isSpanContextValid(spanContext)) return null;
   holder = {trace: spanContext.traceId, span: spanContext.spanId};
   holders.set(span, holder);
   if (spans.size >= SPAN_LIMIT) spans.delete(spans.keys().next().value);
@@ -37,26 +64,17 @@ function holderFor(context) {
   return holder;
 }
 
-// Runs each OpenTelemetry activation inside a profiler context carrying its trace and span ids.
+// Notes each OpenTelemetry activation, for the time the code runs inside it.
 function contextManager(Base) {
   return class extends Base {
-    with(context, fn, thisArg, ...args) {
-      const holder = run && holderFor(context);
-      if (!holder) return super.with(context, fn, thisArg, ...args);
-      let started = false;
-      try {
-        return run(holder, () => { started = true; return super.with(context, fn, thisArg, ...args); });
-      } catch (error) {
-        if (started) throw error;
-        return super.with(context, fn, thisArg, ...args);
-      }
+    with(ctx, fn, thisArg, ...args) {
+      if (!recording) return super.with(ctx, fn, thisArg, ...args);
+      const previous = current;
+      try { note(holderFor(ctx)); } catch (_) { /* unattributed */ }
+      try { return super.with(ctx, fn, thisArg, ...args); }
+      finally { note(previous); }
     }
   };
-}
-
-function generateLabels({ context }) {
-  const holder = context?.context;
-  return holder ? {[TRACE_LABEL]: holder.trace, [SPAN_LABEL]: holder.span} : {};
 }
 
 // "METHOD route" from the server span ancestry; raw URLs are never used.
@@ -103,4 +121,4 @@ function links(samples) {
   return result;
 }
 
-module.exports = { enable, disable, contextManager, generateLabels, links, TRACE_LABEL, SPAN_LABEL };
+module.exports = { enable, disable, take, holderAt, clock, contextManager, links };

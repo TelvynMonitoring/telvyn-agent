@@ -279,7 +279,7 @@ func buildSpan(ev Event, parsers *parsersByConn, conns *connTracker, cfg BridgeC
 	}
 
 	// Guard de latência L7 não-física: descarta o dado corrompido do kernel na
-	// ORIGEM (não conta hit nem latência) antes de envenenar o DDSketch. buildSpan
+	// ORIGEM (não conta hit nem latência) antes de envenenar o resumo de latência. buildSpan
 	// é o único conversor evento→span, então isto limpa noc_span E o stats eBPF
 	// (main.go: conc.Add(sp)) de uma vez só.
 	if !physicalL7Latency(r.Duration) {

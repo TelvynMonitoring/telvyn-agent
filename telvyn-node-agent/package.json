@@ -12,6 +12,7 @@
     "bootstrap.cjs",
     "profiler.cjs",
     "profile-context.cjs",
+    "sourcemap.cjs",
     "routes.cjs",
     "security.cjs",
     "iast.cjs",
@@ -32,7 +33,7 @@
     "licenses"
   ],
   "scripts": {
-    "test": "node --test test/waf.test.cjs"
+    "test": "node --test test/"
   },
   "engines": {
     "node": "^18.19.0 || >=20"
@@ -53,10 +54,5 @@
     "@opentelemetry/sdk-node": "0.223.0",
     "acorn": "8.14.0",
     "import-in-the-middle": "3.5.2"
-  },
-  "optionalDependencies": {
-    "@datadog/native-iast-taint-tracking": "4.2.1",
-    "@datadog/pprof": "5.20.0",
-    "@datadog/wasm-js-rewriter": "5.0.4"
   }
 }

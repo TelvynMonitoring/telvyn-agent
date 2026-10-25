@@ -32,12 +32,10 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
       const { port1, port2 } = new (require('node:worker_threads').MessageChannel)();
       loaderPort = port1;
       port1.on('message', message => {
-        if (message.error) { if (iast) iast.state = 'error'; console.warn('[Telvyn] ESM taint instrumentation failed.'); }
-        else if (message.filename && message.source) require('@datadog/wasm-js-rewriter/js/source-map').cacheRewrittenSourceMap(message.filename, message.source);
-        else if (message.module) sca?.noteUrl(message.module);
+        if (message.module) sca?.noteUrl(message.module);
       });
       port1.unref();
-      require('node:module').register(require('node:url').pathToFileURL(require('node:path').join(__dirname, 'loader.mjs')), {data: {sourceRoot: process.env.TELVYN_PROFILE_SOURCE_ROOT, iast: iast?.state === 'active', sca: !!sca, port: port2}, transferList: [port2]});
+      require('node:module').register(require('node:url').pathToFileURL(require('node:path').join(__dirname, 'loader.mjs')), {data: {sca: !!sca, port: port2}, transferList: [port2]});
     } catch (error) { console.warn('[Telvyn] ESM instrumentation could not start.' + why(error)); loaderPort?.close(); }
   }
 

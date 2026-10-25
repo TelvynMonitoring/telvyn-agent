@@ -1,0 +1,89 @@
+"""Gera telvyn-java-agent/src/main/resources/iast-secret-patterns.tsv.
+
+Cada linha é o formato público do token de um serviço (prefixo fixo + alfabeto + tamanho). O IAST confere o literal
+inteiro (Matcher.matches), então os padrões não têm âncoras. Fonte dos formatos: a documentação de cada serviço.
+Uso: python -I generate.py <saída.tsv>
+"""
+import sys
+
+A = "[A-Za-z0-9]"
+HEX = "[a-fA-F0-9]"
+B64URL = "[A-Za-z0-9_-]"
+
+FORMATS = [
+    ("adobe-client-secret", "(?i)p8e-[a-z0-9]{32}"),
+    ("age-secret-key", "AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}"),
+    ("alibaba-access-key-id", "(?i)LTAI[a-z0-9]{20}"),
+    ("authress-service-client-access-key", "(?i)(?:sc|ext|scauth|authress)_[a-z0-9]{5,30}\\.[a-z0-9]{4,6}\\.acc[_-][a-z0-9-]{10,32}\\.[a-z0-9+/_=-]{30,120}"),
+    ("aws-access-token", "(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}"),
+    ("clojars-api-token", "(?i)CLOJARS_[a-z0-9]{60}"),
+    ("databricks-api-token", "(?i)dapi[a-h0-9]{32}"),
+    ("digitalocean-access-token", "(?i)doo_v1_[a-f0-9]{64}"),
+    ("digitalocean-pat", "(?i)dop_v1_[a-f0-9]{64}"),
+    ("digitalocean-refresh-token", "(?i)dor_v1_[a-f0-9]{64}"),
+    ("doppler-api-token", "(?i)dp\\.pt\\.[a-z0-9]{43}"),
+    ("duffel-api-token", "(?i)duffel_(?:test|live)_[a-z0-9_=-]{43}"),
+    ("dynatrace-api-token", "(?i)dt0c01\\.[a-z0-9]{24}\\.[a-z0-9]{64}"),
+    ("easypost-api-token", "(?i)EZAK[a-z0-9]{54}"),
+    ("flutterwave-public-key", "(?i)FLWPUBK_TEST-[a-h0-9]{32}-X"),
+    ("frameio-api-token", "(?i)fio-u-[a-z0-9_=-]{64}"),
+    ("gcp-api-key", "AIza[0-9A-Za-z_-]{35}"),
+    ("github-app-token", "gh[us]_[0-9a-zA-Z]{36}"),
+    ("github-fine-grained-pat", "github_pat_[0-9a-zA-Z_]{82}"),
+    ("github-oauth", "gho_[0-9a-zA-Z]{36}"),
+    ("github-pat", "ghp_[0-9a-zA-Z]{36}"),
+    ("gitlab-pat", "glpat-[0-9a-zA-Z_-]{20}"),
+    ("gitlab-ptt", "glptt-[0-9a-f]{40}"),
+    ("gitlab-rrt", "GR1348941[0-9a-zA-Z_-]{20}"),
+    ("grafana-api-key", "eyJrIjoi[A-Za-z0-9]{70,400}={0,2}"),
+    ("grafana-cloud-api-token", "glc_[A-Za-z0-9+/]{32,400}={0,2}"),
+    ("grafana-service-account-token", "glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}"),
+    ("hashicorp-tf-api-token", "(?i)[a-z0-9]{14}\\.atlasv1\\.[a-z0-9_=-]{60,70}"),
+    ("jwt", "ey[a-zA-Z0-9]{17,}\\.ey[a-zA-Z0-9/_-]{17,}\\.(?:[a-zA-Z0-9/_-]{10,}={0,2})?"),
+    ("linear-api-key", "(?i)lin_api_[a-z0-9]{40}"),
+    ("npm-access-token", "(?i)npm_[a-z0-9]{36}"),
+    ("openai-api-key", "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"),
+    ("planetscale-api-token", "(?i)pscale_tkn_[a-z0-9=_.-]{32,64}"),
+    ("planetscale-oauth-token", "(?i)pscale_oauth_[a-z0-9=_.-]{32,64}"),
+    ("planetscale-password", "(?i)pscale_pw_[a-z0-9=_.-]{32,64}"),
+    ("postman-api-token", "(?i)PMAK-[a-f0-9]{24}-[a-f0-9]{34}"),
+    ("prefect-api-token", "(?i)pnu_[a-z0-9]{36}"),
+    ("private-key", "(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\\s\\S]*?-----END[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----\\s*"),
+    ("pulumi-api-token", "(?i)pul-[a-f0-9]{40}"),
+    ("pypi-upload-token", "pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,1000}"),
+    ("readme-api-token", "(?i)rdme_[a-z0-9]{70}"),
+    ("rubygems-api-token", "(?i)rubygems_[a-f0-9]{48}"),
+    ("scalingo-api-token", "tk-us-[a-zA-Z0-9_-]{48}"),
+    ("sendgrid-api-token", "(?i)SG\\.[a-z0-9=_.-]{66}"),
+    ("sendinblue-api-token", "(?i)xkeysib-[a-f0-9]{64}-[a-z0-9]{16}"),
+    ("shippo-api-token", "(?i)shippo_(?:live|test)_[a-f0-9]{40}"),
+    ("shopify-access-token", "shpat_[a-fA-F0-9]{32}"),
+    ("shopify-custom-access-token", "shpca_[a-fA-F0-9]{32}"),
+    ("shopify-private-app-access-token", "shppa_[a-fA-F0-9]{32}"),
+    ("shopify-shared-secret", "shpss_[a-fA-F0-9]{32}"),
+    ("slack-app-token", "(?i)xapp-\\d-[A-Z0-9]+-\\d+-[a-z0-9]+"),
+    ("slack-bot-token", "xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*"),
+    ("slack-config-access-token", "(?i)xoxe\\.xox[bp]-\\d-[A-Z0-9]{163,166}"),
+    ("slack-config-refresh-token", "(?i)xoxe-\\d-[A-Z0-9]{146}"),
+    ("slack-legacy-bot-token", "xoxb-[0-9]{8,14}-[a-zA-Z0-9]{18,26}"),
+    ("slack-legacy-token", "xox[os]-\\d+-\\d+-\\d+-[a-fA-F\\d]+"),
+    ("slack-legacy-workspace-token", "xox[ar]-(?:\\d-)?[0-9a-zA-Z]{8,48}"),
+    ("slack-user-token", "xox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}"),
+    ("slack-webhook-url", "(?:https?://)?hooks\\.slack\\.com/(?:services|workflows)/[A-Za-z0-9+/]{43,46}"),
+    ("square-access-token", "(?i)sq0atp-[0-9A-Za-z_-]{22}"),
+    ("square-secret", "(?i)sq0csp-[0-9A-Za-z_-]{43}"),
+    ("stripe-access-token", "(?i)(?:sk|pk)_(?:test|live)_[0-9a-z]{10,32}"),
+    ("twilio-api-key", "SK[0-9a-fA-F]{32}"),
+    ("vault-batch-token", "(?i)hvb\\.[a-z0-9_-]{138,212}"),
+    ("vault-service-token", "(?i)hvs\\.[a-z0-9_-]{90,100}"),
+]
+
+HEADER = """# Formatos de segredo fixos no código (nome<TAB>regex Java; o literal inteiro precisa casar).
+# Gerado por tools/iast-secrets/generate.py a partir dos formatos públicos de token de cada serviço.
+"""
+
+if __name__ == "__main__":
+    with open(sys.argv[1], "w", encoding="utf-8", newline="\n") as out:
+        out.write(HEADER)
+        for name, pattern in FORMATS:
+            out.write(name + "\t" + pattern + "\n")

@@ -3,8 +3,7 @@ package concentrator
 import (
 	"testing"
 
-	"github.com/ispwatch/collector/internal/sketch"
-	"github.com/ispwatch/collector/internal/sketch/store"
+	"github.com/ispwatch/collector/internal/latency"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 
@@ -93,7 +92,7 @@ func TestConcentrator_HitsErrorsEQuantis(t *testing.T) {
 	if g.DurationSumNano != uint64((10+20+30+40+100)*ms) {
 		t.Fatalf("durationSum errado: %d", g.DurationSumNano)
 	}
-	// p95 das OK deve cair na cauda alta (entre ~30 e 40ms; o DDSketch tem 1%
+	// p95 das OK deve cair na cauda alta (entre ~30 e 40ms; o resumo tem 1%
 	// de erro relativo, então o piso é folgado).
 	okP95 := quantile(t, g.OkSummary, 0.95)
 	if okP95 < 25*float64(ms) || okP95 > 41*float64(ms) {
@@ -170,15 +169,11 @@ func quantile(t *testing.T, encoded []byte, q float64) float64 {
 	if len(encoded) == 0 {
 		t.Fatalf("sketch vazio")
 	}
-	s, err := ddsketch.DecodeDDSketch(encoded, store.DefaultProvider, nil)
+	s, err := latency.Decode(encoded)
 	if err != nil {
 		t.Fatalf("decode falhou: %v", err)
 	}
-	v, err := s.GetValueAtQuantile(q)
-	if err != nil {
-		t.Fatalf("quantile falhou: %v", err)
-	}
-	return v
+	return s.Quantile(q)
 }
 
 func TestOutboundEbpfStatsUseClientIdentity(t *testing.T) {
