@@ -1,6 +1,6 @@
 # Arquitetura de integrações atualizáveis do agente Telvyn
 
-Status: protótipo inicial em 01/10/2026. O usuário ampliou o critério para paridade do fluxo de checks Python do Datadog; o runner por coleta abaixo NÃO atende esse critério sozinho. O de-para oficial passa a orientar a revisão. Validação de laboratório e distribuição ainda pendentes.
+Status: protótipo inicial em 01/10/2026. O critério foi ampliado para um fluxo completo de checks Python; o runner por coleta abaixo NÃO atende esse critério sozinho. O de-para abaixo orienta a revisão. Validação de laboratório e distribuição ainda pendentes.
 
 ## Limites do incremento atual
 
@@ -12,17 +12,17 @@ Métricas validadas reaproveitam a ingestão existente. O inventário permanece 
 
 Permitir entregar novas integrações de coleta sem substituir o binário do agente a cada alteração. O núcleo continua em Go; checks existentes continuam funcionando. Novas integrações podem ser distribuídas como pacotes versionados executados por um runtime separado. Python é o primeiro candidato, não uma decisão de suporte a várias linguagens.
 
-O usuário aprovou estudar a arquitetura pública do Datadog e escrever código próprio, sem copiar sua implementação. A referência não obriga reproduzir seus detalhes internos. Contrato, isolamento e distribuição abaixo são propostas Telvyn ainda sujeitas à revisão.
+O código é próprio. Contrato, isolamento e distribuição abaixo são propostas Telvyn ainda sujeitas à revisão.
 
-## O que a referência estabelece
+## Premissas
 
-O Datadog explica que incorporar Python permite alterar checks sem recompilar o agente. Seu artigo também descreve custos de integração entre linguagens e build. Isso justifica extensibilidade, não prova que o mesmo mecanismo embutido seja a melhor escolha para nós. [Engenharia Datadog](https://www.datadoghq.com/blog/engineering/cgo-and-python/).
+Incorporar Python permite alterar checks sem recompilar o agente, ao custo de integração entre linguagens e build. Isso justifica extensibilidade, não prova que o mesmo mecanismo embutido seja a melhor escolha para nós.
 
-A integração Proxmox consulta a API do cluster para descobrir recursos e coletar métricas; seu código é um check Python. [Integração](https://docs.datadoghq.com/integrations/proxmox/) e [implementação de referência](https://github.com/DataDog/integrations-core/blob/master/proxmox/datadog_checks/proxmox/check.py).
+A integração Proxmox consulta a API do cluster para descobrir recursos e coletar métricas; é um check periódico.
 
-No vSphere, um agente consulta um endpoint vCenter; os detalhes de autenticação, inventário, métricas e dependências são específicos dessa integração. É a mesma categoria de coleta, não o mesmo código Proxmox com outra URL. [Arquitetura vSphere](https://datadoghq.dev/integrations-core/architecture/vsphere/).
+No vSphere, um agente consulta um endpoint vCenter; os detalhes de autenticação, inventário, métricas e dependências são específicos dessa integração. É a mesma categoria de coleta, não o mesmo código Proxmox com outra URL.
 
-Traces são produzidos por instrumentação e enviados ao coletor. O Datadog documenta recebimento OTLP de aplicações instrumentadas; não se trata de um check periódico que consulta uma API. [OTLP no Datadog](https://docs.datadoghq.com/opentelemetry/setup/otlp_ingest_in_the_agent/) e [conceito de traces](https://opentelemetry.io/docs/concepts/signals/traces/).
+Traces são produzidos por instrumentação e enviados ao coletor por OTLP; não se trata de um check periódico que consulta uma API. [Conceito de traces](https://opentelemetry.io/docs/concepts/signals/traces/).
 
 ## Formas de coleta
 
@@ -85,16 +85,16 @@ Pacotes compatíveis podem mudar sem atualizar o binário. Mudanças no protocol
 
 ### De-para da primeira implementação
 
-| Referência Datadog | Telvyn | Limite desta entrega |
+| Modelo de mercado | Telvyn | Limite desta entrega |
 |---|---|---|
-| Agent Go executa checks Python com CPython embutido | Check Go chama runner Python em processo separado | Não reproduz cgo; Python precisa estar instalado/configurado localmente |
+| Agent em Go executa checks Python com CPython embutido | Check Go chama runner Python em processo separado | Não reproduz cgo; Python precisa estar instalado/configurado localmente |
 | Integração Proxmox consulta API do cluster | Pacote Proxmox consulta HTTPS e devolve métricas e inventário | Cobertura inicial explícita por endpoint, não paridade completa |
 | vSphere usa SDK e PerformanceManager | Pacote vSphere usa pyVmomi para inventário e contadores selecionados | Dependência deve integrar o runtime; testes simulados não certificam vCenter |
 | Scheduler e submissão centralizados no agente | Registry/Check e ingestão existentes no núcleo Go | Sem segundo scheduler nem token de ingestão entregue ao check |
 | Integrações distribuídas separadamente | Pacotes verificados por assinatura e hashes | Catálogo remoto, download e ativação automática ficam fora deste incremento |
 | Recursos associados a métricas | Referência externa no resultado, identidade do host controlada pelo Go | Inventário coletado não implica hosts criados no portal; persistência depende de contrato backend |
 
-As referências de implementação são [Proxmox](https://github.com/DataDog/integrations-core/blob/master/proxmox/datadog_checks/proxmox/check.py) e [vSphere](https://github.com/DataDog/integrations-core/blob/master/vsphere/datadog_checks/vsphere/vsphere.py). O check vSphere não é somente uma chamada REST de disponibilidade: utiliza o SDK de vCenter e metadados dos contadores. A normalização deve seguir também as [unidades oficiais dos contadores VMware](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/network_counters.html).
+O check vSphere não é somente uma chamada REST de disponibilidade: utiliza o SDK de vCenter e metadados dos contadores. A normalização deve seguir também as [unidades oficiais dos contadores VMware](https://developer.broadcom.com/xapis/vsphere-web-services-api/latest/network_counters.html).
 
 O framework `internal/checks/check.go` já define Check, Registry e Factory. O executor externo deve se encaixar nesse agendamento, sem duplicá-lo. `internal/configpull` é o ponto candidato para a configuração desejada. A ingestão, fila e diagnóstico existentes devem ser reutilizados após revisão das interfaces reais.
 
@@ -132,8 +132,6 @@ Antes do piloto, decidir plataformas/arquiteturas suportadas, política de publi
 
 ## Referências para estudo
 
-- [Agente Datadog](https://github.com/DataDog/datadog-agent) e [integrações oficiais](https://github.com/DataDog/integrations-core).
-- [Configuração Proxmox](https://github.com/DataDog/integrations-core/blob/master/proxmox/datadog_checks/proxmox/data/conf.yaml.example).
 - [Zabbix Proxmox HTTP](https://www.zabbix.com/integrations/proxmox), como referência adicional de descoberta e permissões.
 
-Nenhum código Datadog foi copiado. Se surgir proposta de incorporar um trecho ou dependência, revisar licença e avisos antes. Este documento não implica aprovação de execução de código remoto arbitrário.
+Nenhum código de terceiros foi copiado. Se surgir proposta de incorporar um trecho ou dependência, revisar licença e avisos antes. Este documento não implica aprovação de execução de código remoto arbitrário.
