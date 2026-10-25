@@ -310,7 +310,7 @@ function startSecurity() {
       if (!state) return;
       blockRequest(state, request, response, state.span, state.blockedBy || 'rule');
     },
-    // Public SDK API (like tracer.setUser / appsec.isUserBlocked / appsec.blockRequest).
+    // Public SDK API: setUser, isUserBlocked, blockRequest.
     setUser(user) {
       const state = store.getStore();
       if (!state) return false;

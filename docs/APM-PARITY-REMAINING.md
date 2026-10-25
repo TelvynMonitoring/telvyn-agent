@@ -12,7 +12,7 @@ Antes: módulo `telvyn-python-agent/telvyn_python_agent.py` em `a53ddb1`, linhas
 | --- | --- | --- | --- |
 | Configurações | Ausente | Sete campos, startup/periódico, fork, identidade; valor solicitado não prova sensor | `telvyn_runtime.py:36`, `:50`, `:101`; `telvyn_python_agent.py:96` |
 | Profiling | Ausente | CPU por callback, Wall por pilhas, heap vivo; linhas Wall/heap, contexto real só CPU. Alocação opcional Memray com bytes de eventos; heap_objects ausente | `telvyn_profiler.py:15`, `:31`, `:43`; `telvyn_allocation.py:10` |
-| Security / IAST | Ausente | Allowlist, padrões SQLi/XSS, fontes e 15 classes de sinks/falhas. Propagação parcial, não libddwaf | `telvyn_security.py:22`, `:92`, `:116`, `:151`, `:180`; `telvyn_python_data/security-rules.json` |
+| Security / IAST | Ausente | Allowlist, padrões SQLi/XSS, fontes e 15 classes de sinks/falhas. Propagação parcial | `telvyn_security.py:22`, `:92`, `:116`, `:151`, `:180`; `telvyn_python_data/security-rules.json` |
 | Debugger | Ausente | Polling, snapshots de saída/linha/exceção, count/duration/gauge e condições tipadas; somente funções síncronas | `telvyn_debugger.py:15`, `:25`, `:70`, `:130` |
 | Bancos | Nenhum driver no pacote | 6 drivers, request ativo, aliases e SQL mascarado no exporter; status/erro original | `telvyn_context.py:18`, `:52`, `:71`; `telvyn_privacy.py:5`; `telvyn_python_agent.py:70`; `pyproject.toml` |
 | Privacidade HTTP | Remove query de 4 atributos | URLs/headers/cookies/bodies padronizados, eventos/links; sem sanitização universal de texto/logs | `telvyn_privacy.py:81`, `:92`; `telvyn_python_agent.py:36` |

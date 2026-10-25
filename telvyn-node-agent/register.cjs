@@ -184,10 +184,10 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
       if (typeof remote.security.attack === 'boolean') security?.setAttack?.(remote.security.attack);
     });
   } catch (error) { console.warn('[Telvyn] Remote configuration could not start.' + why(error)); }
-  // Public API, like tracer.setUser / tracer.appsec.isUserBlocked / tracer.appsec.blockRequest.
+  // Public API: setUser, isUserBlocked, blockRequest.
   module.exports.setUser = user => security?.setUser?.(user) ?? false;
   module.exports.isUserBlocked = user => security?.isUserBlocked?.(user) ?? false;
-  // User activity (like appsec.eventTrackingV2): returns 'blocked' when a blocked user's login was answered.
+  // User activity (login, signup): returns 'blocked' when a blocked user's login was answered.
   module.exports.trackUserLoginSuccess = (login, user) => security?.trackUser?.('login_success', login, user) ?? false;
   module.exports.trackUserLoginFailure = (login, exists) => security?.trackUser?.('login_failure', login, undefined, exists) ?? false;
   module.exports.trackUserSignup = (login, user) => security?.trackUser?.('signup', login, user) ?? false;
