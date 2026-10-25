@@ -60,7 +60,7 @@ métricas do próprio container.
 ## Linux (Docker / systemd)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent/main/packaging/install.sh \
+curl -fsSL https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent-releases/main/packaging/install.sh \
   | ISPWATCH_INGEST_URL='https://<SEU_PORTAL>' ISPWATCH_INGEST_TOKEN='<SEU_INGEST_TOKEN>' sudo -E bash
 ```
 
@@ -72,7 +72,7 @@ aos quais as credenciais somente-leitura conseguem conectar. `database` é um
 perfil, não um `ISPWATCH_AGENT_KIND`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent/main/packaging/install.sh \
+curl -fsSL https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent-releases/main/packaging/install.sh \
   | ISPWATCH_INGEST_URL='https://<SEU_PORTAL>' \
     ISPWATCH_INGEST_TOKEN='<TOKEN_DA_INSTALACAO>' \
     ISPWATCH_AGENT_KIND=linux \
@@ -93,7 +93,7 @@ essa instância até uma nova instalação explícita do portal.
 |----------|-------|
 | Imagem   | `ghcr.io/telvynmonitoring/telvyn-agent:<versão>` (multi-arch amd64/arm64) |
 | Chart    | `oci://ghcr.io/telvynmonitoring/charts/ispwatch-agent` |
-| Install  | `https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent/main/packaging/install.sh` |
+| Install  | `https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent-releases/main/packaging/install.sh` |
 
 Publicados pelo workflow [`publish.yml`](.github/workflows/publish.yml) a cada tag `v*`.
 
