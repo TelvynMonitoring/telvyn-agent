@@ -1,0 +1,32 @@
+{
+  "schemas": {
+    "mappings": [
+      {"address": "server.request.body", "output": "req.body", "scanners": ["payment", "pii", "credentials"]},
+      {"address": "server.request.cookies", "output": "req.cookies", "scanners": ["payment", "pii", "credentials"]},
+      {"address": "server.request.query", "output": "req.query", "scanners": ["payment", "pii", "credentials"]},
+      {"address": "server.request.path_params", "output": "req.params", "scanners": ["payment", "pii", "credentials"]},
+      {"address": "server.response.body", "output": "res.body", "scanners": ["payment", "pii", "credentials"]},
+      {"address": "graphql.server.all_resolvers", "output": "graphql.all_resolvers", "scanners": ["payment", "pii", "credentials"]},
+      {"address": "graphql.server.resolver", "output": "graphql.resolver", "scanners": ["payment", "pii", "credentials"]},
+      {"address": "server.request.headers.no_cookies", "output": "req.headers", "scanners": ["credentials", "pii"]},
+      {"address": "server.response.headers.no_cookies", "output": "res.headers", "scanners": ["credentials", "pii"]}
+    ]
+  },
+  "scanners": [
+    {"tags": {"category": "payment", "type": "card"}, "key": {"regex": "(?:card|cc|credit|pan)(?:[_-]?(?:num|number|no))?$"}, "value": {"regex": "^(?:\\d[ -]?){12,18}\\d$", "validator": "luhn", "min_length": 13}},
+    {"tags": {"category": "payment", "type": "card"}, "value": {"regex": "^(?:4\\d{3}|5[1-5]\\d{2}|3[47]\\d{2}|6(?:011|5\\d{2}))[ -]?\\d{4}[ -]?\\d{4}[ -]?\\d{3,4}$", "validator": "luhn", "min_length": 13}},
+    {"tags": {"category": "payment", "type": "iban"}, "value": {"regex": "^[A-Za-z]{2}\\d{2}[ ]?(?:[A-Za-z0-9]{4}[ ]?){2,7}[A-Za-z0-9]{1,4}$", "validator": "iban", "min_length": 15}},
+    {"tags": {"category": "pii", "type": "email"}, "value": {"regex": "^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}$", "min_length": 6}},
+    {"tags": {"category": "pii", "type": "phone"}, "key": {"regex": "(?:phone|mobile|tel|cell|whats)"}, "value": {"regex": "^\\+?[\\d ()-]{8,18}$", "min_length": 8}},
+    {"tags": {"category": "pii", "type": "us_ssn"}, "value": {"regex": "^(?!000|666|9\\d\\d)\\d{3}-(?!00)\\d{2}-(?!0000)\\d{4}$", "min_length": 11}},
+    {"tags": {"category": "pii", "type": "cpf"}, "value": {"regex": "^\\d{3}\\.?\\d{3}\\.?\\d{3}-?\\d{2}$", "min_length": 11}},
+    {"tags": {"category": "pii", "type": "cnpj"}, "value": {"regex": "^\\d{2}\\.?\\d{3}\\.?\\d{3}/?\\d{4}-?\\d{2}$", "min_length": 14}},
+    {"tags": {"category": "pii", "type": "passport_number"}, "key": {"regex": "passport"}, "value": {"regex": "^[A-Za-z0-9]{6,9}$", "min_length": 6}},
+    {"tags": {"category": "credentials", "type": "password"}, "key": {"regex": "(?:pass(?:word|wd|phrase)?|secret|pwd)$"}},
+    {"tags": {"category": "credentials", "type": "bearer_token"}, "value": {"regex": "^Bearer [A-Za-z0-9._~+/=-]{8,}$", "min_length": 15}},
+    {"tags": {"category": "credentials", "type": "basic_auth"}, "value": {"regex": "^Basic [A-Za-z0-9+/=]{8,}$", "min_length": 14}},
+    {"tags": {"category": "credentials", "type": "digest_auth"}, "value": {"regex": "^Digest .*(?:response|nonce)=", "min_length": 15}},
+    {"tags": {"category": "credentials", "type": "json_web_token"}, "value": {"regex": "^eyJ[A-Za-z0-9_-]{5,}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]*$", "min_length": 20}},
+    {"tags": {"category": "credentials", "type": "api_key"}, "key": {"regex": "(?:api[_-]?key|access[_-]?token|auth[_-]?token|x-api-key)$"}}
+  ]
+}

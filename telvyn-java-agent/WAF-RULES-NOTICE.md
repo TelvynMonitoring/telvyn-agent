@@ -1,11 +1,13 @@
-Telvyn WAF rules (waf-rules.json)
+Telvyn WAF rules (src/main/resources/telvyn/waf-rules.json)
 
-The attack detection rules are the Datadog App and API Protection recommended ruleset
-(rules_version 1.18.0), taken from dd-trace-js (packages/dd-trace/src/appsec/recommended.json),
-Copyright Datadog, Inc. Licensed under Apache-2.0 OR BSD-3-Clause
-(https://github.com/DataDog/dd-trace-js/blob/master/LICENSE).
+The attack detection rules are generated from the OWASP Core Rule Set (CRS) by tools/crs-convert/convert.py
+(rules of the REQUEST-911 to REQUEST-944 files, paranoia levels 1 and 2). Copyright the OWASP CRS project contributors,
+licensed under Apache-2.0 (META-INF/licenses/owasp-crs/LICENSE, https://github.com/coreruleset/coreruleset).
 
-Changes by Telvyn: removed the IP and user blocking rules (blk-001-*), rules_compat, the
-fingerprint and JWT processors, and the "block" actions; blocking is decided by the Telvyn rule
-modes set in the UI. The API security schema processors (extract-content, extract-headers) and
-the scanners are kept as published.
+The API Security scanners (payment, personal data and credentials) are Telvyn's own (tools/crs-convert/api-schema.json).
+
+SQL injection and XSS operators run libinjection, compiled unmodified to WebAssembly (tools/libinjection-wasm) and
+executed by Chicory. Copyright (c) 2012-2016 Nick Galbreath and (c) 2017-2024 libinjection Contributors, BSD 3-Clause
+(META-INF/licenses/libinjection/COPYING). Chicory is Apache-2.0 (META-INF/licenses/chicory/LICENSE).
+
+Rule modes (block, monitor, off) are decided by the Telvyn rule modes set in the UI.

@@ -13,14 +13,14 @@ Escopo autorizado: somente `GET /security-lab/search`, parâmetro `q`, ambiente
 na aplicação; não é instrumentação automática por Javaagent nem implementa IAST.
 Não há ações de bloqueio nem leitura de corpo, cookies ou cabeçalhos de autenticação.
 
-`LocalAttackDetection` usa `io.sqreen:libsqreen:17.5.0` / libddwaf 2.0.1, com duas
+`LocalAttackDetection` usa o motor do WAF do Telvyn (`system.monitoring.debugger.waf`), com duas
 regras locais versionadas (`is_sqli`, `is_xss`). Não é o conjunto de regras
-recomendado. A resposta nativa contém entradas: só IDs conhecidos são extraídos,
-sem registrar a resposta ou mensagens de exceção. Licenças ficam em
-`src/main/resources/META-INF/licenses/libddwaf`.
+recomendado. Os eventos do motor contêm entradas: só IDs conhecidos são extraídos,
+sem registrar o evento ou mensagens de exceção. Licenças ficam em
+`src/main/resources/META-INF/licenses`.
 
-Limites: query bruta até 8192 caracteres, q até 2048, orçamento nativo de 10 ms.
-Carregamento inicial da biblioteca fica fora desse orçamento. Execuções são
+Limites: query bruta até 8192 caracteres, q até 2048, orçamento de 10 ms.
+Carregamento inicial do módulo fica fora desse orçamento. Execuções são
 serializadas no pequeno laboratório. Fila de envio: 64 eventos; falha/lotação é
 explicitada na resposta ou no status HTTP do exportador. Não há promessa de entrega
 completa, retenção automática, cobertura geral ou desempenho de produção. Query

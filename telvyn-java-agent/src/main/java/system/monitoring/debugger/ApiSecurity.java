@@ -60,16 +60,8 @@ final class ApiSecurity {
         if (!schema || state.derivatives == null) return;
         Map<String, Object> schemas = new LinkedHashMap<>();
         for (var entry : state.derivatives.entrySet())
-            if (entry.getKey().startsWith("_dd.appsec.s.")) schemas.put(entry.getKey().substring("_dd.appsec.s.".length()), decode(entry.getValue()));
+            if (entry.getKey().startsWith("schema.")) schemas.put(entry.getKey().substring("schema.".length()), entry.getValue());
         if (!schemas.isEmpty()) reporter().reportApi(state.method, state.route != null ? state.route : state.path, code, schemas);
-    }
-
-    /** A biblioteca Java do WAF entrega o esquema comprimido (gzip + base64): volta a ser JSON. */
-    static Object decode(Object value) {
-        if (!(value instanceof String text) || !text.startsWith("H4sI")) return value;
-        try (var input = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(java.util.Base64.getDecoder().decode(text)))) {
-            return com.google.gson.JsonParser.parseString(new String(input.readNBytes(256 * 1024), java.nio.charset.StandardCharsets.UTF_8));
-        } catch (java.io.IOException | RuntimeException invalid) { return value; }
     }
 
     /** Cabeçalhos de um mapa nome → valor(es) (WebFlux, Vert.x, Netty), sem set-cookie. */

@@ -1,53 +1,59 @@
 package system.monitoring.debugger;
 
-import java.io.File;
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
-import java.net.URL;
-import java.net.URLClassLoader;
+import java.util.List;
 import java.util.Map;
+import system.monitoring.debugger.waf.Engine;
+import system.monitoring.debugger.waf.Values;
 
 /**
- * Motor do WAF (libddwaf) num class loader isolado do classpath da aplicação. A
- * biblioteca nativa escolhe o slf4j pelo nome ({@code org/slf4j} se o encontrar, senão a cópia relocada
- * do slf4j no agente) pelo class loader que a carregou: no class loader do sistema, uma aplicação com
- * slf4j no classpath faria a escolha errada e o WAF não subiria. O loader isolado lê o próprio jar do agente e tem
- * como pai o class loader da plataforma (só o JDK); a ponte {@code wafengine.WafEngine} expõe o motor com tipos do JDK.
+ * Ponte entre os sensores e o motor do WAF do Telvyn ({@link Engine}, Java puro). Mantém o contrato usado pelos
+ * sensores: resultado ("ok", "match", "error", "timeout"), eventos em JSON (regra, endereço e chave; sem valores) e
+ * os atributos da execução (esquemas da API Security).
  */
 final class WafEngines {
-    private static MethodHandle build, version, open, run, close;
-
     private WafEngines() {}
 
-    private static synchronized void load() throws Exception {
-        if (run != null) return;
-        ClassLoader loader = WafEngines.class.getClassLoader();
-        var source = WafEngines.class.getProtectionDomain().getCodeSource();
-        if (source != null) {
-            File jar = new File(source.getLocation().toURI());
-            if (jar.isFile()) loader = new URLClassLoader("telvyn-waf", new URL[]{jar.toURI().toURL()}, ClassLoader.getPlatformClassLoader());
-        }
-        Class<?> engine = Class.forName("system.monitoring.debugger.wafengine.WafEngine", true, loader);
-        var lookup = MethodHandles.publicLookup();
-        build = lookup.findStatic(engine, "build", MethodType.methodType(Object.class, Map.class, String.class, int.class));
-        version = lookup.findStatic(engine, "version", MethodType.methodType(String.class));
-        open = lookup.findStatic(engine, "open", MethodType.methodType(Object.class, Object.class));
-        close = lookup.findStatic(engine, "close", MethodType.methodType(void.class, Object.class));
-        run = lookup.findStatic(engine, "run", MethodType.methodType(Object[].class, Object.class, Map.class, int[].class, boolean.class));
+    /** Motor com as regras (expected > 0: número exato de regras carregadas). */
+    static Object build(Map<String, Object> rules, String name, int expected) {
+        Engine engine = Engine.load(rules);
+        if (expected > 0 && engine.size() != expected) throw new IllegalStateException("invalid WAF rules: " + name);
+        return engine;
     }
 
-    /** Motor com as regras (expected > 0: número exato de regras carregadas). */
-    static Object build(Map<String, Object> rules, String name, int expected) throws Throwable { load(); return build.invoke(rules, name, expected); }
+    static String version() { return Engine.VERSION; }
 
-    static String version() throws Throwable { load(); return (String) version.invoke(); }
+    static Object open(Object handle) { return ((Engine) handle).open(); }
 
-    static Object open(Object handle) throws Throwable { return open.invoke(handle); }
+    /** {resultado, eventos em JSON ou null, atributos}. limits: profundidade, elementos, texto, tempo do WAF, tempo total (µs). */
+    static Object[] run(Object context, Map<String, Object> data, int[] limits) { return run(context, data, limits, false); }
 
-    /** {resultado ("ok", "match", "error", "timeout"), dados do match em JSON ou null}. */
-    static Object[] run(Object context, Map<String, Object> data, int[] limits) throws Throwable { return run(context, data, limits, false); }
+    static Object[] run(Object context, Map<String, Object> data, int[] limits, boolean ephemeral) {
+        try {
+            var result = ((Engine.Context) context).run(data, new Values.Limits(limits[0], limits[1], limits[2]), Math.min(limits[3], limits[4]), ephemeral);
+            List<Map<String, Object>> events = result.events();
+            String json = events.isEmpty() ? null : GSON.toJson(events);
+            // Estourou o tempo depois de achar: o que achou vale (o resto da requisição não foi visto).
+            if ("timeout".equals(result.outcome())) return json == null ? new Object[]{"timeout", null} : new Object[]{"match", json, null};
+            return new Object[]{json == null ? "ok" : "match", json, result.attributes()};
+        } catch (RuntimeException | LinkageError failure) {
+            logFailure(failure);
+            return new Object[]{"error", null};
+        }
+    }
 
-    static Object[] run(Object context, Map<String, Object> data, int[] limits, boolean ephemeral) throws Throwable { return (Object[]) run.invoke(context, data, limits, ephemeral); }
+    private static final com.google.gson.Gson GSON = new com.google.gson.Gson();
 
-    static void close(Object resource) throws Throwable { close.invoke(resource); }
+    /** Uma linha por tipo de falha do motor e no máximo uma por minuto: o resultado "error" não diz o motivo. */
+    private static final java.util.concurrent.ConcurrentHashMap<String, Long> LOGGED = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static void logFailure(Throwable failure) {
+        String type = failure.getClass().getName();
+        long now = System.currentTimeMillis();
+        Long last = LOGGED.get(type);
+        if (last != null && now - last < 60_000) return;
+        LOGGED.put(type, now);
+        System.err.println("[telvyn] WAF analysis failed: " + type + (failure.getMessage() == null ? "" : " (" + failure.getMessage() + ")"));
+    }
+
+    static void close(Object resource) { /* o motor e o contexto são objetos Java: o coletor de lixo libera */ }
 }
