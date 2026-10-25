@@ -6,72 +6,54 @@ const Module = require('node:module');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
 const { compileRoutes } = require('./routes.cjs');
-const rewriterMethods = [{src: 'plusOperator', operator: true}, {src: 'tplOperator', operator: true},
-  ...['concat', 'slice', 'substring', 'substr', 'trim', 'trimEnd', 'replace'].map(src => ({src})),
-  {src: 'toUpperCase', dst: 'stringCase'}, {src: 'toLowerCase', dst: 'stringCase'}];
+const { locate } = require('./sourcemap.cjs');
 
-// The rewriter only instruments code inside a function with a block body, where it declares its temporaries. An arrow
-// with an expression body outside any such function (`app.get('/x', (req, res) => db.query('...' + req.query.q))` at
-// module level) is left as is, so its operations lose the mark. Those bodies get braces first: `{ return <body> }`.
-// Text is only inserted, never a line break, so lines stay where they were; if the source does not parse, it is unchanged.
-function blockTopLevelArrows(source, sourceType) {
-  if (!source.includes('=>')) return source;
+// A request value reaches a sink when the sink's text contains it. Very short values (a digit, a letter) are in every
+// statement, so below this size only a sink value that is the whole input counts.
+const MIN_MATCH = 4, MAX_INPUTS = 1024, MAX_SINK_TEXT = 65536;
+
+// String literals of a module with the names they are assigned to, as { value, locations: [{ ident, line }] }.
+// Read from the syntax tree when the module loads; the module itself runs as written.
+function collectLiterals(source) {
+  if (source.length > 2 * 1024 * 1024) return [];
   let tree;
   try {
-    tree = require('acorn').parse(source, {ecmaVersion: 'latest', sourceType, preserveParens: true, allowHashBang: true,
-      allowReturnOutsideFunction: sourceType === 'script', allowAwaitOutsideFunction: true});
-  } catch (_) { return source; }
-  const bodies = [];
-  (function visit(node, enclosed) {
-    const expressionArrow = node.type === 'ArrowFunctionExpression' && node.expression;
-    if (expressionArrow && !enclosed) bodies.push(node.body);
-    const inside = enclosed || expressionArrow || (/Function/.test(node.type) && node.body?.type === 'BlockStatement');
+    tree = require('acorn').parse(source, {ecmaVersion: 'latest', sourceType: 'script', locations: true, allowHashBang: true, allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true});
+  } catch (_) { return []; }
+  const found = new Map();
+  const text = node => node?.type === 'Literal' && typeof node.value === 'string' ? node.value
+    : node?.type === 'TemplateLiteral' && !node.expressions.length ? node.quasis[0].value.cooked : undefined;
+  const name = node => node?.type === 'Identifier' ? node.name : node?.type === 'Literal' && typeof node.value === 'string' ? node.value
+    : node?.type === 'MemberExpression' && !node.computed ? node.property.name : node?.type === 'PrivateIdentifier' ? node.name : undefined;
+  const add = (node, ident) => {
+    const value = text(node);
+    if (typeof value !== 'string') return;
+    if (!found.has(value)) found.set(value, []);
+    found.get(value).push({ident, line: node.loc.start.line});
+  };
+  (function visit(node) {
+    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier') add(node.init, node.id.name);
+    else if (node.type === 'AssignmentExpression' && node.operator === '=') add(node.right, name(node.left));
+    else if (node.type === 'Property' && !node.computed || node.type === 'PropertyDefinition' && !node.computed) add(node.value, name(node.key));
+    else if (node.type === 'Literal' || node.type === 'TemplateLiteral') add(node, undefined);
     for (const key of Object.keys(node)) {
       const value = node[key];
-      for (const child of Array.isArray(value) ? value : [value]) if (child && typeof child.type === 'string') visit(child, inside);
+      for (const child of Array.isArray(value) ? value : [value]) if (child && typeof child.type === 'string') visit(child);
     }
-  })(tree, false);
-  let code = source;
-  for (const {start, end} of bodies.sort((a, b) => b.start - a.start)) code = code.slice(0, start) + '{ return ' + code.slice(start, end) + ' }' + code.slice(end);
-  return code;
+  })(tree);
+  // A literal that is assigned to a name is reported once per line, under that name (the last entry of a line wins).
+  return [...found].map(([value, locations]) => ({value, locations: [...new Map(locations.sort((x, y) => (x.ident ? 1 : 0) - (y.ident ? 1 : 0)).map(item => [item.line, item])).values()]}));
 }
 
 function startIast(report) {
   if (process.env.TELVYN_IAST_ENABLED !== 'true') return { state: 'disabled', request() {}, stop() {} };
   const root = process.env.TELVYN_PROFILE_SOURCE_ROOT;
   const routes = compileRoutes(process.env.TELVYN_SECURITY_ROUTES);
-  if (!root || !routes.size || globalThis._ddiast) throw new Error('IAST requires a source root, selected routes and an available instrumentation context');
+  if (!root || !routes.size) throw new Error('IAST requires a source root and selected routes');
   const sourceRoot = path.resolve(root);
-  const native = require('@datadog/native-iast-taint-tracking');
-  // The native package has a no-op fallback: verify loading before claiming coverage.
-  const check = randomUUID();
-  native.createTransaction(check);
-  const works = native.isTainted(check, native.newTaintedString(check, 'telvyn-startup-check', 'q', 'query'));
-  native.removeTransaction(check);
-  if (!works) throw new Error('Native taint tracking unavailable');
-  const { Rewriter } = require('@datadog/wasm-js-rewriter');
-  const { cacheRewrittenSourceMap, getSourcePathAndLineFromSourceMaps } = require('@datadog/wasm-js-rewriter/js/source-map');
-  const rewriter = new Rewriter({csiMethods: rewriterMethods, literals: true, chainSourceMap: true});
-  if (!rewriter.rewrite('function check(a){return a+"x"}', '/check.cjs', ['iast']).content?.includes('_ddiast.plusOperator')) throw new Error('IAST rewriter unavailable');
   const storage = new AsyncLocalStorage();
   const active = new Set();
   let stopped = false;
-  function propagate(operation, result, ...args) {
-    const request = storage.getStore();
-    if (!request || !active.has(request.id) || typeof result !== 'string') return result;
-    try { return native[operation](request.id, result, ...args); }
-    catch (_) { return result; }
-  }
-  const hooks = {
-    plusOperator: (result, ...args) => propagate('concat', result, ...args),
-    tplOperator: (result, ...args) => propagate('concat', result, ...args),
-    stringCase: (result, fn, subject) => fn === String.prototype.toUpperCase || fn === String.prototype.toLowerCase ? propagate('stringCase', result, subject) : result,
-  };
-  for (const name of ['concat', 'slice', 'substring', 'substr', 'trim', 'trimEnd', 'replace']) {
-    const original = String.prototype[name];
-    hooks[name] = (result, fn, subject, ...args) => fn === original && typeof subject === 'string' ? propagate(name, result, subject, ...args) : result;
-  }
-  globalThis._ddiast = hooks;
   const originalCompile = Module.prototype._compile;
   // Every input of a selected route is marked with where it came from; only the name of the field is ever reported.
   const SOURCE_TYPES = new Set(['query', 'body', 'header', 'cookie', 'path']);
@@ -109,10 +91,10 @@ function startIast(report) {
       if (file.startsWith(__dirname)) continue;
       let application = relativeFile(file);
       let row = match[3];
-      // Application code is rewritten by the IAST, so its lines go back through the source map like the finding's line.
+      // Compiled code goes back through its source map, like the finding's line.
       if (application) {
         try {
-          const mapped = getSourcePathAndLineFromSourceMaps(file, Number(match[3]), Number(match[4]));
+          const mapped = locate(file, Number(match[3]), Number(match[4]));
           row = String(mapped.line);
           application = relativeFile(mapped.path) || application;
         } catch (_) { /* keep the reported line */ }
@@ -155,33 +137,23 @@ function startIast(report) {
     }
   }
   Module.prototype._compile = function (source, filename) {
-    let code = source;
     if (!stopped && relativeFile(filename, COMPILED_FILE)) {
-      try {
-        const result = rewriter.rewrite(blockTopLevelArrows(source, 'script'), filename, ['iast']);
-        code = result.content || source;
-        if (code !== source) cacheRewrittenSourceMap(filename, code);
-        if (result.literalsResult) inspectLiterals(result.literalsResult, filename);
-      }
-      catch (_) { console.warn('[Telvyn] IAST could not instrument an application module.'); }
+      try { inspectLiterals({literals: collectLiterals(source)}, filename); }
+      catch (_) { console.warn('[Telvyn] IAST could not inspect an application module.'); }
     }
-    return originalCompile.call(this, code, filename);
+    return originalCompile.call(this, source, filename);
   };
   const emit = Server.prototype.emit;
   Server.prototype.emit = function (event, request, response, ...rest) {
     const route = stopped || event !== 'request' || active.size >= 32 ? null : routes.match(request.url?.split('?')[0]);
     if (!route) return emit.call(this, event, request, response, ...rest);
     wrapOutgoing();
-    const scope = {id: randomUUID(), reported: new Set(), request: requestInfo(request, route)};
-    try { native.createTransaction(scope.id); active.add(scope.id); scopes.set(request, scope); }
-    catch (_) { return emit.call(this, event, request, response, ...rest); }
+    const scope = {id: randomUUID(), reported: new Set(), inputs: new Map(), request: requestInfo(request, route)};
+    active.add(scope.id); scopes.set(request, scope);
     markHeaders(scope, request);
     const cleanup = () => {
       clearTimeout(timer);
-      if (active.delete(scope.id)) {
-        try { native.removeTransaction(scope.id); }
-        catch (_) { console.warn('[Telvyn] IAST transaction cleanup failed.'); }
-      }
+      if (active.delete(scope.id)) scope.inputs.clear();
     };
     const timer = setTimeout(cleanup, 60000); timer.unref();
     response.once('finish', cleanup); response.once('close', cleanup);
@@ -189,9 +161,24 @@ function startIast(report) {
   };
   // The request scope is looked up by request: asynchronous body parsing can run outside the stored context.
   const scopes = new WeakMap();
+  // A string cannot carry a mark, so the request keeps what each input said (and its trimmed and case-folded forms,
+  // which are what code usually passes on) and where it came from; a sink is judged against that list.
+  function remember(scope, text, source) {
+    for (const variant of new Set([text, text.trim(), text.toLowerCase(), text.toUpperCase()])) {
+      if (variant.length && scope.inputs.size < MAX_INPUTS && !scope.inputs.has(variant)) scope.inputs.set(variant, source);
+    }
+  }
+  // The first input that the text is, or contains.
+  function inputIn(scope, text) {
+    if (typeof text !== 'string' || !text.length) return undefined;
+    const subject = text.length > MAX_SINK_TEXT ? text.slice(0, MAX_SINK_TEXT) : text;
+    for (const [value, source] of scope.inputs) if (subject === value || value.length >= MIN_MATCH && subject.includes(value)) return source;
+    return undefined;
+  }
   function taint(value, type, name, scope = storage.getStore()) {
     if (!scope || !active.has(scope.id) || typeof value !== 'string' || !value.length || value.length > 4096) return value;
-    try { return native.newTaintedString(scope.id, value, label(name), type); } catch (_) { return value; }
+    remember(scope, value, {type, name: label(name)});
+    return value;
   }
   // Strings, arrays and plain objects (parsed bodies, queries, parameters, cookies) are marked in place, leaf by leaf.
   const marked = new WeakMap();
@@ -218,24 +205,17 @@ function startIast(report) {
   const get = URLSearchParams.prototype.get, getAll = URLSearchParams.prototype.getAll;
   URLSearchParams.prototype.get = function (name) { return taint(get.call(this, name), 'query', name); };
   URLSearchParams.prototype.getAll = function (name) { return getAll.call(this, name).map(value => taint(value, 'query', name)); };
-  // The first source that reached the value: where it came from, never what it was.
-  function sourceOf(scope, value) {
-    try {
-      const info = native.getRanges(scope.id, value)?.[0]?.iinfo;
-      return info && SOURCE_TYPES.has(info.type) ? {type: info.type, name: label(info.parameterName)} : null;
-    } catch (_) { return null; }
-  }
   // One reporting path for every sink: a finding exists when a value derived from a request input reaches the sink call.
   function inspectSink(rule, sink, values, statement, header) {
     const scope = storage.getStore();
     if (stopped || !scope || !active.has(scope.id)) return;
     const started = process.hrtime.bigint();
     try {
-      const value = values.find(item => typeof item === 'string' && native.isTainted(scope.id, item));
-      if (value === undefined) return;
-      const source = sourceOf(scope, value);
+      let source;
+      for (const item of values) if ((source = inputIn(scope, item))) break;
+      if (!source) return;
       // Echoing a request header under the same name is the usual proxy behaviour, not an injection.
-      if (header && source?.type === 'header' && source.name === label(header)) return;
+      if (header && source.type === 'header' && source.name === label(header)) return;
       reportAt(scope, rule, sink, started, new Error().stack || '', statement, source);
     } catch (_) { console.warn('[Telvyn] IAST finding could not be reported.'); }
   }
@@ -244,7 +224,7 @@ function startIast(report) {
     const location = stack.split('\n').map(line => line.match(/^\s*at (?:(.*?) \()?([^()]+):(\d+):(\d+)\)?$/)).find(match => match && relativeFile(match[2]));
     if (!location) return;
     const filename = location[2].startsWith('file:') ? fileURLToPath(location[2]) : location[2];
-    const mapped = getSourcePathAndLineFromSourceMaps(filename, Number(location[3]), Number(location[4]));
+    const mapped = locate(filename, Number(location[3]), Number(location[4]));
     const file = relativeFile(mapped.path);
     const method = (location[1] || 'anonymous').replace(/[^\w$]/g, '_');
     const key = `${rule}:${file}:${mapped.line}`;
@@ -339,9 +319,12 @@ function startIast(report) {
       const result = original.apply(this, args);
       const scope = storage.getStore();
       try {
-        const tainted = scope && active.has(scope.id) && typeof result === 'string' ? args.find(value => typeof value === 'string' && native.isTainted(scope.id, value)) : undefined;
-        if (tainted !== undefined) { const source = sourceOf(scope, tainted); return native.newTaintedString(scope.id, result, source?.name ?? 'value', source?.type ?? 'query'); }
-      } catch (_) { /* keep the untainted result */ }
+        if (scope && active.has(scope.id) && typeof result === 'string' && result.length <= 4096) {
+          let source;
+          for (const value of args) if ((source = inputIn(scope, value))) break;
+          if (source) remember(scope, result, source);
+        }
+      } catch (_) { /* the result stays as it is */ }
       return result;
     };
   }
@@ -472,7 +455,8 @@ function startIast(report) {
     for (const key of Object.keys(value)) {
       const child = value[key];
       const text = key === '$where' ? child : key === '$function' ? child?.body : undefined;
-      if (typeof text === 'string' && native.isTainted(scope.id, text)) return sourceOf(scope, text);
+      const source = inputIn(scope, text);
+      if (source) return source;
       const found = scriptInput(scope, child, depth + 1);
       if (found) return found;
     }
@@ -611,7 +595,7 @@ function startIast(report) {
       if (storage.getStore() !== scope) storage.enterWith(scope);
       for (const [property, type] of [['query', 'query'], ['body', 'body'], ['params', 'path'], ['cookies', 'cookie']]) track(request, property, type, scope);
     },
-    stop() { stopped = true; sqlHook.unhook(); for (const id of active) { try { native.removeTransaction(id); } catch (_) { console.warn('[Telvyn] IAST transaction cleanup failed.'); } } active.clear(); },
+    stop() { stopped = true; sqlHook.unhook(); active.clear(); },
   };
 }
-module.exports = { startIast, rewriterMethods, blockTopLevelArrows };
+module.exports = { startIast, collectLiterals };

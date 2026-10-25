@@ -118,8 +118,7 @@ function startDebugger(transport) {
     } catch (_) { console.warn('[Telvyn] Debugger could not instrument an ESM export.'); }
   });
   const scripts = new Map(), installing = new Set();
-  let originalLocation = (filename, line, column) => ({path: filename, line, column});
-  try { originalLocation = require('@datadog/wasm-js-rewriter/js/source-map').getSourcePathAndLineFromSourceMaps; } catch (_) {}
+  const originalLocation = require('./sourcemap.cjs').locate;
   const session = new Session(); session.connect();
   function installLineProbes() {
     for (const target of policies.keys()) {
