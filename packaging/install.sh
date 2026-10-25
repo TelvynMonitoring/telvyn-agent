@@ -52,7 +52,7 @@ if [[ "${TELVYN_EXTERNAL_EXECUTION_MODE:-}" == "approved-unisolated" ]]; then
         exit 1
     fi
 fi
-GITHUB_REPO="${ISPWATCH_GITHUB_REPO:-TelvynMonitoring/telvyn-agent}"
+GITHUB_REPO="${ISPWATCH_GITHUB_REPO:-TelvynMonitoring/telvyn-agent-releases}"
 # ISPWATCH_DOWNLOAD_BASE permite redirecionar para mirror/dev local sem
 # editar o script (usado pelos smoke tests e por VMs de dev).
 ISPWATCH_DOWNLOAD_BASE="${ISPWATCH_DOWNLOAD_BASE:-https://github.com/${GITHUB_REPO}/releases/download}"

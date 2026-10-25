@@ -83,10 +83,32 @@ jobs:
       - name: Build language agents bundle
         run: make release-language-agents VERSION=${{ steps.vars.outputs.version }}
 
+      # O código fica no repositório privado; binários, instalador e guias de instalação saem no público
+      # TelvynMonitoring/telvyn-agent-releases. RELEASES_TOKEN: token com contents:write só naquele repositório.
+      - name: Sync installer and guides to the public releases repository
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          VERSION: ${{ steps.vars.outputs.version }}
+        run: |
+          set -eu
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/TelvynMonitoring/telvyn-agent-releases.git" public
+          mkdir -p public/packaging public/docs
+          cp packaging/install.sh public/packaging/install.sh
+          for agent in telvyn-*-agent; do cp "$agent/README.md" "public/docs/$agent.md"; done
+          cd public
+          git config user.name "telvyn-release"
+          git config user.email "release@telvyn.invalid"
+          git add -A
+          git diff --cached --quiet || git commit -m "release $VERSION: instalador e guias"
+          git push origin HEAD:main
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          repository: TelvynMonitoring/telvyn-agent-releases
+          token: ${{ secrets.RELEASES_TOKEN }}
           tag_name: ${{ steps.vars.outputs.version }}
+          target_commitish: main
           files: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
