@@ -20,17 +20,17 @@ final class WafEngines {
         return engine;
     }
 
-    /** Nível de paranoia das regras (1 a 4): -Dtelvyn.security.waf-paranoia ou TELVYN_SECURITY_WAF_PARANOIA; padrão 2. */
+    /** Nível de paranoia das regras (1 a 4): -Dtelvyn.security.waf-paranoia ou TELVYN_SECURITY_WAF_PARANOIA; padrão 1 (conjunto recomendado). */
     static int paranoia() {
         String value = System.getProperty("telvyn.security.waf-paranoia");
         if (value == null) value = System.getenv("TELVYN_SECURITY_WAF_PARANOIA");
-        if (value == null || value.isBlank()) return 2;
+        if (value == null || value.isBlank()) return 1;
         try {
             int level = Integer.parseInt(value.trim());
             if (level >= 1 && level <= 4) return level;
         } catch (NumberFormatException invalid) { /* cai no aviso abaixo */ }
-        System.err.println("[telvyn] invalid telvyn.security.waf-paranoia (" + value + "); expected 1 to 4. Using 2.");
-        return 2;
+        System.err.println("[telvyn] invalid telvyn.security.waf-paranoia (" + value + "); expected 1 to 4. Using 1.");
+        return 1;
     }
 
     static String version() { return Engine.VERSION; }

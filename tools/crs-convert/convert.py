@@ -21,6 +21,17 @@ REQUEST_FILES = "REQUEST-9[1-4]*.conf"
 EXCLUDED_TERMS = ("data" + "dog",)
 # Regras de higiene de protocolo que disparam em tráfego legítimo de agentes e serviços internos (Host com IP numérico).
 NOISY_RULES = {"920350"}
+# Conjunto recomendado (nível de paranoia 1): as regras do CRS que, medidas contra um conjunto de ataques e de tráfego legítimo, pegam os ataques
+# clássicos com poucos falsos positivos. As outras regras do CRS ficam a partir do nível 2, para quem aceita mais alertas.
+DEFAULT_RULES = {
+    "913100", "920260", "921110", "921120", "921140", "921160", "930100", "930120", "931110", "931120",
+    "932130", "932160", "932170", "932171", "932180", "932230", "932235", "933110", "933111", "933130", "933131",
+    "933140", "933150", "933160", "933170", "933180", "933200", "933210", "934100", "934101", "941100", "941110",
+    "941120", "941130", "941140", "941150", "941160", "941170", "941180", "941190", "941200", "941210", "941220",
+    "941230", "941240", "941250", "941260", "941270", "941280", "941290", "941300", "941350", "941360", "941370",
+    "942100", "942151", "942160", "942170", "942190", "942230", "942240", "942250", "942270", "942280", "942290",
+    "942300", "942320", "942350", "942360", "942500", "943100", "944100", "944130", "944140", "944240", "944260",
+}
 
 ADDRESSES = {
     "ARGS": ["server.request.query", "server.request.body", "server.request.path_params"],
@@ -253,7 +264,7 @@ def convert_rule(rule, root):
     return {
         "id": "crs-" + rule_id[0],
         "name": msg,
-        "tags": {"type": type_name, "category": "attack_attempt", "paranoia_level": str(sr.paranoia(rule)), "source": "owasp-crs"},
+        "tags": {"type": type_name, "category": "attack_attempt", "paranoia_level": str(1 if rule_id[0] in DEFAULT_RULES else max(2, sr.paranoia(rule))), "source": "owasp-crs"},
         "conditions": conditions,
         "transformers": [],
     }

@@ -10,7 +10,7 @@
    "tags": {
     "type": "generic_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -148,7 +148,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -177,7 +177,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -214,7 +214,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -246,7 +246,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -294,7 +294,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -339,7 +339,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -417,7 +417,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -462,7 +462,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -491,7 +491,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -556,7 +556,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -633,7 +633,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -662,7 +662,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -694,7 +694,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -763,7 +763,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -827,7 +827,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -859,7 +859,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -907,7 +907,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -941,7 +941,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -975,7 +975,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -1007,7 +1007,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -1038,7 +1038,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -1069,7 +1069,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -1103,7 +1103,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -1166,7 +1166,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -1195,7 +1195,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -2318,7 +2318,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -2455,7 +2455,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -2536,7 +2536,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -2567,7 +2567,7 @@
    "tags": {
     "type": "attack",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -2656,7 +2656,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -2690,7 +2690,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -2722,7 +2722,7 @@
    "tags": {
     "type": "http_protocol_violation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -2991,7 +2991,7 @@
    "tags": {
     "type": "lfi",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -4291,7 +4291,7 @@
    "tags": {
     "type": "lfi",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -4958,7 +4958,7 @@
    "tags": {
     "type": "lfi",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -6151,7 +6151,7 @@
    "tags": {
     "type": "rfi",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -6465,7 +6465,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -6972,7 +6972,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -7144,7 +7144,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -7239,7 +7239,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -7334,7 +7334,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -7411,7 +7411,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -7488,7 +7488,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -7565,7 +7565,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -7656,7 +7656,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -8694,7 +8694,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -8829,7 +8829,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -8906,7 +8906,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -11915,7 +11915,7 @@
    "tags": {
     "type": "php_code_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -12067,7 +12067,7 @@
    "tags": {
     "type": "php_code_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -12273,7 +12273,7 @@
    "tags": {
     "type": "php_code_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -13212,7 +13212,7 @@
    "tags": {
     "type": "php_code_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -13516,7 +13516,7 @@
    "tags": {
     "type": "php_code_injection",
     "category": "attack_attempt",
-    "paranoia_level": "3",
+    "paranoia_level": "1",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -13692,7 +13692,7 @@
    "tags": {
     "type": "php_code_injection",
     "category": "attack_attempt",
-    "paranoia_level": "3",
+    "paranoia_level": "1",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -14129,7 +14129,7 @@
    "tags": {
     "type": "ssrf",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -14306,7 +14306,7 @@
    "tags": {
     "type": "ssrf",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -14393,7 +14393,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -14492,7 +14492,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -14565,7 +14565,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -14715,7 +14715,7 @@
    "tags": {
     "type": "ssrf",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -14810,7 +14810,7 @@
    "tags": {
     "type": "template_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -14899,7 +14899,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "2",
+    "paranoia_level": "1",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -18521,7 +18521,7 @@
    "tags": {
     "type": "xss",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -18941,7 +18941,7 @@
    "tags": {
     "type": "xss",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -19047,7 +19047,7 @@
    "tags": {
     "type": "xss",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -19198,7 +19198,7 @@
    "tags": {
     "type": "xss",
     "category": "attack_attempt",
-    "paranoia_level": "2",
+    "paranoia_level": "1",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -20044,7 +20044,7 @@
    "tags": {
     "type": "sql_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -20516,7 +20516,7 @@
    "tags": {
     "type": "sql_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -21523,7 +21523,7 @@
    "tags": {
     "type": "sql_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -21622,7 +21622,7 @@
    "tags": {
     "type": "sql_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -21721,7 +21721,7 @@
    "tags": {
     "type": "sql_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -22397,7 +22397,7 @@
    "tags": {
     "type": "sql_injection",
     "category": "attack_attempt",
-    "paranoia_level": "2",
+    "paranoia_level": "1",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -24937,7 +24937,7 @@
    "tags": {
     "type": "session_fixation",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -25103,7 +25103,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -25448,7 +25448,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "1",
+    "paranoia_level": "2",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -25872,7 +25872,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "2",
+    "paranoia_level": "1",
     "source": "owasp-crs"
    },
    "conditions": [
@@ -26080,7 +26080,7 @@
    "tags": {
     "type": "command_injection",
     "category": "attack_attempt",
-    "paranoia_level": "2",
+    "paranoia_level": "1",
     "source": "owasp-crs"
    },
    "conditions": [

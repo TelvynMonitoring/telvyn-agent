@@ -21,13 +21,13 @@ function parseBudget(value) {
 }
 const BUDGET_US = parseBudget(process.env.TELVYN_SECURITY_WAF_TIMEOUT_US);
 
-// Nível de paranoia das regras (1 a 4): níveis altos pegam mais e geram mais falsos positivos. Padrão 2.
+// Nível de paranoia das regras (1 a 4): níveis altos pegam mais e geram mais falsos positivos. Padrão 1 (conjunto recomendado).
 function parseParanoia(value) {
-  if (value === undefined || String(value).trim() === '') return 2;
+  if (value === undefined || String(value).trim() === '') return 1;
   const parsed = Number(String(value).trim());
   if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 4) return parsed;
-  console.warn(`[telvyn] invalid TELVYN_SECURITY_WAF_PARANOIA (${value}); expected 1 to 4. Using 2.`);
-  return 2;
+  console.warn(`[telvyn] invalid TELVYN_SECURITY_WAF_PARANOIA (${value}); expected 1 to 4. Using 1.`);
+  return 1;
 }
 const PARANOIA = parseParanoia(process.env.TELVYN_SECURITY_WAF_PARANOIA);
 
