@@ -5,16 +5,6 @@ used by Telvyn Agent. Product documentation and runtime messages intentionally
 avoid comparisons with third-party products; the names below are retained only
 for license compliance and source attribution.
 
-## DDSketch
-
-Telvyn Agent includes a modified copy of `github.com/DataDog/sketches-go` v1.4.8
-in `internal/sketch` (import paths changed, generated `go_package` option removed),
-distributed under the Apache License, Version 2.0. The original source is available at:
-
-https://github.com/DataDog/sketches-go
-
-The Apache License, Version 2.0 is reproduced in the root `LICENSE` file.
-
 ## SNMP profile catalog
 
 Part of `internal/snmp/profiles/` is transformed from the open-source NDM

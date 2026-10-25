@@ -10,8 +10,8 @@ option java_multiple_files = true;
 // APM stats — agregados na BORDA pelo trace-agent (concentrator) e
 // enviados ao backend via POST /api/ingest/v1/apm/stats (certless/Bearer).
 // Espelha o mesmo proto do backend (isp-watch). ok_summary/error_summary
-// são DDSketch no encoding nativo flag-based (sketches-go ↔ sketches-java).
-// Latências em NANOS; erro relativo do sketch = 1% nas duas pontas.
+// são o resumo de latência de internal/latency (formato binário igual ao do
+// LatencySketch do backend). Latências em NANOS; erro relativo = 1% nas duas pontas.
 // =====================================================================
 
 message ApmStatsPayload {

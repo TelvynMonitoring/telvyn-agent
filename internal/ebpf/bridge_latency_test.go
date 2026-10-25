@@ -8,7 +8,7 @@ import (
 )
 
 // physicalL7Latency é o guard que barra o dado de latência corrompido do kernel
-// (underflow de end-start em conexão long-lived) que envenenava o DDSketch e
+// (underflow de end-start em conexão long-lived) que envenenava o resumo de latência e
 // fazia o p95 do postgres virar "25 dias".
 func TestPhysicalL7Latency(t *testing.T) {
 	cases := []struct {

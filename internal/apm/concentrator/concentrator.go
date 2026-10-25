@@ -1,12 +1,11 @@
 // Package concentrator agrega spans em APM stats por bucket de tempo, com
-// DDSketch de latência — a peça-núcleo do trace-agent (espelha o concentrator
-// com agregação DDSketch).
+// resumo de latência em buckets logarítmicos — a peça-núcleo do trace-agent.
 //
 // Garantia-chave: hits/errors e os sketches são contados ANTES de qualquer
 // sampling. Por isso as estatísticas (p50/p95/p99, throughput, error-rate) são
 // EXATAS mesmo que o agent guarde só 1 trace cru em N. O backend recebe os
-// sketches no encoding nativo flag-based (mesmo formato do sketches-java) e só
-// faz merge por bucket — sem reler spans.
+// resumos no formato binário de internal/latency e só faz merge por bucket —
+// sem reler spans.
 package concentrator
 
 import (
@@ -19,16 +18,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ispwatch/collector/internal/sketch"
+	"github.com/ispwatch/collector/internal/latency"
 	collectorv1 "github.com/ispwatch/collector/proto/v1"
 )
 
 const (
 	// BucketDuration é a janela de agregação.
 	BucketDuration = 10 * time.Second
-	// relativeAccuracy do DDSketch — PRECISA bater com a outra ponta (backend)
-	// pro merge ser válido. 1%.
-	relativeAccuracy = 0.01
 )
 
 // SourceAttr é o atributo de span (interno) que carimba a origem da telemetria:
@@ -67,8 +63,8 @@ type GroupedStats struct {
 	Peer                string
 	ServiceVersion      string
 	PrimaryTags         map[string]string
-	OkSummary           []byte // DDSketch (nanos) das latências OK; nil se vazio
-	ErrorSummary        []byte // DDSketch (nanos) das latências de erro; nil se vazio
+	OkSummary           []byte // resumo de latência (nanos) das OK; nil se vazio
+	ErrorSummary        []byte // resumo de latência (nanos) das de erro; nil se vazio
 }
 
 type bucketKey struct {
@@ -96,8 +92,8 @@ type groupStats struct {
 	// service → não inflaria cardinalidade, mas mantê-lo fora da chave evita
 	// dividir um mesmo service caso um span venha sem namespace). first-wins.
 	namespace string
-	okSketch  *ddsketch.DDSketch
-	errSketch *ddsketch.DDSketch
+	okSketch  *latency.Sketch
+	errSketch *latency.Sketch
 }
 
 // Concentrator acumula stats de forma thread-safe. Add roda no hot path (Push);
@@ -213,9 +209,9 @@ func (c *Concentrator) Add(s *collectorv1.Span) {
 	}
 	if isErr {
 		g.errors++
-		_ = g.errSketch.Add(float64(dur))
+		g.errSketch.Add(float64(dur))
 	} else {
-		_ = g.okSketch.Add(float64(dur))
+		g.okSketch.Add(float64(dur))
 	}
 }
 
@@ -260,10 +256,7 @@ func (c *Concentrator) Flush() []GroupedStats {
 	return out
 }
 
-func newSketch() *ddsketch.DDSketch {
-	s, _ := ddsketch.NewDefaultDDSketch(relativeAccuracy)
-	return s
-}
+func newSketch() *latency.Sketch { return latency.New() }
 
 // Peer is a service or endpoint, never a URL path/query or SQL statement.
 func peerOf(s *collectorv1.Span) string {
@@ -297,13 +290,11 @@ func peerOf(s *collectorv1.Span) string {
 	return host
 }
 
-func encodeSketch(s *ddsketch.DDSketch) []byte {
-	if s == nil || s.GetCount() == 0 {
+func encodeSketch(s *latency.Sketch) []byte {
+	if s == nil || s.Count() == 0 {
 		return nil
 	}
-	var b []byte
-	s.Encode(&b, false) // false = inclui o index mapping (backend decoda sem saber o accuracy)
-	return b
+	return s.Encode()
 }
 
 // resourceOf deriva o resource de baixa cardinalidade. Pra HTTP usa method+route;
