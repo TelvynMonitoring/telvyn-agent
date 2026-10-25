@@ -77,3 +77,11 @@ patterns are copied from `HardcodedSecretMatcher.java` in DataDog
 - License: Apache License, Version 2.0 (reproduced in the root `LICENSE` file)
 - Upstream rules: https://github.com/gitleaks/gitleaks (MIT License,
   Copyright (c) 2019 Zachary Rice)
+
+## WAF do agent Java
+
+- Regras de detecção geradas do OWASP Core Rule Set (`tools/crs-convert`), Apache License 2.0
+  (`telvyn-java-agent/src/main/resources/META-INF/licenses/owasp-crs/LICENSE`).
+- libinjection, compilado sem modificação para WebAssembly (`tools/libinjection-wasm`), BSD 3-Clause
+  (`.../licenses/libinjection/COPYING`). Copyright (c) 2012-2016 Nick Galbreath; (c) 2017-2024 libinjection Contributors.
+- Chicory (runtime de WebAssembly em Java), Apache License 2.0 (`.../licenses/chicory/LICENSE`).

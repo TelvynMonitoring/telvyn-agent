@@ -253,7 +253,20 @@ public final class WafInspector {
         String uri = (String) type.getMethod("getRequestURI").invoke(request);
         data.put("server.request.uri.raw", query == null ? uri : uri + "?" + query);
         data.put("server.request.method", type.getMethod("getMethod").invoke(request));
+        data.put("server.request.path", decodePath(uri));
+        if (query != null) data.put("server.request.query_string", query);
+        Object protocol = type.getMethod("getProtocol").invoke(request);
+        if (protocol != null) {
+            data.put("server.request.protocol", protocol);
+            data.put("server.request.line", type.getMethod("getMethod").invoke(request) + " " + (query == null ? uri : uri + "?" + query) + " " + protocol);
+        }
         return data;
+    }
+
+    /** Caminho da requisição já decodificado (o "+" fica como está; só a query o trata como espaço). */
+    static String decodePath(String uri) {
+        try { return URLDecoder.decode(uri.replace("+", "%2B"), StandardCharsets.UTF_8); }
+        catch (IllegalArgumentException malformed) { return uri; }
     }
 
     /** Query a partir do texto bruto, sem ler o corpo (getParameterMap leria um formulário). */
@@ -275,6 +288,42 @@ public final class WafInspector {
     }
 
     /** Objeto do corpo (DTO, Map, lista) em estrutura simples para o WAF, com limite de profundidade e tamanho. */
+    private static final java.util.regex.Pattern XML_NOISE = java.util.regex.Pattern.compile("<!--.*?-->|<\\?.*?\\?>|<!DOCTYPE(?:[^\\[>]|\\[.*?\\])*>", java.util.regex.Pattern.DOTALL | java.util.regex.Pattern.CASE_INSENSITIVE);
+    private static final java.util.regex.Pattern XML_TOKEN = java.util.regex.Pattern.compile("<!\\[CDATA\\[(.*?)\\]\\]>|<([^\\s>/!?][^>]*?)/?>|</[^>]*>|([^<]+)", java.util.regex.Pattern.DOTALL);
+    private static final java.util.regex.Pattern XML_ATTRIBUTE = java.util.regex.Pattern.compile("[^\\s=/]+\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')");
+    private static final java.util.regex.Pattern XML_ENTITY = java.util.regex.Pattern.compile("&(#x[0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);");
+
+    /** Texto e atributos de um corpo XML com as entidades decodificadas, sem resolver DOCTYPE nem entidades externas. */
+    static List<String> xmlValues(String text) {
+        List<String> values = new ArrayList<>();
+        var tokens = XML_TOKEN.matcher(XML_NOISE.matcher(text).replaceAll(""));
+        while (tokens.find() && values.size() < 1024) {
+            if (tokens.group(1) != null) addXml(values, tokens.group(1));
+            else if (tokens.group(3) != null) addXml(values, xmlDecode(tokens.group(3)));
+            else if (tokens.group(2) != null) {
+                var attributes = XML_ATTRIBUTE.matcher(tokens.group(2));
+                while (attributes.find()) addXml(values, xmlDecode(attributes.group(1) != null ? attributes.group(1) : attributes.group(2)));
+            }
+        }
+        return values;
+    }
+
+    private static void addXml(List<String> values, String value) { if (!value.isBlank()) values.add(value); }
+
+    private static String xmlDecode(String text) {
+        return XML_ENTITY.matcher(text).replaceAll(match -> {
+            String name = match.group(1);
+            String replacement = switch (name) { case "lt" -> "<"; case "gt" -> ">"; case "amp" -> "&"; case "quot" -> "\""; case "apos" -> "'"; default -> null; };
+            if (replacement == null && name.charAt(0) == '#') {
+                try {
+                    int code = name.charAt(1) == 'x' || name.charAt(1) == 'X' ? Integer.parseInt(name.substring(2), 16) : Integer.parseInt(name.substring(1));
+                    if (code > 0 && code <= 0x10ffff) replacement = new String(Character.toChars(code));
+                } catch (NumberFormatException invalid) { /* fica como está */ }
+            }
+            return java.util.regex.Matcher.quoteReplacement(replacement == null ? match.group() : replacement);
+        });
+    }
+
     static Object introspect(Object value) { return introspect(value, 0, new int[]{0}, new IdentityHashMap<>()); }
 
     private static Object introspect(Object value, int depth, int[] count, IdentityHashMap<Object, Boolean> seen) {

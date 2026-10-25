@@ -25,9 +25,15 @@
     "frameworks.cjs",
     "rasp.cjs",
     "sca.cjs",
+    "waf.cjs",
+    "libinjection.wasm",
     "waf-rules.json",
-    "WAF-RULES-NOTICE.md"
+    "WAF-RULES-NOTICE.md",
+    "licenses"
   ],
+  "scripts": {
+    "test": "node --test test/waf.test.cjs"
+  },
   "engines": {
     "node": "^18.19.0 || >=20"
   },
@@ -49,7 +55,6 @@
     "import-in-the-middle": "3.5.2"
   },
   "optionalDependencies": {
-    "@datadog/native-appsec": "11.0.3",
     "@datadog/native-iast-taint-tracking": "4.2.1",
     "@datadog/pprof": "5.20.0",
     "@datadog/wasm-js-rewriter": "5.0.4"

@@ -29,11 +29,16 @@
         <maven.compiler.parameters>true</maven.compiler.parameters>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <bytebuddy.version>1.14.18</bytebuddy.version>
+        <chicory.version>1.7.5</chicory.version>
     </properties>
 
     <dependencies>
         <dependency>
-            <groupId>io.sqreen</groupId><artifactId>libsqreen</artifactId><version>17.5.0</version>
+            <!-- Runtime de WebAssembly em Java puro: roda o libinjection (src/main/wasm) sem biblioteca nativa. -->
+            <groupId>com.dylibso.chicory</groupId><artifactId>runtime</artifactId><version>${chicory.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.11.3</version><scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.google.code.gson</groupId><artifactId>gson</artifactId><version>2.11.0</version>
@@ -49,6 +54,27 @@
         <finalName>telvyn-debugger-${project.version}</finalName>
         <plugins>
             <plugin>
+                <!-- libinjection.wasm vira bytecode Java no build (LibInjectionModule): rápido e sem interpretador. -->
+                <groupId>com.dylibso.chicory</groupId>
+                <artifactId>chicory-compiler-maven-plugin</artifactId>
+                <version>${chicory.version}</version>
+                <executions>
+                    <execution>
+                        <id>libinjection</id>
+                        <goals><goal>compile</goal></goals>
+                        <configuration>
+                            <name>system.monitoring.debugger.waf.LibInjectionModule</name>
+                            <wasmFile>src/main/wasm/libinjection.wasm</wasmFile>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+            </plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.5.1</version>
@@ -57,7 +83,7 @@
                         <phase>package</phase>
                         <goals><goal>shade</goal></goals>
                         <configuration>
-                            <relocations><relocation><pattern>com.google.gson</pattern><shadedPattern>system.monitoring.debugger.shaded.gson</shadedPattern></relocation><relocation><pattern>org.slf4j</pattern><shadedPattern>datadog.slf4j</shadedPattern></relocation></relocations>
+                            <relocations><relocation><pattern>com.google.gson</pattern><shadedPattern>system.monitoring.debugger.shaded.gson</shadedPattern></relocation><relocation><pattern>com.dylibso.chicory</pattern><shadedPattern>system.monitoring.debugger.shaded.chicory</shadedPattern></relocation></relocations>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
                             <transformers>
                                 <transformer

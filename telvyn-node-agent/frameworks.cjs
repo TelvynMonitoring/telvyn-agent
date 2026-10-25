@@ -100,7 +100,11 @@ function patchMulter(multer, security) {
     return function (request, response, next) {
       return middleware.call(this, request, response, function (error) {
         if (!error) {
-          try { if (security.inspectBody(request, request.body)) return; } catch (_) { /* Protection never breaks the application. */ }
+          try {
+            const files = [request.file, ...(Array.isArray(request.files) ? request.files : Object.values(request.files || {}).flat())]
+              .map(file => file?.originalname).filter(name => typeof name === 'string');
+            if (security.inspectFiles(request, files) || security.inspectBody(request, request.body)) return;
+          } catch (_) { /* Protection never breaks the application. */ }
         }
         return next.apply(this, arguments);
       });

@@ -21,6 +21,16 @@ function parseBudget(value) {
 }
 const BUDGET_US = parseBudget(process.env.TELVYN_SECURITY_WAF_TIMEOUT_US);
 
+// Nível de paranoia das regras (1 a 4): níveis altos pegam mais e geram mais falsos positivos. Padrão 1 (conjunto recomendado).
+function parseParanoia(value) {
+  if (value === undefined || String(value).trim() === '') return 1;
+  const parsed = Number(String(value).trim());
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 4) return parsed;
+  console.warn(`[telvyn] invalid TELVYN_SECURITY_WAF_PARANOIA (${value}); expected 1 to 4. Using 1.`);
+  return 1;
+}
+const PARANOIA = parseParanoia(process.env.TELVYN_SECURITY_WAF_PARANOIA);
+
 // Relatar cada timeout enche o painel quando muitos estouram: um relato por minuto, e o log diz o que fazer.
 let lastTimeoutReport = 0;
 let timeoutsSinceReport = 0;
@@ -52,12 +62,11 @@ function startSecurity() {
   const endpoint = new URL(process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4318');
   if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('Invalid collector endpoint');
   endpoint.pathname = endpoint.pathname.replace(/\/$/, '') + '/v1/security/events';
-  const { DDWAF } = require('@datadog/native-appsec');
+  const { Waf, xmlValues } = require('./waf.cjs');
   const protection = require('./protection.cjs');
   const createWaf = () => {
-    const created = new DDWAF(WAF_RULES, 'telvyn-recommended');
-    if (!created.diagnostics.rules?.loaded?.length || created.diagnostics.rules?.failed?.length) { created.dispose(); throw new Error('Security rules unavailable'); }
-    return created;
+    try { return new Waf(WAF_RULES, {paranoia: PARANOIA}); }
+    catch (_) { throw new Error('Security rules unavailable'); }
   };
   let waf = enabled ? createWaf() : null;
   const pending = new Set();
@@ -69,7 +78,7 @@ function startSecurity() {
     const context = span?.spanContext();
     const body = JSON.stringify({id: randomUUID(), service, host: process.env.POD_NAME || os.hostname(), environment,
       service_version: attributes['service.version'], outcome, rule_id: rule, rules_version: finding ? (rule === 'SQL_INJECTION' ? 'iast-q-node-sql-1' : FLAW_RULES.has(rule) ? 'iast-node-flaws-1' : 'iast-q-node-sinks-1') : RULES_VERSION,
-      engine_version: DDWAF.version(), elapsed_us: elapsed,
+      engine_version: Waf.version(), elapsed_us: elapsed,
       ...finding, ...request,
       ...(context && /^[0-9a-f]{32}$/.test(context.traceId) && !/^0+$/.test(context.traceId) ? {trace_id: context.traceId, span_id: context.spanId} : {})});
     const destination = new URL(endpoint);
@@ -110,8 +119,7 @@ function startSecurity() {
     catch (_) { report('error', undefined, Number((process.hrtime.bigint() - started) / 1000n), span, undefined, state.details); return false; }
     const elapsed = Number((process.hrtime.bigint() - started) / 1000n);
     if (result.timeout && !state.timeoutReported) { state.timeoutReported = true; if (shouldReportTimeout(Date.now())) report('timeout', undefined, elapsed, span, undefined, state.details); }
-    state.derivatives = result.derivatives ?? result.attributes;
-    if (result.errorCode) { report('error', undefined, elapsed, span, undefined, state.details); return false; }
+    state.derivatives = result.derivatives;
     const matches = (result.events || []).filter(event => event.rule?.id && !state.reported.has(event.rule.id) && protection.ruleMode(event.rule.id) !== 'disabled');
     if (!matches.length) return false;
     const block = blockable && protection.state.allow && !protection.passed(state.ip) && !state.blocked && matches.some(event => protection.ruleMode(event.rule.id) === 'blocking');
@@ -159,6 +167,8 @@ function startSecurity() {
     pending.add(send);
   }
   // Body worth a WAF run: a non-empty object or string (body parsers leave {} when they do not handle the type).
+  // XML bodies reach the rules as the list of their decoded text and attribute values.
+  const asBody = (request, body) => typeof body === 'string' && /xml/i.test(String(request?.headers?.['content-type'] || '')) ? xmlValues(body) : body;
   const hasBody = body => typeof body === 'string' ? body.length > 0 : !!body && typeof body === 'object' && Object.keys(body).length > 0;
   // API Security: the WAF extracts the schema of each endpoint (types of headers, query, path params,
   // body and response headers, with sensitive data and credentials flagged by the scanners), sampled once per method,
@@ -178,7 +188,7 @@ function startSecurity() {
   }
   function reportApi(state, status, derivatives) {
     const schemas = {};
-    for (const [name, value] of Object.entries(derivatives || {})) if (name.startsWith('_dd.appsec.s.')) schemas[name.slice('_dd.appsec.s.'.length)] = value;
+    for (const [name, value] of Object.entries(derivatives || {})) if (name.startsWith('schema.')) schemas[name.slice('schema.'.length)] = value;
     if (!Object.keys(schemas).length || pending.size >= 32) return;
     const body = JSON.stringify({id: randomUUID(), service, host: process.env.POD_NAME || os.hostname(), environment, service_version: attributes['service.version'],
       method: state.request.method, route: String(state.route || state.details.request_path).slice(0, 1024), status, schemas});
@@ -239,7 +249,10 @@ function startSecurity() {
       response.once('close', done);
       const headers = {...request.headers};
       delete headers.cookie;
-      const data = {'server.request.headers.no_cookies': headers, 'server.request.query': query(url), 'server.request.uri.raw': request.url, 'server.request.method': request.method};
+      const data = {'server.request.headers.no_cookies': headers, 'server.request.query': query(url), 'server.request.uri.raw': request.url, 'server.request.method': request.method,
+        'server.request.line': `${request.method} ${request.url} HTTP/${request.httpVersion}`, 'server.request.protocol': `HTTP/${request.httpVersion}`};
+      try { data['server.request.path'] = decodeURIComponent(url.pathname); } catch (_) { data['server.request.path'] = url.pathname; }
+      if (url.search.length > 1) data['server.request.query_string'] = url.search.slice(1);
       if (request.headers.cookie) data['server.request.cookies'] = cookies(request.headers.cookie);
       if (ip) data['http.client_ip'] = ip;
       if (evaluate(state, data, span)) { blockRequest(state, request, response, span, 'rule'); return true; }
@@ -255,7 +268,7 @@ function startSecurity() {
       if (user != null && setUser(state, user, request, null, state.span)) return true;
       if (state.user && protection.state.allow && protection.userBlocked(state.user) && !protection.passed(state.ip)) { state.blockedBy = 'user'; return true; }
       const data = {};
-      if (!state.bodyInspected && hasBody(body)) { state.bodyInspected = true; data['server.request.body'] = body; }
+      if (!state.bodyInspected && hasBody(body)) { state.bodyInspected = true; data['server.request.body'] = asBody(request, body); }
       if (params && typeof params === 'object' && Object.keys(params).length) data['server.request.path_params'] = params;
       if (state.user) data['usr.id'] = state.user;
       if (Object.keys(data).length && evaluate(state, data, state.span)) { state.blockedBy = 'rule'; return true; }
@@ -268,7 +281,16 @@ function startSecurity() {
       const state = request ? requests.get(request) : store.getStore();
       if (!state || state.blocked || state.bodyInspected || !waf || !hasBody(body)) return false;
       state.bodyInspected = true;
-      if (!evaluate(state, {'server.request.body': body}, state.span, blockable) || !blockable) return false;
+      if (!evaluate(state, {'server.request.body': asBody(request, body)}, state.span, blockable) || !blockable) return false;
+      blockRequest(state, state.request, state.response, state.span, 'rule');
+      return true;
+    },
+    // Names of the files in a multipart upload (multer), inspected once. Returns true when blocked.
+    inspectFiles(request, names) {
+      const state = request ? requests.get(request) : store.getStore();
+      if (!state || state.blocked || state.filesInspected || !waf || !names.length) return false;
+      state.filesInspected = true;
+      if (!evaluate(state, {'server.request.body.filenames': names}, state.span)) return false;
       blockRequest(state, state.request, state.response, state.span, 'rule');
       return true;
     },
@@ -312,7 +334,7 @@ function startSecurity() {
       if (!state) return;
       blockRequest(state, request, response, state.span, state.blockedBy || 'rule');
     },
-    // Public SDK API (like tracer.setUser / appsec.isUserBlocked / appsec.blockRequest).
+    // Public SDK API: setUser, isUserBlocked, blockRequest.
     setUser(user) {
       const state = store.getStore();
       if (!state) return false;
