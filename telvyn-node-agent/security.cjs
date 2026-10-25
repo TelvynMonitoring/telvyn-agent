@@ -62,7 +62,7 @@ function startSecurity() {
   const endpoint = new URL(process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://localhost:4318');
   if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('Invalid collector endpoint');
   endpoint.pathname = endpoint.pathname.replace(/\/$/, '') + '/v1/security/events';
-  const { Waf } = require('./waf.cjs');
+  const { Waf, xmlValues } = require('./waf.cjs');
   const protection = require('./protection.cjs');
   const createWaf = () => {
     try { return new Waf(WAF_RULES, {paranoia: PARANOIA}); }
@@ -167,6 +167,8 @@ function startSecurity() {
     pending.add(send);
   }
   // Body worth a WAF run: a non-empty object or string (body parsers leave {} when they do not handle the type).
+  // XML bodies reach the rules as the list of their decoded text and attribute values.
+  const asBody = (request, body) => typeof body === 'string' && /xml/i.test(String(request?.headers?.['content-type'] || '')) ? xmlValues(body) : body;
   const hasBody = body => typeof body === 'string' ? body.length > 0 : !!body && typeof body === 'object' && Object.keys(body).length > 0;
   // API Security: the WAF extracts the schema of each endpoint (types of headers, query, path params,
   // body and response headers, with sensitive data and credentials flagged by the scanners), sampled once per method,
@@ -266,7 +268,7 @@ function startSecurity() {
       if (user != null && setUser(state, user, request, null, state.span)) return true;
       if (state.user && protection.state.allow && protection.userBlocked(state.user) && !protection.passed(state.ip)) { state.blockedBy = 'user'; return true; }
       const data = {};
-      if (!state.bodyInspected && hasBody(body)) { state.bodyInspected = true; data['server.request.body'] = body; }
+      if (!state.bodyInspected && hasBody(body)) { state.bodyInspected = true; data['server.request.body'] = asBody(request, body); }
       if (params && typeof params === 'object' && Object.keys(params).length) data['server.request.path_params'] = params;
       if (state.user) data['usr.id'] = state.user;
       if (Object.keys(data).length && evaluate(state, data, state.span)) { state.blockedBy = 'rule'; return true; }
@@ -279,7 +281,16 @@ function startSecurity() {
       const state = request ? requests.get(request) : store.getStore();
       if (!state || state.blocked || state.bodyInspected || !waf || !hasBody(body)) return false;
       state.bodyInspected = true;
-      if (!evaluate(state, {'server.request.body': body}, state.span, blockable) || !blockable) return false;
+      if (!evaluate(state, {'server.request.body': asBody(request, body)}, state.span, blockable) || !blockable) return false;
+      blockRequest(state, state.request, state.response, state.span, 'rule');
+      return true;
+    },
+    // Names of the files in a multipart upload (multer), inspected once. Returns true when blocked.
+    inspectFiles(request, names) {
+      const state = request ? requests.get(request) : store.getStore();
+      if (!state || state.blocked || state.filesInspected || !waf || !names.length) return false;
+      state.filesInspected = true;
+      if (!evaluate(state, {'server.request.body.filenames': names}, state.span)) return false;
       blockRequest(state, state.request, state.response, state.span, 'rule');
       return true;
     },

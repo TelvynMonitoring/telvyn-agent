@@ -77,3 +77,8 @@ test('estouro de tempo devolve timeout, não resultado limpo', () => {
   const result = waf.createContext().run({ persistent: { 'server.request.query': { q: ['a'.repeat(4000)] } } }, 1);
   assert.equal(result.timeout, true);
 });
+
+test('corpo XML vira a lista de texto e atributos decodificados', () => {
+  const { xmlValues } = require('../waf.cjs');
+  assert.deepEqual(xmlValues('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><r a="&lt;script&gt;"><i>&#60;b&#x3e;</i><![CDATA[ x\' or 1=1 ]]></r>'), ['<script>', '<b>', " x' or 1=1 "]);
+});

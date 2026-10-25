@@ -3,7 +3,7 @@
 // Uso: node corpus-node.cjs <corpus.json>
 const fs = require('node:fs');
 const path = require('node:path');
-const { Waf } = require(path.join(__dirname, '..', '..', 'telvyn-node-agent', 'waf.cjs'));
+const { Waf, xmlValues } = require(path.join(__dirname, '..', '..', 'telvyn-node-agent', 'waf.cjs'));
 
 const waf = new Waf(JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'telvyn-node-agent', 'waf-rules.json'), 'utf8')));
 const loaded = new Set(waf.rules.map(rule => rule.id.slice(4)));
@@ -42,6 +42,7 @@ function request(c) {
   if (c.body != null) {
     let body = contentType.includes('x-www-form-urlencoded') ? form(c.body) : c.body;
     if (contentType.includes('json')) { try { body = JSON.parse(c.body); } catch (_) { /* fica como texto */ } }
+    if (contentType.includes('xml') && typeof body === 'string') body = xmlValues(body);
     data['server.request.body'] = body;
   }
   return data;

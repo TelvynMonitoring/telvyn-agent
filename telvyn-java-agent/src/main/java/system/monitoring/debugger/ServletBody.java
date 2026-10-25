@@ -139,6 +139,7 @@ public final class ServletBody {
         try {
             Object type = JavaProtection.call(current[0], "getContentType", new Class<?>[]{});
             if (type != null && type.toString().toLowerCase(Locale.ROOT).contains("json")) body = WafInspector.introspect(new Gson().fromJson(text, Object.class));
+            else if (type != null && type.toString().toLowerCase(Locale.ROOT).contains("xml")) body = WafInspector.xmlValues(text);
         } catch (ReflectiveOperationException | RuntimeException notJson) { /* inspeciona como texto */ }
         if (SpringMvcSecurity.decide(state, WafInspector.run(state, Map.of("server.request.body", body)), reporter) && block(current, state))
             throw new SpringMvcSecurity.BlockedRequestException();
