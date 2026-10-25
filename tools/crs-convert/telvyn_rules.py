@@ -29,6 +29,11 @@ def phrases(words, addresses, transformers=("lowercase", *DECODE)):
                                                        "inputs": inputs(addresses, transformers)}}
 
 
+def header_regex(name, pattern):
+    return {"operator": "match_regex", "parameters": {"regex": pattern, "options": {"case_sensitive": False, "min_length": 1},
+                                                      "inputs": [{"address": "server.request.headers.no_cookies", "key_path": [name], "transformers": []}]}}
+
+
 def status(pattern):
     return {"operator": "match_regex", "parameters": {"regex": pattern, "options": {"case_sensitive": True, "min_length": 3},
                                                       "inputs": [{"address": "server.response.status", "transformers": []}]}}
@@ -109,6 +114,12 @@ def rules():
              [regex(r"https?://[^/\s]*(?:\.nip\.io|\.sslip\.io|\.xip\.io|localtest\.me|lvh\.me|\.traefik\.me|\.vcap\.me)(?:[:/?#]|$)|://[^/@\s]+@(?:localhost|127\.|10\.|192\.168\.)", VALUES)]),
         rule("tlv-000-110", "SSRF: protocolo que não é HTTP", "ssrf",
              [regex(r"^\s*(?:gopher|dict|ldaps?|tftp|sftp|jar|netdoc|file|php|phar|expect|ogg|zip)://", VALUES, transformers=("urlDecodeUni",))]),
+        rule("tlv-000-112", "Next.js: cabeçalho interno x-middleware-subrequest vindo de fora (CVE-2025-29927)", "exploit_detection",
+             [header_regex("x-middleware-subrequest", r".")]),
+        rule("tlv-000-113", "Tomcat: PUT parcial com Content-Range, usado para gravar arquivos de sessão (CVE-2025-24813)", "exploit_detection",
+             [{"operator": "match_regex", "parameters": {"regex": r"^PUT$", "options": {"case_sensitive": True, "min_length": 3},
+                                                         "inputs": [{"address": "server.request.method", "transformers": []}]}},
+              header_regex("content-range", r"bytes")]),
         rule("tlv-000-111", "Exploração do Log4Shell (CVE-2021-44228)", "exploit_detection",
              [regex(r"\$\{[^}]{0,50}j[^}]{0,20}n[^}]{0,20}d[^}]{0,20}i[^}]{0,20}:|\$\{(?:jndi|lower|upper|env|sys|java|date):[^}]{0,60}\$\{", VALUES_AND_HEADERS, keys=True)]),
         # Varredura: pedidos de arquivos e páginas que não existem (precisam do status da resposta)

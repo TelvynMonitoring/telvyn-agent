@@ -27970,6 +27970,86 @@
    "transformers": []
   },
   {
+   "id": "tlv-000-112",
+   "name": "Next.js: cabeçalho interno x-middleware-subrequest vindo de fora (CVE-2025-29927)",
+   "tags": {
+    "type": "exploit_detection",
+    "category": "attack_attempt",
+    "paranoia_level": "1",
+    "source": "telvyn"
+   },
+   "conditions": [
+    {
+     "operator": "match_regex",
+     "parameters": {
+      "regex": ".",
+      "options": {
+       "case_sensitive": false,
+       "min_length": 1
+      },
+      "inputs": [
+       {
+        "address": "server.request.headers.no_cookies",
+        "key_path": [
+         "x-middleware-subrequest"
+        ],
+        "transformers": []
+       }
+      ]
+     }
+    }
+   ],
+   "transformers": []
+  },
+  {
+   "id": "tlv-000-113",
+   "name": "Tomcat: PUT parcial com Content-Range, usado para gravar arquivos de sessão (CVE-2025-24813)",
+   "tags": {
+    "type": "exploit_detection",
+    "category": "attack_attempt",
+    "paranoia_level": "1",
+    "source": "telvyn"
+   },
+   "conditions": [
+    {
+     "operator": "match_regex",
+     "parameters": {
+      "regex": "^PUT$",
+      "options": {
+       "case_sensitive": true,
+       "min_length": 3
+      },
+      "inputs": [
+       {
+        "address": "server.request.method",
+        "transformers": []
+       }
+      ]
+     }
+    },
+    {
+     "operator": "match_regex",
+     "parameters": {
+      "regex": "bytes",
+      "options": {
+       "case_sensitive": false,
+       "min_length": 1
+      },
+      "inputs": [
+       {
+        "address": "server.request.headers.no_cookies",
+        "key_path": [
+         "content-range"
+        ],
+        "transformers": []
+       }
+      ]
+     }
+    }
+   ],
+   "transformers": []
+  },
+  {
    "id": "tlv-000-111",
    "name": "Exploração do Log4Shell (CVE-2021-44228)",
    "tags": {

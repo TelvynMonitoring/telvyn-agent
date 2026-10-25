@@ -82,3 +82,12 @@ test('corpo XML vira a lista de texto e atributos decodificados', () => {
   const { xmlValues } = require('../waf.cjs');
   assert.deepEqual(xmlValues('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><r a="&lt;script&gt;"><i>&#60;b&#x3e;</i><![CDATA[ x\' or 1=1 ]]></r>'), ['<script>', '<b>', " x' or 1=1 "]);
 });
+
+test('regras de CVEs recentes: Next.js x-middleware-subrequest e Tomcat PUT parcial', () => {
+  const { Waf } = require('../waf.cjs');
+  const waf = new Waf(require('../waf-rules.json'));
+  const run = data => waf.createContext().run({ persistent: data }, 500000).events.map(event => event.rule.id);
+  assert.ok(run({ 'server.request.method': 'GET', 'server.request.headers.no_cookies': { 'x-middleware-subrequest': 'middleware' } }).includes('tlv-000-112'));
+  assert.ok(run({ 'server.request.method': 'PUT', 'server.request.headers.no_cookies': { 'content-range': 'bytes 0-100/200' } }).includes('tlv-000-113'));
+  assert.ok(!run({ 'server.request.method': 'GET', 'server.request.headers.no_cookies': { 'content-range': 'bytes 0-100/200' } }).includes('tlv-000-113'));
+});
