@@ -82,7 +82,7 @@ Transporte HTTP/HTTPS pelo endpoint base do coletor, sem redirects, credenciais 
 
 ## Segurança e IAST
 
-Opt-in, ambiente explícito, source root e rotas obrigatórios. Entradas são examinadas quando a aplicação as lê. Regras `python-input-patterns-1`/engine `python-patterns-1` são padrões locais SQLi/XSS, **não libddwaf** e não bloqueiam requests. Só enviam matches reais; ausência de evento não é prova de requisição analisada.
+Opt-in, ambiente explícito, source root e rotas obrigatórios. Entradas são examinadas quando a aplicação as lê. Regras `python-input-patterns-1`/engine `python-patterns-1` são padrões locais SQLi/XSS, **não o motor WAF dos agentes Java/Node** e não bloqueiam requests. Só enviam matches reais; ausência de evento não é prova de requisição analisada.
 
 IAST `iast-python-1` acompanha `InputString` no request atual, com propagação parcial por concatenação e alguns métodos. F-strings, template str comum com `%`/`format`, `join`, serialização, conversões Pydantic/C e acessos não envolvidos podem perder taint. Não compara substrings para inventar vínculo. Fora da allowlist, após o request ou entre requests não deve atribuir fontes.
 
