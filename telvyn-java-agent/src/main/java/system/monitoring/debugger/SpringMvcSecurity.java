@@ -108,7 +108,7 @@ public final class SpringMvcSecurity {
             iast=reporter("iast");IastRuntime.configureSources(method->method.equals(selected.get()));
             IastRuntime.configureTrace(SpringMvcSecurity::trace);
             IastRuntime.configureRequest(selectedRoute::get);
-            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;markTrace("iast");var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1]);});
+            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;markTrace("iast");var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1],requestIdentity());});
         }
         Runtime.getRuntime().addShutdownHook(new Thread(()->{if(worker!=null)worker.shutdownNow();if(attacks!=null)attacks.close();if(iast!=null)iast.close();if(detector!=null)detector.close();},"telvyn-spring-security-stop"));
     }
@@ -324,6 +324,12 @@ public final class SpringMvcSecurity {
             if(!Boolean.TRUE.equals(context.getMethod("isValid").invoke(span.getMethod("getSpanContext").invoke(current))))continue;
             span.getMethod("setAttribute",String.class,String.class).invoke(current,"telvyn.security.event",kind);return;
         }catch(ReflectiveOperationException|LinkageError unavailable){ /* No span from this source. */ }
+    }
+    // IP, logged user and user agent of the request being handled (from the request inspection), or nulls.
+    static String[] requestIdentity(){
+        Object[] request=current.get();
+        if(request==null||!(request[2] instanceof WafInspector.State state))return new String[]{null,null,null};
+        return new String[]{state.ip,state.user,state.userAgent};
     }
     static String[] trace(){
         // The application's OpenTelemetry API first; without it, the copy the OpenTelemetry Java agent keeps in the bootstrap.
