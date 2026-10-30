@@ -1,6 +1,7 @@
 package otlp
 
 import (
+	"strings"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -86,6 +87,11 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 			default:
 				return http.StatusBadRequest, errors.New("unsupported security field")
 			}
+		}
+		// O trace do evento fica retido, mesmo que seus spans cheguem depois.
+		var traceID string
+		if json.Unmarshal(report["trace_id"], &traceID) == nil && traceID != "" {
+			h.securityTrace(strings.ToLower(traceID), true)
 		}
 		if h.forwardRaw == nil {
 			return http.StatusServiceUnavailable, errors.New("security forwarding unavailable")

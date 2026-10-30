@@ -108,7 +108,7 @@ public final class SpringMvcSecurity {
             iast=reporter("iast");IastRuntime.configureSources(method->method.equals(selected.get()));
             IastRuntime.configureTrace(SpringMvcSecurity::trace);
             IastRuntime.configureRequest(selectedRoute::get);
-            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1]);});
+            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;markTrace("iast");var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1]);});
         }
         Runtime.getRuntime().addShutdownHook(new Thread(()->{if(worker!=null)worker.shutdownNow();if(attacks!=null)attacks.close();if(iast!=null)iast.close();if(detector!=null)detector.close();},"telvyn-spring-security-stop"));
     }
@@ -314,6 +314,16 @@ public final class SpringMvcSecurity {
             Method method=handler==null?null:(Method)Class.forName("org.springframework.web.method.HandlerMethod",false,loader).getMethod("getMethod").invoke(handler);
             if(method!=null){selected.set(method);selectedRoute.set(new String[]{verb,route});}return new ReactiveScope(previous,method,true);
         }catch(ReflectiveOperationException|RuntimeException|LinkageError failure){SecuritySensorState.iastFailed();LocalAttackReporter.reportLoss("reactive integration unavailable");return new ReactiveScope(previous,null,false);}
+    }
+    // Marks the current span so the node agent keeps the trace of a security finding (otherwise sampling may drop it).
+    static void markTrace(String kind){
+        for(String prefix:new String[]{"io.opentelemetry.","io.opentelemetry.javaagent.shaded.io.opentelemetry."})try{
+            var loader=prefix.startsWith("io.opentelemetry.javaagent.")?null:Thread.currentThread().getContextClassLoader();var span=Class.forName(prefix+"api.trace.Span",false,loader);
+            Object current=span.getMethod("current").invoke(null);
+            var context=Class.forName(prefix+"api.trace.SpanContext",false,loader);
+            if(!Boolean.TRUE.equals(context.getMethod("isValid").invoke(span.getMethod("getSpanContext").invoke(current))))continue;
+            span.getMethod("setAttribute",String.class,String.class).invoke(current,"telvyn.security.event",kind);return;
+        }catch(ReflectiveOperationException|LinkageError unavailable){ /* No span from this source. */ }
     }
     static String[] trace(){
         // The application's OpenTelemetry API first; without it, the copy the OpenTelemetry Java agent keeps in the bootstrap.
