@@ -40,7 +40,8 @@ public final class SpringMvcSecurity {
     public static void selection(Object method){if(method instanceof Method value)selected.set(value);else selected.remove();}
     private static String setting(String name,String fallback){String value=System.getProperty("telvyn.security."+name);if(value==null)value=System.getenv("TELVYN_SECURITY_"+name.toUpperCase(Locale.ROOT).replace('.','_').replace('-','_'));return value==null?fallback:value;}
     public static void install(Instrumentation instrumentation){
-        if(!Boolean.parseBoolean(setting("spring.enabled","false")))return;
+        // IAST needs the handler hook to mark Spring parameters as sources; without it every finding is silently lost.
+        if(!Boolean.parseBoolean(setting("spring.enabled","false"))&&!Boolean.getBoolean("telvyn.iast.enabled"))return;
         new AgentBuilder.Default().disableClassFormatChanges()
             .type(named("org.springframework.web.servlet.mvc.method.AbstractHandlerMethodAdapter"))
             .transform((builder,type,loader,module,domain)->builder.visit(Advice.to(Dispatch.class).on(named("handle").and(takesArguments(3)))))
