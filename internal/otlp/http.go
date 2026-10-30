@@ -81,6 +81,9 @@ const (
 // Compartilha o mesmo SpanSink do receiver gRPC: tudo cai no Forwarder único
 // e segue pelo StreamSpans pro backend.
 type HTTPReceiver struct {
+	// Traces com evento de segurança (IAST/ataque): sempre retidos, para o achado abrir o trace.
+	securityMu     sync.Mutex
+	securityTraces map[string]time.Time
 	addr         string
 	sink         SpanSink
 	maxBodyBytes int64
@@ -207,6 +210,39 @@ func (h *HTTPReceiver) SetServiceTraceSampler(fn func(traceID, service string, s
 	h.traceSampler = func(id string, status int32, duration int64) bool { return fn(id, "", status, duration) }
 }
 
+// securityTrace registra (marked) ou consulta se o trace teve evento de segurança nos
+// últimos minutos. Spans do mesmo trace que chegam em outro lote também ficam.
+func (h *HTTPReceiver) securityTrace(id string, marked bool) bool {
+	if id == "" {
+		return false
+	}
+	now := time.Now()
+	h.securityMu.Lock()
+	defer h.securityMu.Unlock()
+	if marked {
+		if h.securityTraces == nil {
+			h.securityTraces = map[string]time.Time{}
+		}
+		if len(h.securityTraces) >= 10000 {
+			for key, until := range h.securityTraces {
+				if now.After(until) {
+					delete(h.securityTraces, key)
+				}
+			}
+		}
+		if len(h.securityTraces) < 10000 {
+			h.securityTraces[id] = now.Add(10 * time.Minute)
+		}
+		return true
+	}
+	until, ok := h.securityTraces[id]
+	if ok && now.After(until) {
+		delete(h.securityTraces, id)
+		return false
+	}
+	return ok
+}
+
 func (h *HTTPReceiver) sampleTrace(id, service string, status int32, duration int64) bool {
 	if h.serviceTraceSampler != nil {
 		return h.serviceTraceSampler(id, service, status, duration)
@@ -289,7 +325,8 @@ func filterServiceSampledSpans(req *tracepb.ExportTraceServiceRequest, keep func
 	})
 }
 
-func filterScopeSampledSpans(req *tracepb.ExportTraceServiceRequest, keep func(traceID, service, env, resource string, statusCode, kind int32, durationNano int64) bool) int {
+// security (opcional) retém sempre o trace com evento de segurança.
+func filterScopeSampledSpans(req *tracepb.ExportTraceServiceRequest, keep func(traceID, service, env, resource string, statusCode, kind int32, durationNano int64) bool, security ...func(traceID string, marked bool) bool) int {
 	// ponytail: batch-scoped decisions; cross-batch completeness requires bounded tail buffering.
 	decisions := make(map[string]bool)
 	for _, rs := range req.ResourceSpans {
@@ -327,6 +364,9 @@ func filterScopeSampledSpans(req *tracepb.ExportTraceServiceRequest, keep func(t
 				}
 				env, resource := samplingScope(s.Name, attrs)
 				keepSpan := keep(id, spanService, env, resource, status, int32(s.Kind), int64(s.EndTimeUnixNano)-int64(s.StartTimeUnixNano))
+				if len(security) > 0 && security[0] != nil {
+					keepSpan = security[0](id, attrs["telvyn.security.event"] != "") || keepSpan
+				}
 				decisions[id] = decisions[id] || keepSpan
 			}
 		}
@@ -477,6 +517,7 @@ func (h *HTTPReceiver) tapAndSampleJSON(body []byte, clientIP string) (outBody [
 					}
 					env, resource := samplingScope(f.Name, attrs)
 					keepSpan := h.sampleTraceScope(id, spanService, env, resource, status, int32(f.Kind), atoiNano(f.EndTimeUnixNano)-atoiNano(f.StartTimeUnixNano))
+					keepSpan = h.securityTrace(id, attrs["telvyn.security.event"] != "") || keepSpan
 					decisions[id] = decisions[id] || keepSpan
 				}
 			}
@@ -902,7 +943,7 @@ func (h *HTTPReceiver) handleTraces(w http.ResponseWriter, r *http.Request) {
 						}
 						sampled := false
 						if h.traceSampler != nil {
-							if filterScopeSampledSpans(req, h.sampleTraceScope) == 0 {
+							if filterScopeSampledSpans(req, h.sampleTraceScope, h.securityTrace) == 0 {
 								h.tracesAccepted.Add(1)
 								writeOTLPOK(w, ct)
 								return http.StatusOK, nil
