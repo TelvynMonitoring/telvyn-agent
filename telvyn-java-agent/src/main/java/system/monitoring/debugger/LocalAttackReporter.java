@@ -110,7 +110,8 @@ public final class LocalAttackReporter implements AutoCloseable {
         if(!queued)reportLoss("report queue full");
         return queued;
     }
-    public boolean reportIast(IastRuntime.Finding finding,String trace,String span) {
+    public boolean reportIast(IastRuntime.Finding finding,String trace,String span) {return reportIast(finding,trace,span,new String[]{null,null,null});}
+    public boolean reportIast(IastRuntime.Finding finding,String trace,String span,String[] identity) {
         var report=new JsonObject();report.addProperty("id",UUID.randomUUID().toString());report.addProperty("service",service);report.addProperty("host",host);report.addProperty("environment",environment);report.addProperty("service_version",version);
         report.addProperty("outcome","match");report.addProperty("rule_id",finding.ruleId()==null?"SQL_INJECTION":finding.ruleId());report.addProperty("rules_version",finding.rulesVersion());report.addProperty("engine_version","telvyn-iast-2");report.addProperty("elapsed_us",finding.elapsedUs());
         report.addProperty("code_method",finding.method());report.addProperty("code_line",finding.line());
@@ -122,6 +123,12 @@ public final class LocalAttackReporter implements AutoCloseable {
         String[] request=IastRuntime.request();
         if(request!=null&&request[0]!=null&&request[0].matches("[A-Z]{1,20}"))report.addProperty("request_method",request[0]);
         if(request!=null&&request[1]!=null&&request[1].length()<=1024&&request[1].indexOf('?')<0)report.addProperty("request_path",request[1]);
+        // Who made the request: client IP, logged user and user agent, as in attack events.
+        if(identity!=null&&identity.length==3){
+            if(identity[0]!=null)report.addProperty("client_ip",identity[0]);
+            if(identity[1]!=null)report.addProperty("usr_id",identity[1].length()>255?identity[1].substring(0,255):identity[1]);
+            if(identity[2]!=null)report.addProperty("user_agent",identity[2].length()>512?identity[2].substring(0,512):identity[2]);
+        }
         if(trace!=null&&span!=null){report.addProperty("trace_id",trace);report.addProperty("span_id",span);}
         boolean accepted=queue.offer(report.toString());if(!accepted)reportLoss("IAST report queue full");return accepted;
     }

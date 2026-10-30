@@ -76,7 +76,12 @@ func (h *HTTPReceiver) handleSecurity(w http.ResponseWriter, r *http.Request) {
 				if signal != "security/iast" && signal != "security/events" {
 					return http.StatusBadRequest, errors.New("unsupported security field")
 				}
-			case "client_ip", "blocked", "usr_id", "match_address", "blocked_by":
+			case "client_ip", "usr_id":
+				// Who made the request: attack events and code findings.
+				if signal != "security/iast" && signal != "security/events" {
+					return http.StatusBadRequest, errors.New("unsupported security field")
+				}
+			case "blocked", "match_address", "blocked_by":
 				if signal != "security/events" {
 					return http.StatusBadRequest, errors.New("unsupported security field")
 				}
