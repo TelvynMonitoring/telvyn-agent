@@ -93,6 +93,11 @@ RUN apk add --no-cache --virtual .trivy-build wget tar \
 
 COPY --from=build /out/telvyn-agent /usr/local/bin/telvyn-agent
 COPY --from=build /out/integrations /opt/telvyn/integrations
+# Agentes de linguagem (Java e Node) que o entrypoint publica em /opt/telvyn-shared quando
+# TELVYN_LANGUAGE_AGENTS está definida. O jar do OpenTelemetry baixado acima acompanha o do Java.
+COPY --from=ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.5 /opt/telvyn/java /opt/telvyn/java
+COPY --from=ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.5 /opt/telvyn/node /opt/telvyn/node
+RUN cp /opt/otel/javaagent.jar /opt/telvyn/java/opentelemetry-javaagent.jar
 ENV TELVYN_EXTERNAL_PACKAGE_DIR=/opt/telvyn/integrations/packages \
     TELVYN_EXTERNAL_TRUST_DIR=/opt/telvyn/integrations/trust \
     TELVYN_EXTERNAL_PYTHON=/usr/bin/python3
@@ -114,8 +119,8 @@ RUN apk add --no-cache --virtual .cap-build libcap \
 
 # install-collector.sh mounts certs read-only at this path. The state volume is
 # explicit so the certless outbox survives replacement of a Docker container.
-RUN mkdir -p /var/lib/telvyn \
- && chown -R telvyn:telvyn /var/lib/telvyn
+RUN mkdir -p /var/lib/telvyn /opt/telvyn-shared \
+ && chown -R telvyn:telvyn /var/lib/telvyn /opt/telvyn-shared
 VOLUME ["/etc/telvyn/certs", "/var/lib/telvyn", "/opt/telvyn-shared"]
 
 USER telvyn:telvyn
