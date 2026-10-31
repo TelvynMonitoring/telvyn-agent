@@ -22,15 +22,15 @@ import (
 	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 
-	"github.com/ispwatch/collector/internal/otlp"
+	"github.com/telvynmonitoring/telvyn-agent/internal/otlp"
 )
 
 const hostServicesInterval = 60 * time.Second
 
 // hostServicesEnabled — toggle de descoberta. Ligado por padrão no install
-// Linux (é a substância da lente); desliga com ISPWATCH_HOST_SERVICES=0.
+// Linux (é a substância da lente); desliga com TELVYN_HOST_SERVICES=0.
 func hostServicesEnabled() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("ISPWATCH_HOST_SERVICES")))
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("TELVYN_HOST_SERVICES")))
 	return v != "0" && v != "false" && v != "no" && v != "off"
 }
 

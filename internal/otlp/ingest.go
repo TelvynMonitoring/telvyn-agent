@@ -27,10 +27,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ispwatch/collector/internal/agentstats"
-	"github.com/ispwatch/collector/internal/clock"
-	"github.com/ispwatch/collector/internal/sendbuf"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/agentstats"
+	"github.com/telvynmonitoring/telvyn-agent/internal/clock"
+	"github.com/telvynmonitoring/telvyn-agent/internal/sendbuf"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	metricscolpb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -1052,7 +1052,7 @@ func (e *IngestExporter) PostLogs(ctx context.Context, records []LogRecord) erro
 // PostCheckStatus envia o resultado de uma execução de check.
 //
 // Antes disto o motivo só existia no log desta máquina: o agente publicava um
-// contador ispwatch.check.errors{check_id} e a tela do equipamento mostrava
+// contador telvyn.check.errors{check_id} e a tela do equipamento mostrava
 // "warning" sem dizer nada. Agora o backend grava a mensagem em
 // noc_hostcheck.last_error e a página do equipamento explica sozinha.
 //

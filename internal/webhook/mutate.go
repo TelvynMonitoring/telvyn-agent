@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ispwatch/collector/internal/k8smeta"
+	"github.com/telvynmonitoring/telvyn-agent/internal/k8smeta"
 )
 
 // AdmissionReview / Pod minimalista — só os campos que consumimos.
@@ -306,8 +306,8 @@ func podDisplayName(p podMeta) string {
 }
 
 // buildPatch gera o JSONPatch que:
-//  1. adiciona volume emptyDir 'ispwatch-otel'
-//  2. prepend initContainer 'ispwatch-otel-init' que copia o jar
+//  1. adiciona volume emptyDir 'telvyn-otel'
+//  2. prepend initContainer 'telvyn-otel-init' que copia o jar
 //  3. adiciona volumeMount nos containers Java
 //  4. adiciona env vars OTel + JAVA_TOOL_OPTIONS nos containers Java
 //     (sem sobrescrever se cliente já tem JAVA_TOOL_OPTIONS — append)
@@ -320,12 +320,12 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, javaAgentImage, otlpEnvV
 	if pod.Spec.Volumes == nil || len(pod.Spec.Volumes) == 0 {
 		ops = append(ops, patchOp{
 			Op: "add", Path: "/spec/volumes",
-			Value: []volume{{Name: "ispwatch-otel", EmptyDir: map[string]interface{}{}}},
+			Value: []volume{{Name: "telvyn-otel", EmptyDir: map[string]interface{}{}}},
 		})
 	} else {
 		ops = append(ops, patchOp{
 			Op: "add", Path: "/spec/volumes/-",
-			Value: volume{Name: "ispwatch-otel", EmptyDir: map[string]interface{}{}},
+			Value: volume{Name: "telvyn-otel", EmptyDir: map[string]interface{}{}},
 		})
 	}
 	if javaAgentImage != "" {
@@ -334,11 +334,11 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, javaAgentImage, otlpEnvV
 
 	// initContainer
 	initCt := map[string]interface{}{
-		"name":            "ispwatch-otel-init",
+		"name":            "telvyn-otel-init",
 		"image":           agentImage,
 		"imagePullPolicy": "IfNotPresent",
 		"command":         []string{"sh", "-c", "cp /opt/otel/javaagent.jar /otel/javaagent.jar && chmod 0644 /otel/javaagent.jar"},
-		"volumeMounts":    []volumeMount{{Name: "ispwatch-otel", MountPath: "/otel"}},
+		"volumeMounts":    []volumeMount{{Name: "telvyn-otel", MountPath: "/otel"}},
 		"resources": map[string]interface{}{
 			"requests": map[string]string{"cpu": "10m", "memory": "16Mi"},
 			"limits":   map[string]string{"cpu": "100m", "memory": "32Mi"},
@@ -366,7 +366,7 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, javaAgentImage, otlpEnvV
 		c := pod.Spec.Containers[idx]
 
 		// VolumeMount
-		mount := volumeMount{Name: "ispwatch-otel", MountPath: "/otel", ReadOnly: true}
+		mount := volumeMount{Name: "telvyn-otel", MountPath: "/otel", ReadOnly: true}
 		if c.VolumeMounts == nil || len(c.VolumeMounts) == 0 {
 			ops = append(ops, patchOp{
 				Op:    "add",

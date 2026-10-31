@@ -3,7 +3,7 @@ package cgroup
 import (
 	"path"
 
-	"github.com/ispwatch/collector/internal/ebpf/common"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/common"
 )
 
 const maxMemory = 1 << 62

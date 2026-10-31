@@ -3,7 +3,7 @@
 .worktrees
 .tmp-go-build
 .tmp-go-mod
-ispwatch-agent-linux-amd64*
+telvyn-agent-linux-amd64*
 .gocache
 .gomodcache
 bin

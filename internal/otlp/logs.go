@@ -30,7 +30,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ispwatch/collector/internal/sendbuf"
+	"github.com/telvynmonitoring/telvyn-agent/internal/sendbuf"
 )
 
 const (

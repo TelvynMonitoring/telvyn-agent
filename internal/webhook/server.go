@@ -11,7 +11,7 @@
 //     Java (heurística: image contém 'java'/'jdk'/'temurin'/'openjdk',
 //     ou já tem JAVA_TOOL_OPTIONS no env).
 //
-//   - TLS cert montado em /etc/ispwatch/webhook/{tls.crt,tls.key} via
+//   - TLS cert montado em /etc/telvyn/webhook/{tls.crt,tls.key} via
 //     Secret. CA bundle distribuído pro k8s api-server via
 //     MutatingWebhookConfiguration.caBundle.
 //
@@ -36,7 +36,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ispwatch/collector/internal/k8smeta"
+	"github.com/telvynmonitoring/telvyn-agent/internal/k8smeta"
 )
 
 const (
@@ -45,7 +45,7 @@ const (
 	DefaultListenAddr = ":8443"
 
 	// DefaultCertDir — TLS cert/key montados via Secret.
-	DefaultCertDir = "/etc/ispwatch/webhook"
+	DefaultCertDir = "/etc/telvyn/webhook"
 
 	defaultBackendPollInterval = 15 * time.Second
 )
@@ -58,7 +58,7 @@ type Config struct {
 	Cluster          string
 	ListenAddr       string
 	CertDir          string
-	IngestURL        string // ex: http://backend.ispwatch.svc.cluster.local:8080
+	IngestURL        string // ex: http://backend.telvyn.svc.cluster.local:8080
 	Token            string // Bearer iwI_... (mesmo token do DaemonSet)
 	AgentImage       string // imagem que o initContainer usa pra copiar o jar
 	NodeAgentImage   string // pacote Node escolhido pelo operador; vazio desabilita injeção

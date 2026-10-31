@@ -5,7 +5,7 @@
 // stacks" por serviço — o mesmo formato que o profiler JFR (Opção A) já manda.
 //
 // Best-effort: se o verifier rejeitar a coleção (kernel sem suporte), o caller só
-// desliga o profiler; o eBPF L7 nunca é tocado. Roda atrás de ISPWATCH_PROFILING_ENABLED.
+// desliga o profiler; o eBPF L7 nunca é tocado. Roda atrás de TELVYN_EBPF_PROFILING_ENABLED.
 //
 // source="ebpf"; o JFR continua cobrindo Java. Simbolização de kernel via
 // /proc/kallsyms aqui; símbolos de user (ELF por linguagem) ficam pra S3.
@@ -26,7 +26,7 @@ import (
 	"unsafe"
 
 	"github.com/cilium/ebpf"
-	"github.com/ispwatch/collector/internal/ebpf/common"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/common"
 	"golang.org/x/sys/unix"
 	"k8s.io/klog/v2"
 )

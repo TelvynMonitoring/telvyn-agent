@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ispwatch/collector/internal/inventory"
+	"github.com/telvynmonitoring/telvyn-agent/internal/inventory"
 )
 
 func TestExternalInventoryWireContract(t *testing.T) {

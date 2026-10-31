@@ -12,10 +12,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/ispwatch/collector/internal/inventory"
+	"github.com/telvynmonitoring/telvyn-agent/internal/inventory"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 var externalMetricName = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,127}$`)

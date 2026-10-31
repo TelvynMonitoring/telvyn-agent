@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ispwatch/collector/internal/k8sidentity"
+	"github.com/telvynmonitoring/telvyn-agent/internal/k8sidentity"
 )
 
 func podIdentity(pod podMeta, kind string) string {

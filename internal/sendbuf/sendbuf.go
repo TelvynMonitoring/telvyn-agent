@@ -144,16 +144,16 @@ func NewPersistent(name string, maxBytes int, dir string, log *slog.Logger) *Que
 }
 
 // DefaultDir resolves the agent state directory. The systemd installer and
-// Helm chart set ISPWATCH_STATE_DIR explicitly; the Linux fallback also keeps
+// Helm chart set TELVYN_STATE_DIR explicitly; the Linux fallback also keeps
 // manual binary executions durable.
 func DefaultDir() string {
-	if dir := strings.TrimSpace(os.Getenv("ISPWATCH_STATE_DIR")); dir != "" {
+	if dir := strings.TrimSpace(os.Getenv("TELVYN_STATE_DIR")); dir != "" {
 		return filepath.Join(dir, "sendbuf")
 	}
 	if runtime.GOOS == "windows" {
 		return ""
 	}
-	return "/var/lib/ispwatch/sendbuf"
+	return "/var/lib/telvyn/sendbuf"
 }
 
 // Close closes the durable queue. Normal process shutdown does not need to
@@ -525,7 +525,7 @@ func (q *Queue) noteTerminal(err error) bool {
 		q.mu.Unlock()
 		if shouldLog {
 			q.log.Error("token de ingest INVÁLIDO ou REVOGADO — telemetria sendo descartada; "+
-				"verifique ISPWATCH_INGEST_TOKEN (gere outro em Monitores → instalar agent)",
+				"verifique TELVYN_INGEST_TOKEN (gere outro em Monitores → instalar agent)",
 				"status", se.Code)
 		}
 		return true

@@ -6,8 +6,8 @@ import (
 )
 
 func TestDatabaseProfileKeepsLinuxKindAndAdvertisesDatabaseCapabilities(t *testing.T) {
-	t.Setenv("ISPWATCH_AGENT_KIND", "linux")
-	t.Setenv("ISPWATCH_AGENT_PROFILE", "database")
+	t.Setenv("TELVYN_AGENT_KIND", "linux")
+	t.Setenv("TELVYN_AGENT_PROFILE", "database")
 
 	if !isDatabaseAgent() {
 		t.Fatal("database profile was not detected")
@@ -25,9 +25,9 @@ func TestDatabaseProfileKeepsLinuxKindAndAdvertisesDatabaseCapabilities(t *testi
 }
 
 func TestDatabaseProfileUsesAgentIdentityInsteadOfInstallationIdentity(t *testing.T) {
-	t.Setenv("ISPWATCH_AGENT_PROFILE", "database")
-	t.Setenv("ISPWATCH_DATABASE_INSTALLATION_ID", "")
-	t.Setenv("ISPWATCH_DATABASE_ENGINE", "postgres")
+	t.Setenv("TELVYN_AGENT_PROFILE", "database")
+	t.Setenv("TELVYN_DATABASE_INSTALLATION_ID", "")
+	t.Setenv("TELVYN_DATABASE_ENGINE", "postgres")
 
 	if got := databaseEngine(); got != "postgres" {
 		t.Fatalf("database engine=%q, want postgres", got)
@@ -39,7 +39,7 @@ func TestDatabaseProfileUsesAgentIdentityInsteadOfInstallationIdentity(t *testin
 
 func TestDatabaseAgentIDPersistsSeparatelyFromMachineIdentity(t *testing.T) {
 	path := t.TempDir() + "/agent-id"
-	t.Setenv("ISPWATCH_DATABASE_AGENT_ID_PATH", path)
+	t.Setenv("TELVYN_DATABASE_AGENT_ID_PATH", path)
 
 	first, err := databaseAgentID()
 	if err != nil || !isUUID(first) {
@@ -52,9 +52,9 @@ func TestDatabaseAgentIDPersistsSeparatelyFromMachineIdentity(t *testing.T) {
 }
 
 func TestDatabaseProfileKeepsDockerKindEvenWhenInstalledBySystemd(t *testing.T) {
-	t.Setenv("ISPWATCH_AGENT_KIND", "docker")
-	t.Setenv("ISPWATCH_AGENT_PROFILE", "database")
-	t.Setenv("ISPWATCH_INSTALL_MODE", "linux")
+	t.Setenv("TELVYN_AGENT_KIND", "docker")
+	t.Setenv("TELVYN_AGENT_PROFILE", "database")
+	t.Setenv("TELVYN_INSTALL_MODE", "linux")
 
 	if got := collectorInstallMode(); got != "docker" {
 		t.Fatalf("database install mode=%q, want docker", got)
@@ -75,9 +75,9 @@ func TestDatabaseRevocationMarkerIsPersistent(t *testing.T) {
 }
 
 func TestDatabaseProfileDoesNotUseGlobalUpdateMarker(t *testing.T) {
-	t.Setenv("ISPWATCH_AGENT_KIND", "linux")
-	t.Setenv("ISPWATCH_AGENT_PROFILE", "database")
-	t.Setenv("ISPWATCH_UPDATE_MARKER_PATH", t.TempDir()+"/must-not-be-used")
+	t.Setenv("TELVYN_AGENT_KIND", "linux")
+	t.Setenv("TELVYN_AGENT_PROFILE", "database")
+	t.Setenv("TELVYN_UPDATE_MARKER_PATH", t.TempDir()+"/must-not-be-used")
 
 	if got := updateMarkerPath(); got != "" {
 		t.Fatalf("database update marker=%q, want empty", got)
@@ -86,9 +86,9 @@ func TestDatabaseProfileDoesNotUseGlobalUpdateMarker(t *testing.T) {
 
 func TestGenericLinuxAgentKeepsUpdateMarker(t *testing.T) {
 	marker := t.TempDir() + "/update-requested"
-	t.Setenv("ISPWATCH_AGENT_KIND", "linux")
-	t.Setenv("ISPWATCH_AGENT_PROFILE", "")
-	t.Setenv("ISPWATCH_UPDATE_MARKER_PATH", marker)
+	t.Setenv("TELVYN_AGENT_KIND", "linux")
+	t.Setenv("TELVYN_AGENT_PROFILE", "")
+	t.Setenv("TELVYN_UPDATE_MARKER_PATH", marker)
 
 	if got := updateMarkerPath(); got != marker {
 		t.Fatalf("generic update marker=%q, want %q", got, marker)

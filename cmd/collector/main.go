@@ -20,28 +20,28 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ispwatch/collector/internal/apm/concentrator"
-	"github.com/ispwatch/collector/internal/apm/obfuscate"
-	"github.com/ispwatch/collector/internal/apm/primarytags"
-	"github.com/ispwatch/collector/internal/apm/processing"
-	"github.com/ispwatch/collector/internal/apm/sampler"
-	"github.com/ispwatch/collector/internal/apm/statsfwd"
-	"github.com/ispwatch/collector/internal/apm/usage"
-	"github.com/ispwatch/collector/internal/checks"
-	"github.com/ispwatch/collector/internal/clusteragent"
-	"github.com/ispwatch/collector/internal/collectorobs"
-	"github.com/ispwatch/collector/internal/configpull"
-	"github.com/ispwatch/collector/internal/ebpf"
-	"github.com/ispwatch/collector/internal/ebpf/common"
-	"github.com/ispwatch/collector/internal/jobpull"
-	"github.com/ispwatch/collector/internal/langdetect"
-	"github.com/ispwatch/collector/internal/logs"
-	"github.com/ispwatch/collector/internal/otlp"
-	"github.com/ispwatch/collector/internal/quarkus"
-	"github.com/ispwatch/collector/internal/sbom"
-	"github.com/ispwatch/collector/internal/selfmetrics"
-	"github.com/ispwatch/collector/internal/webhook"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/concentrator"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/obfuscate"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/primarytags"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/processing"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/sampler"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/statsfwd"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/usage"
+	"github.com/telvynmonitoring/telvyn-agent/internal/checks"
+	"github.com/telvynmonitoring/telvyn-agent/internal/clusteragent"
+	"github.com/telvynmonitoring/telvyn-agent/internal/collectorobs"
+	"github.com/telvynmonitoring/telvyn-agent/internal/configpull"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/common"
+	"github.com/telvynmonitoring/telvyn-agent/internal/jobpull"
+	"github.com/telvynmonitoring/telvyn-agent/internal/langdetect"
+	"github.com/telvynmonitoring/telvyn-agent/internal/logs"
+	"github.com/telvynmonitoring/telvyn-agent/internal/otlp"
+	"github.com/telvynmonitoring/telvyn-agent/internal/quarkus"
+	"github.com/telvynmonitoring/telvyn-agent/internal/sbom"
+	"github.com/telvynmonitoring/telvyn-agent/internal/selfmetrics"
+	"github.com/telvynmonitoring/telvyn-agent/internal/webhook"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"github.com/vishvananda/netns"
 
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -54,15 +54,15 @@ var Version = "dev"
 const databaseAgentProfile = "database"
 
 func isDatabaseAgent() bool {
-	return strings.EqualFold(strings.TrimSpace(getenvOr("ISPWATCH_AGENT_PROFILE", "")), databaseAgentProfile)
+	return strings.EqualFold(strings.TrimSpace(getenvOr("TELVYN_AGENT_PROFILE", "")), databaseAgentProfile)
 }
 
 func databaseInstallationID() string {
-	return strings.TrimSpace(getenvOr("ISPWATCH_DATABASE_INSTALLATION_ID", ""))
+	return strings.TrimSpace(getenvOr("TELVYN_DATABASE_INSTALLATION_ID", ""))
 }
 
 func databaseEngine() string {
-	return strings.ToLower(strings.TrimSpace(getenvOr("ISPWATCH_DATABASE_ENGINE", "postgres")))
+	return strings.ToLower(strings.TrimSpace(getenvOr("TELVYN_DATABASE_ENGINE", "postgres")))
 }
 
 func databaseCollectorName(hostname, installationID string) string {
@@ -77,10 +77,10 @@ func databaseCollectorName(hostname, installationID string) string {
 }
 
 func databaseAgentIDPath() string {
-	if path := strings.TrimSpace(getenvOr("ISPWATCH_DATABASE_AGENT_ID_PATH", "")); path != "" {
+	if path := strings.TrimSpace(getenvOr("TELVYN_DATABASE_AGENT_ID_PATH", "")); path != "" {
 		return path
 	}
-	stateDir := strings.TrimSpace(getenvOr("ISPWATCH_STATE_DIR", "/var/lib/telvyn-agent"))
+	stateDir := strings.TrimSpace(getenvOr("TELVYN_STATE_DIR", "/var/lib/telvyn-agent"))
 	return filepath.Join(stateDir, "agent-id")
 }
 
@@ -141,15 +141,15 @@ func databaseAgentID() (string, error) {
 }
 
 func databaseRevocationMarkerPath() string {
-	if marker := strings.TrimSpace(getenvOr("ISPWATCH_DATABASE_REVOKED_MARKER_PATH", "")); marker != "" {
+	if marker := strings.TrimSpace(getenvOr("TELVYN_DATABASE_REVOKED_MARKER_PATH", "")); marker != "" {
 		return marker
 	}
-	stateDir := strings.TrimSpace(getenvOr("ISPWATCH_STATE_DIR", ""))
+	stateDir := strings.TrimSpace(getenvOr("TELVYN_STATE_DIR", ""))
 	if stateDir == "" {
 		if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
-			stateDir = filepath.Join(cacheDir, "ispwatch")
+			stateDir = filepath.Join(cacheDir, "telvyn")
 		} else {
-			stateDir = "/var/lib/ispwatch"
+			stateDir = "/var/lib/telvyn"
 		}
 	}
 	return filepath.Join(stateDir, "database-agent-revoked")
@@ -173,21 +173,21 @@ func persistDatabaseAgentRevocation(marker string, status int) error {
 }
 
 func updateMarkerPath() string {
-	if isDatabaseAgent() || !strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "linux") {
+	if isDatabaseAgent() || !strings.EqualFold(getenvOr("TELVYN_AGENT_KIND", ""), "linux") {
 		return ""
 	}
-	return getenvOr("ISPWATCH_UPDATE_MARKER_PATH", "/var/lib/ispwatch/update-requested")
+	return getenvOr("TELVYN_UPDATE_MARKER_PATH", "/var/lib/telvyn/update-requested")
 }
 
 func main() {
 	// Intercept --version / -version / -v (and --webhook) early. Keeps
-	// `ispwatch-agent --version` working in tarball smoke tests and ops sanity
+	// `telvyn-agent --version` working in tarball smoke tests and ops sanity
 	// checks (Plan 03-09 release pipeline).
 	webhookOnly := false
 	for _, a := range os.Args[1:] {
 		switch a {
 		case "--version", "-version", "-v":
-			fmt.Printf("ispwatch-agent %s\n", Version)
+			fmt.Printf("telvyn-agent %s\n", Version)
 			os.Exit(0)
 		case "--webhook", "-webhook":
 			webhookOnly = true
@@ -205,20 +205,20 @@ func main() {
 		go func() { <-sigCh; cancel() }()
 
 		cfg := webhook.Config{
-			Cluster:          os.Getenv("ISPWATCH_CLUSTER"),
-			ListenAddr:       getenvOr("ISPWATCH_WEBHOOK_ADDR", webhook.DefaultListenAddr),
-			CertDir:          getenvOr("ISPWATCH_WEBHOOK_CERT_DIR", webhook.DefaultCertDir),
-			IngestURL:        os.Getenv("ISPWATCH_INGEST_URL"),
-			Token:            os.Getenv("ISPWATCH_INGEST_TOKEN"),
-			AgentImage:       getenvOr("ISPWATCH_AGENT_IMAGE", "localhost/telvyn-agent:local"),
+			Cluster:          os.Getenv("TELVYN_CLUSTER"),
+			ListenAddr:       getenvOr("TELVYN_WEBHOOK_ADDR", webhook.DefaultListenAddr),
+			CertDir:          getenvOr("TELVYN_WEBHOOK_CERT_DIR", webhook.DefaultCertDir),
+			IngestURL:        os.Getenv("TELVYN_INGEST_URL"),
+			Token:            os.Getenv("TELVYN_INGEST_TOKEN"),
+			AgentImage:       getenvOr("TELVYN_AGENT_IMAGE", "localhost/telvyn-agent:local"),
 			NodeAgentImage:   os.Getenv("TELVYN_NODE_AGENT_IMAGE"),
 			PythonAgentImage: os.Getenv("TELVYN_PYTHON_AGENT_IMAGE"),
 			DotnetAgentImage: os.Getenv("TELVYN_DOTNET_AGENT_IMAGE"),
 			RubyAgentImage:   os.Getenv("TELVYN_RUBY_AGENT_IMAGE"),
 			PhpAgentImage:    os.Getenv("TELVYN_PHP_AGENT_IMAGE"),
 			JavaAgentImage:   os.Getenv("TELVYN_JAVA_AGENT_IMAGE"),
-			OtlpEndpointEnv:  getenvOr("ISPWATCH_OTLP_ENDPOINT", "http://$(NODE_IP):4318"),
-			OtlpProtocol:     getenvOr("ISPWATCH_OTLP_PROTOCOL", "http/protobuf"),
+			OtlpEndpointEnv:  getenvOr("TELVYN_OTLP_ENDPOINT", "http://$(NODE_IP):4318"),
+			OtlpProtocol:     getenvOr("TELVYN_OTLP_PROTOCOL", "http/protobuf"),
 			Log:              whLog,
 		}
 		srv := webhook.New(cfg)
@@ -231,10 +231,10 @@ func main() {
 
 	// Modo ingest certless: manda telemetria OTLP pro gateway
 	// /api/ingest/v1 com Bearer token, sem enrollment/mTLS/cert por agent. É o
-	// ÚNICO modo de operação — exige ISPWATCH_INGEST_URL (+ ISPWATCH_INGEST_TOKEN).
-	ingestURL := strings.TrimSpace(os.Getenv("ISPWATCH_INGEST_URL"))
+	// ÚNICO modo de operação — exige TELVYN_INGEST_URL (+ TELVYN_INGEST_TOKEN).
+	ingestURL := strings.TrimSpace(os.Getenv("TELVYN_INGEST_URL"))
 	if ingestURL == "" {
-		fmt.Fprintln(os.Stderr, "ISPWATCH_INGEST_URL is required (certless ingest mode)")
+		fmt.Fprintln(os.Stderr, "TELVYN_INGEST_URL is required (certless ingest mode)")
 		os.Exit(1)
 	}
 	runIngestMode(ingestURL)
@@ -289,14 +289,14 @@ func (s ebpfStatsSink) Push(spans []*collectorv1.Span) {
 
 func runIngestMode(ingestURL string) {
 	log := newLogger(getenvOr("COLLECTOR_LOG_LEVEL", "info"))
-	apmSampleRate, err := parseAPMSampleRate(os.Getenv("ISPWATCH_APM_SAMPLE_RATE"))
+	apmSampleRate, err := parseAPMSampleRate(os.Getenv("TELVYN_APM_SAMPLE_RATE"))
 	if err != nil {
-		log.Error("ingest mode: ISPWATCH_APM_SAMPLE_RATE must be between 0 and 1", "err", err)
+		log.Error("ingest mode: TELVYN_APM_SAMPLE_RATE must be between 0 and 1", "err", err)
 		os.Exit(1)
 	}
-	token := strings.TrimSpace(os.Getenv("ISPWATCH_INGEST_TOKEN"))
+	token := strings.TrimSpace(os.Getenv("TELVYN_INGEST_TOKEN"))
 	if token == "" {
-		log.Error("ingest mode: ISPWATCH_INGEST_TOKEN ausente")
+		log.Error("ingest mode: TELVYN_INGEST_TOKEN ausente")
 		os.Exit(1)
 	}
 	databaseAgent := isDatabaseAgent()
@@ -305,12 +305,12 @@ func runIngestMode(ingestURL string) {
 	databaseMachineIdentity := ""
 	if databaseAgent {
 		if databaseEngine() != "postgres" {
-			log.Error("agent de banco não iniciado: ISPWATCH_DATABASE_ENGINE deve ser postgres", "engine", databaseEngine())
+			log.Error("agent de banco não iniciado: TELVYN_DATABASE_ENGINE deve ser postgres", "engine", databaseEngine())
 			return
 		}
-		kind := strings.ToLower(strings.TrimSpace(getenvOr("ISPWATCH_AGENT_KIND", "linux")))
+		kind := strings.ToLower(strings.TrimSpace(getenvOr("TELVYN_AGENT_KIND", "linux")))
 		if kind != "linux" && kind != "docker" {
-			log.Error("agent de banco não iniciado: ISPWATCH_AGENT_KIND deve ser linux ou docker", "kind", kind)
+			log.Error("agent de banco não iniciado: TELVYN_AGENT_KIND deve ser linux ou docker", "kind", kind)
 			return
 		}
 		marker := databaseRevocationMarkerPath()
@@ -330,17 +330,17 @@ func runIngestMode(ingestURL string) {
 			return
 		}
 	}
-	hostID := strings.TrimSpace(getenvOr("ISPWATCH_NODE_NAME", getenvOr("NODE_NAME", "")))
+	hostID := strings.TrimSpace(getenvOr("TELVYN_NODE_NAME", getenvOr("NODE_NAME", "")))
 	if hostID == "" {
 		hostID, _ = os.Hostname()
 	}
-	cluster := strings.TrimSpace(os.Getenv("ISPWATCH_CLUSTER"))
+	cluster := strings.TrimSpace(os.Getenv("TELVYN_CLUSTER"))
 	profileName := "default"
 	if databaseAgent {
 		profileName = databaseAgentProfile
 	}
 
-	log.Info("ispwatch collector starting (ingest mode)",
+	log.Info("telvyn collector starting (ingest mode)",
 		"version", Version, "endpoint", ingestURL, "host", hostID, "cluster", cluster,
 		"profile", profileName)
 
@@ -431,7 +431,7 @@ func runIngestMode(ingestURL string) {
 	// quarkus_metrics (aba Runtime). Certless/Bearer; busca a lista no gateway
 	// e casa por workload (sobrevive a restart de pod). Só em nós k8s. Publica
 	// pelo mesmo `out` (→ PostMetrics Bearer).
-	if strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "k8s.node") {
+	if strings.EqualFold(getenvOr("TELVYN_AGENT_KIND", ""), "k8s.node") {
 		qs := quarkus.NewCertless(ingestURL, token, hostID, out, log)
 		go qs.Run(ctx)
 	}
@@ -440,7 +440,7 @@ func runIngestMode(ingestURL string) {
 	// "Aplicações") e roda o kubelet check LOCAL (pods/containers/node) com o
 	// host_id retornado. Mesma coleta do agent completo — só o envio muda
 	// (OTLP+Bearer em vez de gRPC mTLS).
-	if strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "k8s.node") {
+	if strings.EqualFold(getenvOr("TELVYN_AGENT_KIND", ""), "k8s.node") {
 		nodeIP := strings.TrimSpace(getenvOr("NODE_IP", ""))
 		nodeHostID, err := exporter.RegisterK8sNode(ctx, cluster, hostID, nodeIP, "")
 		if err != nil {
@@ -456,10 +456,10 @@ func runIngestMode(ingestURL string) {
 
 			// Vulnerabilidade de aplicação (camada 2/3, toggle): Trivy gera o SBOM
 			// das imagens rodando no nó e o agente manda só a lista pro gateway.
-			if getenvOr("ISPWATCH_SBOM_SCAN", "0") == "1" {
+			if getenvOr("TELVYN_SBOM_SCAN", "0") == "1" {
 				startSbomScan(ctx, log, exporter, nodeHostID)
 			} else {
-				log.Debug("sbom scan desativado (set ISPWATCH_SBOM_SCAN=1 pra habilitar)")
+				log.Debug("sbom scan desativado (set TELVYN_SBOM_SCAN=1 pra habilitar)")
 			}
 		}
 	}
@@ -472,7 +472,7 @@ func runIngestMode(ingestURL string) {
 	// header X-Ispwatch-Collector de todo POST.
 	// Princípio (David): a máquina é inventário/contexto de infra; a
 	// APLICAÇÃO segue identificada pelo serviço (uuid), nunca pela máquina.
-	if strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "docker") {
+	if strings.EqualFold(getenvOr("TELVYN_AGENT_KIND", ""), "docker") {
 		collectorID := ""
 		collectorName := hostID
 		if databaseAgent {
@@ -506,7 +506,7 @@ func runIngestMode(ingestURL string) {
 	// com o host_id retornado. Espelho exato do ramo docker acima — a máquina é
 	// inventário/contexto de infra; a APLICAÇÃO segue identificada pelo serviço
 	// (uuid), nunca pela máquina.
-	if strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "linux") {
+	if strings.EqualFold(getenvOr("TELVYN_AGENT_KIND", ""), "linux") {
 		collectorID := ""
 		collectorName := hostID
 		if databaseAgent {
@@ -532,7 +532,7 @@ func runIngestMode(ingestURL string) {
 				startLinuxSystemCheck(ctx, log, out, linuxHostID)
 				// Descoberta de serviços locais (processos que escutam porta +
 				// CPU/mem) → a lente de Máquina mostra "o que roda aqui". Toggle
-				// ISPWATCH_HOST_SERVICES (ligado por padrão).
+				// TELVYN_HOST_SERVICES (ligado por padrão).
 				if hostServicesEnabled() {
 					startHostServicesReport(ctx, log, exporter, linuxHostID)
 				}
@@ -545,8 +545,8 @@ func runIngestMode(ingestURL string) {
 	// BackOff, FailedScheduling, Unhealthy…) → push certless pro noc_k8s_event
 	// (timeline na cluster page). É a visão cross-node que o DaemonSet (kubelet
 	// local) não alcança. RBAC dedicado -cluster (events get/list/watch).
-	if strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "k8s.cluster") {
-		apiURL := strings.TrimSpace(getenvOr("ISPWATCH_K8S_API_URL", ""))
+	if strings.EqualFold(getenvOr("TELVYN_AGENT_KIND", ""), "k8s.cluster") {
+		apiURL := strings.TrimSpace(getenvOr("TELVYN_K8S_API_URL", ""))
 		if apiURL == "" {
 			if h := strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_HOST")); h != "" {
 				apiURL = "https://" + h + ":" + getenvOr("KUBERNETES_SERVICE_PORT", "443")
@@ -556,28 +556,28 @@ func runIngestMode(ingestURL string) {
 			log.Warn("k8s.cluster: KUBERNETES_SERVICE_HOST ausente — cluster-agent desativado (fora de um cluster?)")
 		} else {
 			interval := 30 * time.Second
-			if v := strings.TrimSpace(getenvOr("ISPWATCH_CLUSTER_INTERVAL_SEC", "")); v != "" {
+			if v := strings.TrimSpace(getenvOr("TELVYN_CLUSTER_INTERVAL_SEC", "")); v != "" {
 				if n, err := strconv.Atoi(v); err == nil && n > 0 {
 					interval = time.Duration(n) * time.Second
 				}
 			}
 			eventLimit := 0
-			if v := strings.TrimSpace(getenvOr("ISPWATCH_CLUSTER_EVENT_LIMIT", "")); v != "" {
+			if v := strings.TrimSpace(getenvOr("TELVYN_CLUSTER_EVENT_LIMIT", "")); v != "" {
 				if n, err := strconv.Atoi(v); err == nil && n > 0 {
 					eventLimit = n
 				}
 			}
 			caCfg := clusteragent.Config{
 				APIServerURL:  apiURL,
-				TokenFile:     getenvOr("ISPWATCH_K8S_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
-				CAFile:        getenvOr("ISPWATCH_K8S_CA_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
-				Insecure:      getenvOr("ISPWATCH_K8S_INSECURE", "0") == "1",
+				TokenFile:     getenvOr("TELVYN_K8S_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
+				CAFile:        getenvOr("TELVYN_K8S_CA_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
+				Insecure:      getenvOr("TELVYN_K8S_INSECURE", "0") == "1",
 				Cluster:       cluster,
 				Interval:      interval,
-				IncludeNormal: getenvOr("ISPWATCH_CLUSTER_EVENTS_INCLUDE_NORMAL", "0") == "1",
+				IncludeNormal: getenvOr("TELVYN_CLUSTER_EVENTS_INCLUDE_NORMAL", "0") == "1",
 				EventLimit:    eventLimit,
-				KubeState:     getenvOr("ISPWATCH_CLUSTER_KUBESTATE", "1") != "0",
-				Inventory:     getenvOr("ISPWATCH_CLUSTER_INVENTORY", "1") != "0",
+				KubeState:     getenvOr("TELVYN_CLUSTER_KUBESTATE", "1") != "0",
+				Inventory:     getenvOr("TELVYN_CLUSTER_INVENTORY", "1") != "0",
 			}
 			if ca, err := clusteragent.New(caCfg, exporter, log); err != nil {
 				log.Error("k8s.cluster: cluster-agent init falhou", "err", err)
@@ -590,7 +590,7 @@ func runIngestMode(ingestURL string) {
 
 	// CRI, syslog e SDKs compartilham um único WAL de logs.
 	var logsExp *otlp.LogsExporter
-	if !databaseAgent && (getenvOr("ISPWATCH_LOGS_ENABLED", "0") == "1" || getenvOr("ISPWATCH_SYSLOG_ENABLED", "0") == "1" || getenvOr("ISPWATCH_OTLP_HTTP_DISABLE", "0") != "1") {
+	if !databaseAgent && (getenvOr("TELVYN_LOGS_ENABLED", "0") == "1" || getenvOr("TELVYN_SYSLOG_ENABLED", "0") == "1" || getenvOr("TELVYN_OTLP_HTTP_DISABLE", "0") != "1") {
 		var err error
 		logsExp, err = otlp.NewIngestLogsExporter(exporter, log)
 		if err != nil {
@@ -602,13 +602,13 @@ func runIngestMode(ingestURL string) {
 
 	// Receiver OTLP/HTTP (4318): apps locais mandam spans/metrics/logs e o
 	// agent encaminha o corpo cru pro gateway com o Bearer token.
-	httpAddr := otlp.ParsePortOrDefault(getenvOr("ISPWATCH_OTLP_HTTP_PORT", ""))
-	corsOrigins := otlp.ParseCORSOrigins(getenvOr("ISPWATCH_OTLP_HTTP_CORS_ORIGINS", "*"))
+	httpAddr := otlp.ParsePortOrDefault(getenvOr("TELVYN_OTLP_HTTP_PORT", ""))
+	corsOrigins := otlp.ParseCORSOrigins(getenvOr("TELVYN_OTLP_HTTP_CORS_ORIGINS", "*"))
 	rec := otlp.NewHTTPReceiver(httpAddr, nil, log, otlp.DefaultMaxBodyBytes, corsOrigins)
 	rec.SetVerifiedPrimaryIdentity(hostID, cluster)
-	hostTags, err := primarytags.ParseHostTags(os.Getenv("ISPWATCH_HOST_TAGS"))
+	hostTags, err := primarytags.ParseHostTags(os.Getenv("TELVYN_HOST_TAGS"))
 	if err != nil {
-		log.Error("invalid ISPWATCH_HOST_TAGS configuration", "err", err)
+		log.Error("invalid TELVYN_HOST_TAGS configuration", "err", err)
 		os.Exit(1)
 	}
 	rec.SetVerifiedHostTags(hostTags)
@@ -629,11 +629,11 @@ func runIngestMode(ingestURL string) {
 	// que NÃO anunciam k8s.namespace.name/k8s.pod.name passam a cair no pod certo.
 	// Independe do eBPF (vale com tracing eBPF desligado). Só em nós k8s, onde o
 	// kubelet local lista os pods e seus IPs; em bare-metal não há o que resolver.
-	if strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "k8s.node") {
-		kubeletURL := getenvOr("ISPWATCH_KUBELET_URL", "https://localhost:10250")
-		tokenFile := getenvOr("ISPWATCH_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token")
-		caFile := getenvOr("ISPWATCH_KUBELET_CA_FILE", "")
-		insecure := getenvOr("ISPWATCH_KUBELET_INSECURE", "1") == "1"
+	if strings.EqualFold(getenvOr("TELVYN_AGENT_KIND", ""), "k8s.node") {
+		kubeletURL := getenvOr("TELVYN_KUBELET_URL", "https://localhost:10250")
+		tokenFile := getenvOr("TELVYN_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token")
+		caFile := getenvOr("TELVYN_KUBELET_CA_FILE", "")
+		insecure := getenvOr("TELVYN_KUBELET_INSECURE", "1") == "1"
 		if resolver, err := ebpf.NewPodResolver(kubeletURL, tokenFile, caFile, insecure, log); err != nil {
 			log.Warn("otlp: pod stamping desativado (spans sem pod salvo se a app anunciar)", "err", err)
 		} else {
@@ -645,7 +645,7 @@ func runIngestMode(ingestURL string) {
 			// mapeia pid→pod pelo mesmo resolver e reporta a linguagem por pod
 			// pro gateway. O backend usa pra mostrar o botão de auto-injeção
 			// (Java) em apps caixa-preta que ainda não emitem telemetria.
-			if getenvOr("ISPWATCH_LANG_DETECT", "1") != "0" {
+			if getenvOr("TELVYN_LANG_DETECT", "1") != "0" {
 				det := langdetect.New(resolver, exporter, log)
 				det.Cluster = cluster
 				go det.Run(ctx)
@@ -658,11 +658,11 @@ func runIngestMode(ingestURL string) {
 			// o verifier rejeitar num kernel, só o profiler fica off; o L7 nunca é
 			// tocado. source="ebpf"; o JFR cobre Java. Exige privileged+hostPID (já
 			// requeridos pelo L7). No S1, só loga o resumo por serviço.
-			if getenvOr("ISPWATCH_PROFILING_ENABLED", "0") == "1" {
+			if getenvOr("TELVYN_EBPF_PROFILING_ENABLED", "0") == "1" {
 				startEbpfProfiler(ctx, log, exporter, resolver)
 				log.Info("cpuprofiler: profiling de CPU eBPF ativo")
 			} else {
-				log.Debug("cpuprofiler desativado (set ISPWATCH_PROFILING_ENABLED=1 pra habilitar)")
+				log.Debug("cpuprofiler desativado (set TELVYN_EBPF_PROFILING_ENABLED=1 pra habilitar)")
 			}
 		}
 	}
@@ -730,7 +730,7 @@ func runIngestMode(ingestURL string) {
 	// instrumentar e alimenta o mesmo concentrator acima → a lente de serviço
 	// acende com golden signals pra apps não-instrumentadas. Histórico: o tracer
 	// só estava ligado no caminho legado gRPC (func main); aqui é o modo certless
-	// que roda em produção. Toggle ISPWATCH_EBPF_TRACING=1 (exige
+	// que roda em produção. Toggle TELVYN_EBPF_TRACING=1 (exige
 	// privileged+hostNetwork+hostPID no DaemonSet). Sem o toggle, no-op.
 	//
 	// Roda em goroutine de PROPÓSITO: tracer.Run() carrega ~14 programas BPF e
@@ -738,17 +738,17 @@ func runIngestMode(ingestURL string) {
 	// startup, em especial o rec.Start() (receiver OTLP :4318) lá embaixo. É o
 	// mesmo padrão do caminho legado, onde os receivers sobem em goroutine ANTES
 	// do tracer. Best-effort: se o eBPF falhar, o agent segue normal.
-	if !databaseAgent && getenvOr("ISPWATCH_EBPF_TRACING", "0") == "1" {
+	if !databaseAgent && getenvOr("TELVYN_EBPF_TRACING", "0") == "1" {
 		go startEbpfTracer(ctx, log, ebpfStatsSink{conc: apmConc, host: hostID, cluster: cluster, hostTags: hostTags}, out, hostID, databaseMonitors)
 	}
 
 	if logsExp != nil {
-		if getenvOr("ISPWATCH_LOGS_ENABLED", "0") == "1" {
+		if getenvOr("TELVYN_LOGS_ENABLED", "0") == "1" {
 			startIngestPodLogs(ctx, log, logsExp, hostID)
 		}
-		if getenvOr("ISPWATCH_SYSLOG_ENABLED", "0") == "1" {
+		if getenvOr("TELVYN_SYSLOG_ENABLED", "0") == "1" {
 			go func() {
-				if err := logs.RunSyslog(ctx, getenvOr("ISPWATCH_SYSLOG_ADDR", "127.0.0.1:5514"), logsExp.Push); err != nil {
+				if err := logs.RunSyslog(ctx, getenvOr("TELVYN_SYSLOG_ADDR", "127.0.0.1:5514"), logsExp.Push); err != nil {
 					log.Warn("syslog receiver stopped", "err", err)
 				}
 			}()
@@ -759,30 +759,30 @@ func runIngestMode(ingestURL string) {
 	// backend (/api/ingest/v1/snmptrap) — o device avisa na hora, sem esperar o poll.
 	if databaseAgent {
 		log.Info("SNMP traps desativados para o perfil database")
-	} else if getenvOr("ISPWATCH_SNMP_TRAPS_ENABLED", "0") == "1" {
+	} else if getenvOr("TELVYN_SNMP_TRAPS_ENABLED", "0") == "1" {
 		startSnmpTrapListener(ctx, log, exporter)
 	} else {
-		log.Debug("snmp traps desativados (set ISPWATCH_SNMP_TRAPS_ENABLED=1 pra habilitar)")
+		log.Debug("snmp traps desativados (set TELVYN_SNMP_TRAPS_ENABLED=1 pra habilitar)")
 	}
 
 	// Checagens agendadas (config-pull): registra o collector e puxa os checks
 	// que o usuário criou no painel, executando cada um no intervalo. O resultado
 	// vai pelo mesmo canal `out` (PostMetrics entrega). Reusa a máquina mTLS.
-	if getenvOr("ISPWATCH_CHECKS_ENABLED", "1") == "1" {
+	if getenvOr("TELVYN_CHECKS_ENABLED", "1") == "1" {
 		startIngestChecks(ctx, log, exporter, apmStats, apmUsage, apmSampler, apmProcessor, apmConc, rec, token, ingestURL, hostID, databaseIdentity, out, databaseMonitors, databaseTerminalRemoval, startSelfMetrics)
 	} else {
-		log.Debug("checagens agendadas desativadas (set ISPWATCH_CHECKS_ENABLED=1 pra habilitar)")
+		log.Debug("checagens agendadas desativadas (set TELVYN_CHECKS_ENABLED=1 pra habilitar)")
 	}
 
 	// Receiver OTLP/HTTP: bind NÃO-FATAL. Se a porta está
 	// ocupada (outro processo no host), o agente loga e SEGUE — métricas, logs,
 	// checks e o node-system continuam. Um receptor opcional não derruba o
-	// processo. Desliga de propósito com ISPWATCH_OTLP_HTTP_DISABLE=1; muda de
-	// porta com ISPWATCH_OTLP_HTTP_PORT.
+	// processo. Desliga de propósito com TELVYN_OTLP_HTTP_DISABLE=1; muda de
+	// porta com TELVYN_OTLP_HTTP_PORT.
 	if databaseAgent {
 		log.Info("otlp http receiver desativado para o perfil database")
-	} else if getenvOr("ISPWATCH_OTLP_HTTP_DISABLE", "0") == "1" {
-		log.Info("otlp http receiver desligado via ISPWATCH_OTLP_HTTP_DISABLE")
+	} else if getenvOr("TELVYN_OTLP_HTTP_DISABLE", "0") == "1" {
+		log.Info("otlp http receiver desligado via TELVYN_OTLP_HTTP_DISABLE")
 	} else {
 		go func() {
 			if err := rec.Start(ctx); err != nil {
@@ -797,7 +797,7 @@ func runIngestMode(ingestURL string) {
 
 // startIngestPodLogs monta o pipeline de logs de pod no modo ingest: um
 // LogsExporter certless (batch → OTLP JSON + Bearer) + o tailer CRI. Exclui o
-// próprio namespace do agent (POD_NAMESPACE) e os de ISPWATCH_LOGS_EXCLUDE_NAMESPACES
+// próprio namespace do agent (POD_NAMESPACE) e os de TELVYN_LOGS_EXCLUDE_NAMESPACES
 // pra evitar loop de logs.
 func startIngestPodLogs(ctx context.Context, log *slog.Logger, logsExp *otlp.LogsExporter, hostID string) {
 
@@ -805,22 +805,22 @@ func startIngestPodLogs(ctx context.Context, log *slog.Logger, logsExp *otlp.Log
 	if self := strings.TrimSpace(getenvOr("POD_NAMESPACE", "")); self != "" {
 		exclude = append(exclude, self)
 	}
-	for _, ns := range strings.Split(getenvOr("ISPWATCH_LOGS_EXCLUDE_NAMESPACES", ""), ",") {
+	for _, ns := range strings.Split(getenvOr("TELVYN_LOGS_EXCLUDE_NAMESPACES", ""), ",") {
 		if ns = strings.TrimSpace(ns); ns != "" {
 			exclude = append(exclude, ns)
 		}
 	}
 
-	cursorPath := getenvOr("ISPWATCH_LOGS_CURSOR_PATH", "/var/lib/ispwatch-collector/log_cursors.json")
+	cursorPath := getenvOr("TELVYN_LOGS_CURSOR_PATH", "/var/lib/telvyn-collector/log_cursors.json")
 	tailer := logs.NewCRILogsTailer(logsExp, cursorPath, hostID, exclude, log)
 
 	// Service tagging unificado: o service do log vem das labels do pod
 	// (lidas do kubelet /pods), para coincidir com o
 	// service dos traces. Sem resolver/label, o tailer usa o nome do workload.
-	kubeletURL := getenvOr("ISPWATCH_KUBELET_URL", "https://localhost:10250")
-	tokenFile := getenvOr("ISPWATCH_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token")
-	caFile := getenvOr("ISPWATCH_KUBELET_CA_FILE", "")
-	insecure := getenvOr("ISPWATCH_KUBELET_INSECURE", "1") == "1"
+	kubeletURL := getenvOr("TELVYN_KUBELET_URL", "https://localhost:10250")
+	tokenFile := getenvOr("TELVYN_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token")
+	caFile := getenvOr("TELVYN_KUBELET_CA_FILE", "")
+	insecure := getenvOr("TELVYN_KUBELET_INSECURE", "1") == "1"
 	if _, statErr := os.Stat(tokenFile); os.IsNotExist(statErr) {
 		// Fora do Kubernetes não há token de service account nem pods: nada a avisar.
 		log.Info("logs: sem Kubernetes neste host; service tagging por label de pod não se aplica")
@@ -848,26 +848,26 @@ func startSbomScan(ctx context.Context, log *slog.Logger, exporter *otlp.IngestE
 	}
 
 	interval := time.Hour
-	if v := strings.TrimSpace(getenvOr("ISPWATCH_SBOM_INTERVAL", "")); v != "" {
+	if v := strings.TrimSpace(getenvOr("TELVYN_SBOM_INTERVAL", "")); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			interval = d
 		}
 	}
 	var extraArgs []string
-	if v := strings.TrimSpace(getenvOr("ISPWATCH_SBOM_TRIVY_ARGS", "")); v != "" {
+	if v := strings.TrimSpace(getenvOr("TELVYN_SBOM_TRIVY_ARGS", "")); v != "" {
 		extraArgs = strings.Fields(v)
 	}
 
 	sc, err := sbom.New(sbom.Config{
 		HostID:            hostID,
-		KubeletURL:        getenvOr("ISPWATCH_KUBELET_URL", "https://localhost:10250"),
-		KubeletTokenFile:  getenvOr("ISPWATCH_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
-		KubeletCAFile:     getenvOr("ISPWATCH_KUBELET_CA_FILE", ""),
-		KubeletInsecure:   getenvOr("ISPWATCH_KUBELET_INSECURE", "1") == "1",
-		TrivyPath:         getenvOr("ISPWATCH_SBOM_TRIVY_PATH", "trivy"),
+		KubeletURL:        getenvOr("TELVYN_KUBELET_URL", "https://localhost:10250"),
+		KubeletTokenFile:  getenvOr("TELVYN_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
+		KubeletCAFile:     getenvOr("TELVYN_KUBELET_CA_FILE", ""),
+		KubeletInsecure:   getenvOr("TELVYN_KUBELET_INSECURE", "1") == "1",
+		TrivyPath:         getenvOr("TELVYN_SBOM_TRIVY_PATH", "trivy"),
 		ExtraTrivyArgs:    extraArgs,
-		ContainerdAddr:    getenvOr("ISPWATCH_SBOM_CONTAINERD_ADDR", "/run/containerd/containerd.sock"),
-		ContainerdNS:      getenvOr("ISPWATCH_SBOM_CONTAINERD_NS", "k8s.io"),
+		ContainerdAddr:    getenvOr("TELVYN_SBOM_CONTAINERD_ADDR", "/run/containerd/containerd.sock"),
+		ContainerdNS:      getenvOr("TELVYN_SBOM_CONTAINERD_NS", "k8s.io"),
 		Interval:          interval,
 		ExcludeNamespaces: exclude,
 	}, exporter, log)
@@ -938,7 +938,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 	checks.SetTopologyPusher(exporter)
 	runtime.SetWorkerPools(5, 10)
 	runtime.SetJitter(1000)
-	runtime.SetTagger(checks.NewTagger(configuredTaggerBudget(getenvOr("ISPWATCH_TAGGER_BUDGET_PER_HOST", "")), log))
+	runtime.SetTagger(checks.NewTagger(configuredTaggerBudget(getenvOr("TELVYN_TAGGER_BUDGET_PER_HOST", "")), log))
 	runtime.SetQueryStatsPusher(func(postCtx context.Context, stats checks.DatabaseQueryStats) error {
 		queries := make([]otlp.DatabaseQueryStat, 0, len(stats.Queries))
 		for _, q := range stats.Queries {
@@ -1184,7 +1184,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 	})
 
 	pollSecs := 15
-	if v := strings.TrimSpace(getenvOr("ISPWATCH_CHECKS_POLL_SECONDS", "")); v != "" {
+	if v := strings.TrimSpace(getenvOr("TELVYN_CHECKS_POLL_SECONDS", "")); v != "" {
 		if n, e := strconv.Atoi(v); e == nil && n > 0 {
 			pollSecs = n
 		}
@@ -1208,7 +1208,7 @@ func startIngestChecks(ctx context.Context, log *slog.Logger, exporter *otlp.Ing
 			if onRegistered != nil {
 				onRegistered()
 			}
-			if !isDatabaseAgent() && envEnabled("ISPWATCH_SSH") {
+			if !isDatabaseAgent() && envEnabled("TELVYN_SSH") {
 				go func() {
 					if err := jobpull.Run(ctx, jobpull.Config{
 						Endpoint: base, CollectorID: collectorID, TenantID: tenantID,
@@ -1286,21 +1286,21 @@ func collectorCapabilities() []string {
 		// instância, sem liberar SNMP/APM por inferência.
 		return append(caps, "db-postgres", "host-metrics")
 	}
-	if !strings.EqualFold(getenvOr("ISPWATCH_AGENT_KIND", ""), "snmp") {
+	if !strings.EqualFold(getenvOr("TELVYN_AGENT_KIND", ""), "snmp") {
 		return caps
 	}
 	for _, item := range []struct {
 		env string
 		cap string
 	}{
-		{"ISPWATCH_SNMP", "snmp"},
-		{"ISPWATCH_ICMP", "icmp"},
-		{"ISPWATCH_LLDP", "lldp"},
-		{"ISPWATCH_SSH", "ssh"},
+		{"TELVYN_SNMP", "snmp"},
+		{"TELVYN_ICMP", "icmp"},
+		{"TELVYN_LLDP", "lldp"},
+		{"TELVYN_SSH", "ssh"},
 	} {
 		if envEnabled(item.env) {
 			caps = append(caps, item.cap)
-			if item.env == "ISPWATCH_SSH" {
+			if item.env == "TELVYN_SSH" {
 				caps = append(caps, "ssh_readonly_v1")
 			}
 		}
@@ -1310,20 +1310,20 @@ func collectorCapabilities() []string {
 
 func collectorInstallMode() string {
 	// O profile database mantém os kinds existentes. No instalador systemd,
-	// ISPWATCH_INSTALL_MODE=linux descreve o mecanismo de instalação; para
+	// TELVYN_INSTALL_MODE=linux descreve o mecanismo de instalação; para
 	// esta identidade dedicada o backend precisa receber o kind solicitado
 	// (linux ou docker), não esse detalhe de empacotamento.
 	if isDatabaseAgent() {
-		kind := strings.ToLower(strings.TrimSpace(getenvOr("ISPWATCH_AGENT_KIND", "")))
+		kind := strings.ToLower(strings.TrimSpace(getenvOr("TELVYN_AGENT_KIND", "")))
 		switch kind {
 		case "docker", "linux":
 			return kind
 		}
 	}
-	if mode := strings.ToLower(strings.TrimSpace(getenvOr("ISPWATCH_INSTALL_MODE", ""))); mode == "docker" || mode == "linux" || mode == "k8s" {
+	if mode := strings.ToLower(strings.TrimSpace(getenvOr("TELVYN_INSTALL_MODE", ""))); mode == "docker" || mode == "linux" || mode == "k8s" {
 		return mode
 	}
-	switch strings.ToLower(strings.TrimSpace(getenvOr("ISPWATCH_AGENT_KIND", ""))) {
+	switch strings.ToLower(strings.TrimSpace(getenvOr("TELVYN_AGENT_KIND", ""))) {
 	case "docker":
 		return "docker"
 	case "linux":
@@ -1418,7 +1418,7 @@ func startKubeletCheck(ctx context.Context, log *slog.Logger, out chan<- []*coll
 		return
 	}
 	insecure := "false"
-	if getenvOr("ISPWATCH_KUBELET_INSECURE", "1") == "1" {
+	if getenvOr("TELVYN_KUBELET_INSECURE", "1") == "1" {
 		insecure = "true"
 	}
 	cfg := &collectorv1.CheckConfig{
@@ -1428,8 +1428,8 @@ func startKubeletCheck(ctx context.Context, log *slog.Logger, out chan<- []*coll
 		Enabled:   true,
 		Interval:  durationpb.New(15 * time.Second),
 		Params: map[string]string{
-			"kubelet_url":          getenvOr("ISPWATCH_KUBELET_URL", "https://localhost:10250"),
-			"token_file":           getenvOr("ISPWATCH_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
+			"kubelet_url":          getenvOr("TELVYN_KUBELET_URL", "https://localhost:10250"),
+			"token_file":           getenvOr("TELVYN_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token"),
 			"insecure_skip_verify": insecure,
 		},
 	}
@@ -1646,7 +1646,7 @@ func startEbpfTracer(ctx context.Context, log *slog.Logger, sink ebpf.SpanSink, 
 	// Hostname do nó (bare-metal): preenchido no span quando o PodResolver
 	// não resolve nenhuma das pontas, permitindo o backend cruzar com
 	// noc_host.hostname e materializar noc_application.
-	fallback := getenvOr("ISPWATCH_HOSTNAME_OVERRIDE", "")
+	fallback := getenvOr("TELVYN_HOSTNAME_OVERRIDE", "")
 	if fallback == "" {
 		if hn, err := os.Hostname(); err == nil {
 			fallback = hn
@@ -1654,7 +1654,7 @@ func startEbpfTracer(ctx context.Context, log *slog.Logger, sink ebpf.SpanSink, 
 	}
 
 	cfg := ebpf.BridgeConfig{
-		ServiceName:      getenvOr("ISPWATCH_EBPF_SERVICE_NAME", "ebpf-tracer"),
+		ServiceName:      getenvOr("TELVYN_EBPF_SERVICE_NAME", "ebpf-tracer"),
 		FallbackHostname: fallback,
 		DatabaseMonitors: databaseMonitors,
 		Log:              log,
@@ -1665,10 +1665,10 @@ func startEbpfTracer(ctx context.Context, log *slog.Logger, sink ebpf.SpanSink, 
 
 	// Tenta hookup do PodResolver via kubelet local. Sem ele, spans saem
 	// sem identidade de pod (mas ainda fluem — backend trata isso).
-	kubeletURL := getenvOr("ISPWATCH_KUBELET_URL", "https://localhost:10250")
-	tokenFile := getenvOr("ISPWATCH_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token")
-	caFile := getenvOr("ISPWATCH_KUBELET_CA_FILE", "")
-	insecure := getenvOr("ISPWATCH_KUBELET_INSECURE", "1") == "1"
+	kubeletURL := getenvOr("TELVYN_KUBELET_URL", "https://localhost:10250")
+	tokenFile := getenvOr("TELVYN_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token")
+	caFile := getenvOr("TELVYN_KUBELET_CA_FILE", "")
+	insecure := getenvOr("TELVYN_KUBELET_INSECURE", "1") == "1"
 	if resolver, err := ebpf.NewPodResolver(kubeletURL, tokenFile, caFile, insecure, log); err != nil {
 		log.Warn("ebpf: pod resolver disabled (spans will lack namespace/pod)", "err", err)
 	} else {
@@ -1679,8 +1679,8 @@ func startEbpfTracer(ctx context.Context, log *slog.Logger, sink ebpf.SpanSink, 
 	// ContainerResolver via Docker socket — pra hosts bare-metal com containers,
 	// cada container vira um service.name distinto (postgres/redis/api) em vez
 	// de todos serem agregados sob o hostname. Off por default (precisa de
-	// acesso ao docker.sock). Habilita via ISPWATCH_EBPF_DOCKER_RESOLVE=1.
-	if getenvOr("ISPWATCH_EBPF_DOCKER_RESOLVE", "0") == "1" {
+	// acesso ao docker.sock). Habilita via TELVYN_EBPF_DOCKER_RESOLVE=1.
+	if getenvOr("TELVYN_EBPF_DOCKER_RESOLVE", "0") == "1" {
 		if cr, err := ebpf.NewDockerContainerResolver(); err != nil {
 			log.Warn("ebpf: docker container resolver disabled", "err", err)
 		} else {

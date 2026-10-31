@@ -1,7 +1,7 @@
 package ebpf
 
 import (
-	"github.com/ispwatch/collector/internal/ebpf/proc"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/proc"
 	"inet.af/netaddr"
 )
 

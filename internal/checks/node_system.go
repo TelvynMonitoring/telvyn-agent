@@ -2,8 +2,8 @@ package checks
 
 import (
 	"context"
-	"github.com/ispwatch/collector/internal/clock"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/clock"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"github.com/shirou/gopsutil/v4/common"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"log/slog"

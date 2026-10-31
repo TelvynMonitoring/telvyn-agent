@@ -3,7 +3,7 @@ package common
 import (
 	"regexp"
 
-	"github.com/ispwatch/collector/internal/ebpf/flags"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/flags"
 	"k8s.io/klog/v2"
 )
 

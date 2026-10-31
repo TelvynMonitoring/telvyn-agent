@@ -6,11 +6,11 @@ import (
 )
 
 func TestCollectorCapabilitiesForSnmpAgent(t *testing.T) {
-	t.Setenv("ISPWATCH_AGENT_KIND", "snmp")
-	t.Setenv("ISPWATCH_SNMP", "1")
-	t.Setenv("ISPWATCH_ICMP", "true")
-	t.Setenv("ISPWATCH_LLDP", "0")
-	t.Setenv("ISPWATCH_SSH", "off")
+	t.Setenv("TELVYN_AGENT_KIND", "snmp")
+	t.Setenv("TELVYN_SNMP", "1")
+	t.Setenv("TELVYN_ICMP", "true")
+	t.Setenv("TELVYN_LLDP", "0")
+	t.Setenv("TELVYN_SSH", "off")
 
 	want := []string{"metrics", "checks", "snmp", "icmp"}
 	if got := collectorCapabilities(); !reflect.DeepEqual(got, want) {
@@ -19,8 +19,8 @@ func TestCollectorCapabilitiesForSnmpAgent(t *testing.T) {
 }
 
 func TestCollectorCapabilitiesForNonSnmpAgent(t *testing.T) {
-	t.Setenv("ISPWATCH_AGENT_KIND", "linux")
-	t.Setenv("ISPWATCH_ICMP", "1")
+	t.Setenv("TELVYN_AGENT_KIND", "linux")
+	t.Setenv("TELVYN_ICMP", "1")
 
 	want := []string{"metrics", "checks"}
 	if got := collectorCapabilities(); !reflect.DeepEqual(got, want) {
@@ -29,8 +29,8 @@ func TestCollectorCapabilitiesForNonSnmpAgent(t *testing.T) {
 }
 
 func TestCollectorInstallModeUsesExplicitRuntime(t *testing.T) {
-	t.Setenv("ISPWATCH_AGENT_KIND", "snmp")
-	t.Setenv("ISPWATCH_INSTALL_MODE", "docker")
+	t.Setenv("TELVYN_AGENT_KIND", "snmp")
+	t.Setenv("TELVYN_INSTALL_MODE", "docker")
 	if got := collectorInstallMode(); got != "docker" {
 		t.Fatalf("collectorInstallMode() = %q, want docker", got)
 	}

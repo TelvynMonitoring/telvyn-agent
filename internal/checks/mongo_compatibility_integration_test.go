@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"go.mongodb.org/mongo-driver/bson"
 	"google.golang.org/protobuf/types/known/durationpb"
 )

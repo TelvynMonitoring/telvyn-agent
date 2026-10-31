@@ -11,7 +11,7 @@ import (
 
 	"github.com/gosnmp/gosnmp"
 
-	"github.com/ispwatch/collector/internal/snmp"
+	"github.com/telvynmonitoring/telvyn-agent/internal/snmp"
 )
 
 // fakeProbe e o stub injetado em testes via clientFactory. Responde de acordo

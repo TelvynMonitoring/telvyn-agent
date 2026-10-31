@@ -18,7 +18,7 @@ Instala um pod por nó. O comando exato (com seu token e a URL do seu portal)
 # Autenticação certless: só a URL do portal + o ingest token (iwI_..., gerado
 # no painel em Monitores → Kubernetes). Sem cert, sem enrollment.
 helm install telvyn-agent \
-  oci://ghcr.io/telvynmonitoring/charts/ispwatch-agent \
+  oci://ghcr.io/telvynmonitoring/charts/telvyn-agent \
   --namespace telvyn --create-namespace \
   --set ingest.url='https://<SEU_PORTAL>' \
   --set ingest.token='<SEU_INGEST_TOKEN>' \
@@ -45,10 +45,10 @@ recebe OTLP das suas apps na porta 4318:
 docker run -d --name telvyn-agent --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -p 4318:4318 \
-  -e ISPWATCH_INGEST_URL='https://<SEU_PORTAL>' \
-  -e ISPWATCH_INGEST_TOKEN='<SEU_INGEST_TOKEN>' \
-  -e ISPWATCH_AGENT_KIND=docker \
-  -e ISPWATCH_NODE_NAME="$(hostname)" \
+  -e TELVYN_INGEST_URL='https://<SEU_PORTAL>' \
+  -e TELVYN_INGEST_TOKEN='<SEU_INGEST_TOKEN>' \
+  -e TELVYN_AGENT_KIND=docker \
+  -e TELVYN_NODE_NAME="$(hostname)" \
   ghcr.io/telvynmonitoring/telvyn-agent:latest
 ```
 
@@ -61,7 +61,7 @@ métricas do próprio container.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent-releases/main/packaging/install.sh \
-  | ISPWATCH_INGEST_URL='https://<SEU_PORTAL>' ISPWATCH_INGEST_TOKEN='<SEU_INGEST_TOKEN>' sudo -E bash
+  | TELVYN_INGEST_URL='https://<SEU_PORTAL>' TELVYN_INGEST_TOKEN='<SEU_INGEST_TOKEN>' sudo -E bash
 ```
 
 ## Banco de dados por instância (Linux)
@@ -69,22 +69,22 @@ curl -fsSL https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent-relea
 O portal cria a instalação e entrega um token e `installation_id` próprios. Use
 um agente para cada instância de banco; ele descobre todos os bancos lógicos
 aos quais as credenciais somente-leitura conseguem conectar. `database` é um
-perfil, não um `ISPWATCH_AGENT_KIND`:
+perfil, não um `TELVYN_AGENT_KIND`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent-releases/main/packaging/install.sh \
-  | ISPWATCH_INGEST_URL='https://<SEU_PORTAL>' \
-    ISPWATCH_INGEST_TOKEN='<TOKEN_DA_INSTALACAO>' \
-    ISPWATCH_AGENT_KIND=linux \
-    ISPWATCH_AGENT_PROFILE=database \
-    ISPWATCH_DATABASE_INSTALLATION_ID='<INSTALLATION_ID>' \
+  | TELVYN_INGEST_URL='https://<SEU_PORTAL>' \
+    TELVYN_INGEST_TOKEN='<TOKEN_DA_INSTALACAO>' \
+    TELVYN_AGENT_KIND=linux \
+    TELVYN_AGENT_PROFILE=database \
+    TELVYN_DATABASE_INSTALLATION_ID='<INSTALLATION_ID>' \
     sudo -E bash
 ```
 
 No mesmo host, cada instalação recebe uma unit
-`ispwatch-agent-database@…`, usuário de sistema, EnvironmentFile, binário,
+`telvyn-agent-database@…`, usuário de sistema, EnvironmentFile, binário,
 fila e marcador de revogação próprios. Ela não substitui nem reinicia o
-`ispwatch-agent.service` genérico. Uma resposta terminal `410 Gone` interrompe
+`telvyn-agent.service` genérico. Uma resposta terminal `410 Gone` interrompe
 essa instância até uma nova instalação explícita do portal.
 
 ## Imagens / artefatos
@@ -92,7 +92,7 @@ essa instância até uma nova instalação explícita do portal.
 | Artefato | Local |
 |----------|-------|
 | Imagem   | `ghcr.io/telvynmonitoring/telvyn-agent:<versão>` (multi-arch amd64/arm64) |
-| Chart    | `oci://ghcr.io/telvynmonitoring/charts/ispwatch-agent` |
+| Chart    | `oci://ghcr.io/telvynmonitoring/charts/telvyn-agent` |
 | Install  | `https://raw.githubusercontent.com/TelvynMonitoring/telvyn-agent-releases/main/packaging/install.sh` |
 
 Publicados pelo workflow [`publish.yml`](.github/workflows/publish.yml) a cada tag `v*`.

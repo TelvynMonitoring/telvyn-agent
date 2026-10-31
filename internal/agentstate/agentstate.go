@@ -11,7 +11,7 @@ import "sync/atomic"
 
 var localHostID atomic.Int64
 
-// SetLocalHostID amarra a "identidade ISPWatch" do host físico onde o
+// SetLocalHostID amarra a "identidade Telvyn" do host físico onde o
 // agent roda. Setado via config-pull quando o param local_host_id != 0.
 // 0 = não amarrado.
 func SetLocalHostID(id int64) {

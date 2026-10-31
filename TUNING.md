@@ -1,4 +1,4 @@
-# Tuning do Agent IspWatch
+# Tuning do Agent Telvyn
 
 Guia rápido pra dimensionar o agent conforme a quantidade de hosts que ele monitora.
 
@@ -18,14 +18,14 @@ WALMaxMB         = 1024
 
 ## Como ajustar
 
-Crie `/etc/ispwatch/collector.conf` (ou outro path) e passe via flag `-config-file`:
+Crie `/etc/telvyn/collector.conf` (ou outro path) e passe via flag `-config-file`:
 
 ```bash
-ispwatch-collector \
+telvyn-collector \
   -tenant-id=acme \
   -collector-id=collector-01 \
-  -server=ispwatch.local:8443 \
-  -config-file=/etc/ispwatch/collector.conf \
+  -server=telvyn.local:8443 \
+  -config-file=/etc/telvyn/collector.conf \
   ...
 ```
 

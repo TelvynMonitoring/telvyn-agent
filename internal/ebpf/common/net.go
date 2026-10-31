@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ispwatch/collector/internal/ebpf/flags"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/flags"
 	"github.com/gobwas/glob"
 	"inet.af/netaddr"
 	"k8s.io/klog/v2"

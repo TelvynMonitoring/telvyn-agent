@@ -6,7 +6,7 @@
 //
 // Cobertura:
 //   1. Factory falha quando Ping retorna permission denied; mensagem inclui
-//      hint ISPWATCH_DOCKER_INTEGRATION=true
+//      hint TELVYN_DOCKER_INTEGRATION=true
 //   2. Run emite docker.containers_running + docker.containers_stopped
 //   3. Run emite 5 métricas por container running (CPU, mem, restart, rx, tx)
 //   4. Semaphore limita concorrência de stats em 5 (Pitfall 8)
@@ -30,7 +30,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // fakeDockerClient implementa dockerClient via fixtures controladas.
@@ -144,7 +144,7 @@ func TestDockerHost_FactoryFailsOnPingError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected factory error from Ping permission denied, got nil")
 	}
-	if !contains(err.Error(), "ISPWATCH_DOCKER_INTEGRATION=true") {
+	if !contains(err.Error(), "TELVYN_DOCKER_INTEGRATION=true") {
 		t.Errorf("error should hint install.sh flag, got %q", err.Error())
 	}
 }

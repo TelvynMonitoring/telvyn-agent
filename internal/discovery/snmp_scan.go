@@ -25,7 +25,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
-	"github.com/ispwatch/collector/internal/snmp"
+	"github.com/telvynmonitoring/telvyn-agent/internal/snmp"
 )
 
 // ScanParams espelha snmp.Params + knobs de rate limit. Exposto neste

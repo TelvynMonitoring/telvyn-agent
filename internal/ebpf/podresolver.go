@@ -27,9 +27,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ispwatch/collector/internal/ebpf/cgroup"
-	"github.com/ispwatch/collector/internal/k8sidentity"
-	"github.com/ispwatch/collector/internal/k8smeta"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/cgroup"
+	"github.com/telvynmonitoring/telvyn-agent/internal/k8sidentity"
+	"github.com/telvynmonitoring/telvyn-agent/internal/k8smeta"
 )
 
 // KubeletPodLister resolve container_id → (namespace, pod). Implementada

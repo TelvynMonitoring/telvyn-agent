@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/ispwatch/collector/internal/ebpf"
-	"github.com/ispwatch/collector/internal/ebpf/cpuprofiler"
-	"github.com/ispwatch/collector/internal/otlp"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/cpuprofiler"
+	"github.com/telvynmonitoring/telvyn-agent/internal/otlp"
 )
 
 // profileResolverAdapter adapta o PodResolverImpl (k8s) à interface do

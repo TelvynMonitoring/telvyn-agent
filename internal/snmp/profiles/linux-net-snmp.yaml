@@ -1,4 +1,4 @@
-# IspWatch SNMP profile — linux-net-snmp. Schema reference: RESEARCH.md Pattern 1.
+# Telvyn SNMP profile — linux-net-snmp. Schema reference: RESEARCH.md Pattern 1.
 #
 # Cobre hosts Linux rodando net-snmp (snmpd) — sysObjectID 1.3.6.1.4.1.8072.3.2.10.
 # Stack OID alvo: UCD-SNMP-MIB (load, mem, cpu), IF-MIB (interface counters).

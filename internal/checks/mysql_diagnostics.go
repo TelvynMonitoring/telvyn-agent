@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const sqlMySQLDiagnosticSessions = `SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(

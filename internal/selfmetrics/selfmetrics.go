@@ -30,9 +30,9 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/ispwatch/collector/internal/agentstate"
-	"github.com/ispwatch/collector/internal/checks"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/agentstate"
+	"github.com/telvynmonitoring/telvyn-agent/internal/checks"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // SelfTag is the tag key that signals "this metric describes the host where

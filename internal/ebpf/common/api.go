@@ -5,7 +5,7 @@ import (
 	"crypto/x509"
 	"os"
 
-	"github.com/ispwatch/collector/internal/ebpf/flags"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/flags"
 	"k8s.io/klog/v2"
 )
 

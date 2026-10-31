@@ -29,8 +29,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ispwatch/collector/internal/tools"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/tools"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // DeviceConfigPusher manda a running-config coletada pro gateway (NCM).

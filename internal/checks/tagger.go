@@ -1,7 +1,7 @@
 // tagger.go — middleware de cardinality budget per-host para o Runtime.emit.
 //
 // O Tagger limita a quantidade de séries únicas que cada host pode emitir,
-// dropando séries excedentes e gerando uma meta-métrica `ispwatch.tagger.dropped`
+// dropando séries excedentes e gerando uma meta-métrica `telvyn.tagger.dropped`
 // que sinaliza o evento ao operador.
 //
 // Escopo per-host (não per-tenant): decisão locked no CONTEXT.md da Phase 3,
@@ -15,7 +15,7 @@
 //     cabem em <1MB por host (Assumption A4 do RESEARCH).
 //   - GC lazy: quando o budget aperta, varre o hostMap e remove entries com
 //     lastSeen anterior à janela (24h). Sem goroutine separada, sem timer.
-//   - Fast-path para meta-métricas (`ispwatch.tagger.*` e `ispwatch.check.*`)
+//   - Fast-path para meta-métricas (`telvyn.tagger.*` e `telvyn.check.*`)
 //     evita drop-loop recursivo (Pitfall 4 do RESEARCH).
 package checks
 
@@ -28,7 +28,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const (
@@ -45,8 +45,8 @@ const (
 	// Filter deixa passar sempre, bypassando o budget. Pitfall 4: se a
 	// própria meta-métrica de drop fosse sujeita ao budget, ela seria
 	// dropada quando o budget estourasse e o operador perderia o sinal.
-	metaMetricPrefixTagger = "ispwatch.tagger."
-	metaMetricPrefixCheck  = "ispwatch.check."
+	metaMetricPrefixTagger = "telvyn.tagger."
+	metaMetricPrefixCheck  = "telvyn.check."
 )
 
 // Tagger enforça cardinality budget per-host como middleware do Runtime.emit.
@@ -84,7 +84,7 @@ func (t *Tagger) Budget() int {
 // Filter aplica o budget por host. Retorna duas slices:
 //   - kept: métricas que passaram (até budget novas séries por host, mais
 //     todas as séries já vistas e todas as meta-métricas fast-path).
-//   - drops: meta-métricas ispwatch.tagger.dropped (uma por série excedente),
+//   - drops: meta-métricas telvyn.tagger.dropped (uma por série excedente),
 //     prontas para serem concatenadas a kept pelo caller (Runtime.emit).
 //
 // A separação dois-returns facilita testes (sem injetar canal) e dá ao
@@ -162,13 +162,13 @@ func (t *Tagger) gcLocked(hostMap map[string]time.Time, now time.Time) {
 	}
 }
 
-// makeDropMetric monta a meta-métrica ispwatch.tagger.dropped{host,metric}
+// makeDropMetric monta a meta-métrica telvyn.tagger.dropped{host,metric}
 // que será enviada junto com o batch ao backend para alerta.
 func (t *Tagger) makeDropMetric(hostID, metricName string, now time.Time) *collectorv1.Metric {
 	return &collectorv1.Metric{
 		Time:       timestamppb.New(now),
 		HostId:     hostID,
-		MetricName: "ispwatch.tagger.dropped",
+		MetricName: "telvyn.tagger.dropped",
 		Value:      1.0,
 		Tags: map[string]string{
 			"host":   hostID,

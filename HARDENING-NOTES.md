@@ -42,7 +42,7 @@ file dist/collector-arm64    # → ARM aarch64
 
 # Tarballs de release com sha256:
 make release-multiarch VERSION=v0.4.0-rc1
-ls dist/ispwatch-agent-v0.4.0-rc1-linux-*.tar.gz*
+ls dist/telvyn-agent-v0.4.0-rc1-linux-*.tar.gz*
 ```
 
 ### Não feito (e por quê)
@@ -126,7 +126,7 @@ falha com `unsupported kernel version`.
   igual aos outros self-metrics.
 - **Ring buffer L7 32 → 64 pages**: per-CPU 128KB → 256KB. Sufficient pra
   workload pgbench-style ~1k qps. Override via env
-  `ISPWATCH_EBPF_L7_BUFFER_PAGES=N`. Outros maps (proc/tcp/file) ficam em
+  `TELVYN_EBPF_L7_BUFFER_PAGES=N`. Outros maps (proc/tcp/file) ficam em
   4-8 pages — eventos menos frequentes não justificam.
 
 ### Como validar
@@ -135,7 +135,7 @@ falha com `unsupported kernel version`.
 # Smoke test eBPF: rodar agent com tracer ativo e gerar carga DB.
 cd infra/collector/agent
 make build-amd64
-sudo ISPWATCH_EBPF_TRACING=1 ./dist/collector-amd64 \
+sudo TELVYN_EBPF_TRACING=1 ./dist/collector-amd64 \
   -tenant-id=acme -collector-id=test-01 ...
 
 # Em outra sessão, gerar carga e observar:
@@ -144,7 +144,7 @@ pgbench -c 8 -j 4 -T 60 -P 1 -h <host> postgres
 # Métrica deve aparecer no VictoriaMetrics:
 curl 'http://localhost:8428/api/v1/query?query=agent_host_metric_ebpf_lost_samples'
 # Esperado: 0 ou número baixo com l7_events=64. Se subindo, raise via
-# ISPWATCH_EBPF_L7_BUFFER_PAGES=128 e re-validar.
+# TELVYN_EBPF_L7_BUFFER_PAGES=128 e re-validar.
 ```
 
 ---
@@ -238,16 +238,16 @@ falam gRPC — em particular o caso primário: **browsers via OTel SDK Web**.
 - Aceita `application/x-protobuf` e `application/json`; `Content-Encoding: gzip`
   transparente.
 - CORS: `Access-Control-Allow-Origin: *` por default (configurável via
-  `ISPWATCH_OTLP_HTTP_CORS_ORIGINS=csv`). Preflight `OPTIONS` → 204.
+  `TELVYN_OTLP_HTTP_CORS_ORIGINS=csv`). Preflight `OPTIONS` → 204.
 - Payload cap 5MB; gzip-bomb guard adicional (10× pós-descompressão).
 
 ### Configuração via env
 
 | Env                                  | Default     | Função                                  |
 |--------------------------------------|-------------|------------------------------------------|
-| `ISPWATCH_OTLP_HTTP_PORT`            | `4318`      | "4318" ou "host:port" completo           |
-| `ISPWATCH_OTLP_HTTP_DISABLE`         | `0`         | Set 1 pra desligar (gRPC continua)       |
-| `ISPWATCH_OTLP_HTTP_CORS_ORIGINS`    | `*`         | CSV de origens permitidas                |
+| `TELVYN_OTLP_HTTP_PORT`            | `4318`      | "4318" ou "host:port" completo           |
+| `TELVYN_OTLP_HTTP_DISABLE`         | `0`         | Set 1 pra desligar (gRPC continua)       |
+| `TELVYN_OTLP_HTTP_CORS_ORIGINS`    | `*`         | CSV de origens permitidas                |
 
 ### Como testar manualmente
 
@@ -308,11 +308,11 @@ Publisher 30s tick, mesmo pattern do `agent_ebpf_lost_samples` (commit
   num proxy à frente, ex: Envoy/Caddy).
 - **Auth**: nenhuma. CORS é defesa em profundidade contra cross-site abuse,
   mas qualquer cliente no path de rede pode emitir spans. Se virar problema,
-  adicionar bearer token via env (`ISPWATCH_OTLP_HTTP_TOKEN`).
+  adicionar bearer token via env (`TELVYN_OTLP_HTTP_TOKEN`).
 
 ### Próximo passo (front-end)
 
 Front vai adicionar `@opentelemetry/sdk-trace-web` no
-`ispwatch-executive-view-main` e configurar exporter pra
+`telvyn-executive-view-main` e configurar exporter pra
 `https://<agent-node>:4318/v1/traces`. Browser tracing então flui pelo
 mesmo Forwarder/StreamSpans → backend que já recebe spans Java/Quarkus.

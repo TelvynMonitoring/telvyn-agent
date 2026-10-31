@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ispwatch/collector/internal/k8smeta"
+	"github.com/telvynmonitoring/telvyn-agent/internal/k8smeta"
 )
 
 // Central selections are scoped to this cluster and an exact application image.

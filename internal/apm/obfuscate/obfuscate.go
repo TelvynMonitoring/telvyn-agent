@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // Literais de string SQL ('...', com ” escapado) e números viram '?'.

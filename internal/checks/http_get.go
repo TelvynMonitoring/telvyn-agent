@@ -37,7 +37,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 type httpGetCheck struct {
@@ -176,7 +176,7 @@ func (c *httpGetCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
 			c.metric(now, "http.success", 0),
 		}, nil
 	}
-	req.Header.Set("User-Agent", "ispwatch-collector/link-probe")
+	req.Header.Set("User-Agent", "telvyn-collector/link-probe")
 
 	start := time.Now()
 	resp, err := client.Do(req)

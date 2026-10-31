@@ -3,8 +3,8 @@ package concentrator
 import (
 	"testing"
 
-	"github.com/ispwatch/collector/internal/latency"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/latency"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const ms = int64(1_000_000) // 1ms em nanos

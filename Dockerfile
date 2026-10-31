@@ -1,7 +1,7 @@
-# Production Dockerfile for the IspWatch Collector.
+# Production Dockerfile for the Telvyn Collector.
 # Multi-stage: build a static binary in a Go toolchain image, then ship it
 # in a minimal distroless image. Image is published as
-# ghcr.io/ispwatch/collector by the publish-collector GitHub Actions
+# ghcr.io/telvynmonitoring/telvyn-agent by the publish-collector GitHub Actions
 # workflow on every release tag.
 
 # ---------- Stage 1: protoc + go build ----------
@@ -38,10 +38,15 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath \
       -ldflags "-s -w -X main.Version=${VERSION}" \
-      -o /out/collector \
+      -o /out/telvyn-agent \
       ./cmd/collector
 
 RUN go run ./cmd/package-proxmox -out /out/integrations -arch ${TARGETARCH:-amd64}
+
+# ---------- Stage 1b: agentes de linguagem (Java/Node) ----------
+# Mesma imagem que o webhook usa no Kubernetes; aqui seu conteúdo viaja dentro da
+# imagem única do agent e é copiado pelo entrypoint para o volume compartilhado.
+FROM ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.5 AS runtime-agents
 
 # ---------- Stage 2: runtime ----------
 # Alpine (not distroless) so the entrypoint shell can expand env vars into
@@ -49,14 +54,14 @@ RUN go run ./cmd/package-proxmox -out /out/integrations -arch ${TARGETARCH:-amd6
 # and the env-var contract documented in install-collector.sh's compose file.
 FROM alpine:3.20
 
-LABEL org.opencontainers.image.title="IspWatch Collector"
-LABEL org.opencontainers.image.description="On-prem agent that connects via mTLS to the IspWatch central server."
-LABEL org.opencontainers.image.source="https://github.com/ispwatch/collector"
+LABEL org.opencontainers.image.title="Telvyn Collector"
+LABEL org.opencontainers.image.description="On-prem agent that connects via mTLS to the Telvyn central server."
+LABEL org.opencontainers.image.source="https://github.com/telvynmonitoring/telvyn-agent"
 LABEL org.opencontainers.image.licenses="proprietary"
 
 RUN apk add --no-cache ca-certificates tini python3 \
- && addgroup -S ispwatch \
- && adduser -S -G ispwatch -u 10001 ispwatch
+ && addgroup -S telvyn \
+ && adduser -S -G telvyn -u 10001 telvyn
 
 # OpenTelemetry Java auto-instrumentation jar — embarcado na imagem do agent
 # pra ser servido pra pods Java instrumentados (via initContainer injetado
@@ -86,7 +91,7 @@ RUN apk add --no-cache --virtual .trivy-build wget tar \
  && rm -f /tmp/trivy.tar.gz \
  && apk del .trivy-build
 
-COPY --from=build /out/collector /usr/local/bin/collector
+COPY --from=build /out/telvyn-agent /usr/local/bin/telvyn-agent
 COPY --from=build /out/integrations /opt/telvyn/integrations
 ENV TELVYN_EXTERNAL_PACKAGE_DIR=/opt/telvyn/integrations/packages \
     TELVYN_EXTERNAL_TRUST_DIR=/opt/telvyn/integrations/trust \
@@ -104,15 +109,15 @@ RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh
 # "listen ip4:icmp: socket: operation not permitted". No systemd o equivalente
 # já existe (AmbientCapabilities no unit) — isto alinha o Docker/k8s.
 RUN apk add --no-cache --virtual .cap-build libcap \
- && setcap cap_net_raw+eip /usr/local/bin/collector \
+ && setcap cap_net_raw+eip /usr/local/bin/telvyn-agent \
  && apk del .cap-build
 
 # install-collector.sh mounts certs read-only at this path. The state volume is
 # explicit so the certless outbox survives replacement of a Docker container.
-RUN mkdir -p /var/lib/ispwatch \
- && chown -R ispwatch:ispwatch /var/lib/ispwatch
-VOLUME ["/etc/ispwatch/certs", "/var/lib/ispwatch"]
+RUN mkdir -p /var/lib/telvyn \
+ && chown -R telvyn:telvyn /var/lib/telvyn
+VOLUME ["/etc/telvyn/certs", "/var/lib/telvyn", "/opt/telvyn-shared"]
 
-USER ispwatch:ispwatch
+USER telvyn:telvyn
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]

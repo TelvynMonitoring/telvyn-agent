@@ -7,7 +7,7 @@
 //   - Disabled checks are dropped at Reload time (not held in paused state).
 //   - Circuit-break after circuitBreakThreshold consecutive errors — prevents
 //     a broken check from spam-logging on every tick.
-//   - Meta-metric "ispwatch.check.errors{check_id}" emitted on Run() error.
+//   - Meta-metric "telvyn.check.errors{check_id}" emitted on Run() error.
 package checks
 
 import (
@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ispwatch/collector/internal/inventory"
+	"github.com/telvynmonitoring/telvyn-agent/internal/inventory"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // circuitBreakThreshold is the number of consecutive errors before a check
@@ -955,7 +955,7 @@ func (r *Runtime) emitCheckError(c Check) {
 	}
 	r.emit([]*collectorv1.Metric{{
 		Time:       timestamppb.Now(),
-		MetricName: "ispwatch.check.errors",
+		MetricName: "telvyn.check.errors",
 		Value:      1.0,
 		Tags:       tags,
 		Source:     "checks",
@@ -979,7 +979,7 @@ func (r *Runtime) SetTagger(t *Tagger) {
 //
 // Phase 3 Plan 4: when a tagger is installed, emit interpõe Filter antes do
 // canal. Séries acima do budget per-host viram meta-métricas
-// `ispwatch.tagger.dropped` que viajam no mesmo batch (fast-path no Filter
+// `telvyn.tagger.dropped` que viajam no mesmo batch (fast-path no Filter
 // garante que elas próprias não sejam dropadas — Pitfall 4 do RESEARCH).
 func (r *Runtime) emit(metrics []*collectorv1.Metric) {
 	r.mu.Lock()

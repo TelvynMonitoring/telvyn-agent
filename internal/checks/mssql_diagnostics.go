@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const sqlMSSQLDiagnosticSessions = `SELECT TOP (200) s.session_id, COALESCE(s.login_name,''),

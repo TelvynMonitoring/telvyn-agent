@@ -9,8 +9,8 @@ import (
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/ispwatch/collector/internal/snmp"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/snmp"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // stubRunner implementa snmpGenericRunner em memoria — substitui o
@@ -316,7 +316,7 @@ func TestSnmpFailureDiagnosticsReachRuntimeWithoutMaskingError(t *testing.T) {
 				if metric.MetricName == "snmp.device.unreachable" && metric.Value == 1 {
 					diagnostic = true
 				}
-				if metric.MetricName == "ispwatch.check.errors" {
+				if metric.MetricName == "telvyn.check.errors" {
 					failure = true
 				}
 			}

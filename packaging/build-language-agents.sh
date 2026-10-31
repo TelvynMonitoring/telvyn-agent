@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Monta telvyn-language-agents-<versão>.tar.gz: os agentes Telvyn de linguagem para máquinas comuns, instalados pelo
-# install.sh com ISPWATCH_LANGUAGE_AGENTS=java,node em /opt/telvyn/<linguagem>. É o mesmo conteúdo que a imagem
+# install.sh com TELVYN_LANGUAGE_AGENTS=java,node em /opt/telvyn/<linguagem>. É o mesmo conteúdo que a imagem
 # telvyn-runtime-agents leva ao Kubernetes:
 #   java/opentelemetry-javaagent.jar  o tracer (distribuição OpenTelemetry, mesma versão do Dockerfile do coletor)
 #   java/telvyn-javaagent.jar         perfis, segurança, IAST e depurador da Telvyn

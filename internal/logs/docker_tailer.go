@@ -10,7 +10,7 @@
 //   - Bridge goroutine: drena channel de LogEntry e converte pra otlp.LogRecord
 //     via Push() no exporter.
 //
-// Ativado via ISPWATCH_LOGS_DOCKER=1 (default off).
+// Ativado via TELVYN_LOGS_DOCKER=1 (default off).
 package logs
 
 import (
@@ -28,7 +28,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 
-	"github.com/ispwatch/collector/internal/otlp"
+	"github.com/telvynmonitoring/telvyn-agent/internal/otlp"
 )
 
 const (
@@ -39,7 +39,7 @@ const (
 	cursorFlushInterval = 5 * time.Second
 
 	// defaultRateLimitBytesPerSec — limite default por container (1MB/s).
-	// Override via ISPWATCH_DOCKER_LOGS_RATE_LIMIT_BYTES env.
+	// Override via TELVYN_DOCKER_LOGS_RATE_LIMIT_BYTES env.
 	defaultRateLimitBytesPerSec = 1 * 1024 * 1024
 
 	// dockerContainersDir — path padrão dos logs do json-file driver.
@@ -99,7 +99,7 @@ func NewDockerLogsTailer(
 	hostname, _ := os.Hostname()
 
 	rateLimit := int64(defaultRateLimitBytesPerSec)
-	if v := os.Getenv("ISPWATCH_DOCKER_LOGS_RATE_LIMIT_BYTES"); v != "" {
+	if v := os.Getenv("TELVYN_DOCKER_LOGS_RATE_LIMIT_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			rateLimit = n
 		}

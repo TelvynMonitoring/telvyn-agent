@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
-	"github.com/ispwatch/collector/internal/discovery"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/discovery"
 )
 
 // withScanFunc substitui o scan func + restaura no defer.

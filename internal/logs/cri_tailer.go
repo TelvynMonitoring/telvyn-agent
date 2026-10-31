@@ -24,7 +24,7 @@
 // Arquivo NOVO (sem cursor) começa do EOF — somente logs novos
 // agent. Cursor existente resume de onde parou.
 //
-// Ativado via ISPWATCH_LOGS_ENABLED=1 no modo ingest.
+// Ativado via TELVYN_LOGS_ENABLED=1 no modo ingest.
 package logs
 
 import (
@@ -42,7 +42,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ispwatch/collector/internal/otlp"
+	"github.com/telvynmonitoring/telvyn-agent/internal/otlp"
 )
 
 const (

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package ispwatch.collector.v1;
 
-option go_package = "github.com/ispwatch/collector/proto/v1;collectorv1";
+option go_package = "github.com/telvynmonitoring/telvyn-agent/proto/v1;collectorv1";
 option java_package = "system.monitoring.collector.v1";
 option java_multiple_files = true;
 

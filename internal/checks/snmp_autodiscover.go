@@ -41,8 +41,8 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
-	"github.com/ispwatch/collector/internal/discovery"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/discovery"
 )
 
 // scanSNMPFn e o test seam — substituido nos tests para evitar abrir

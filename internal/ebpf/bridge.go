@@ -26,10 +26,10 @@ import (
 
 	"inet.af/netaddr"
 
-	"github.com/ispwatch/collector/internal/apm/concentrator"
-	"github.com/ispwatch/collector/internal/apm/primarytags"
-	"github.com/ispwatch/collector/internal/ebpf/l7"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/concentrator"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/primarytags"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/l7"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // SpanSink é o handler que recebe spans gerados pelo bridge. Implementado

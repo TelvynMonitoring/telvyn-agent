@@ -4,7 +4,7 @@
 // a LISTA de componentes (CycloneDX achatado) pro gateway. O casamento com o
 // catálogo de advisory roda 100% no backend (POST /api/ingest/v1/sbom).
 //
-// Ligado por toggle (ISPWATCH_SBOM_SCAN=1, via Helm sbomScan.enabled). As imagens
+// Ligado por toggle (TELVYN_SBOM_SCAN=1, via Helm sbomScan.enabled). As imagens
 // rodando vêm do kubelet /pods (mesma fonte do carimbo de pod). Dedup por digest
 // (imagem muda raro) com TTL — não re-escaneia a mesma imagem a cada ciclo.
 package sbom
@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ispwatch/collector/internal/k8sidentity"
+	"github.com/telvynmonitoring/telvyn-agent/internal/k8sidentity"
 )
 
 // Pusher é o subconjunto do IngestExporter que usamos (POST Bearer pro gateway).

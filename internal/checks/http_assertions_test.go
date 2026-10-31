@@ -2,7 +2,7 @@ package checks
 
 import (
 	"context"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"net/http"
 	"net/http/httptest"
 	"strings"

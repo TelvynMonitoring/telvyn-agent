@@ -35,9 +35,9 @@ import (
 	dockerclient "github.com/docker/docker/client"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/ispwatch/collector/internal/ebpf/cgroup"
-	"github.com/ispwatch/collector/internal/svcagg"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/cgroup"
+	"github.com/telvynmonitoring/telvyn-agent/internal/svcagg"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const defaultProcTopN = 32

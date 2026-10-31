@@ -19,7 +19,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 
-	"github.com/ispwatch/collector/internal/ebpf/cgroup"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/cgroup"
 )
 
 // ContainerResolver resolve um PID a um service.name derivado da imagem

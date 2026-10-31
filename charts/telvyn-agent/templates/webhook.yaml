@@ -1,5 +1,5 @@
 {{- if .Values.webhook.enabled }}
-{{- $service := printf "%s-webhook" (include "ispwatch-agent.fullname" .) }}
+{{- $service := printf "%s-webhook" (include "telvyn-agent.fullname" .) }}
 {{- $ca := genCA (printf "%s-ca" $service) 365 }}
 {{- $cert := genSignedCert $service nil (list $service (printf "%s.%s" $service .Release.Namespace) (printf "%s.%s.svc" $service .Release.Namespace) (printf "%s.%s.svc.cluster.local" $service .Release.Namespace)) 365 $ca }}
 {{- /*
@@ -16,7 +16,7 @@
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}-webhook-selfsign
+  name: {{ include "telvyn-agent.fullname" . }}-webhook-selfsign
   namespace: {{ .Release.Namespace }}
 spec:
   selfSigned: {}
@@ -24,17 +24,17 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}-webhook
+  name: {{ include "telvyn-agent.fullname" . }}-webhook
   namespace: {{ .Release.Namespace }}
 spec:
-  secretName: {{ include "ispwatch-agent.fullname" . }}-webhook-tls
+  secretName: {{ include "telvyn-agent.fullname" . }}-webhook-tls
   dnsNames:
-    - {{ include "ispwatch-agent.fullname" . }}-webhook
-    - {{ include "ispwatch-agent.fullname" . }}-webhook.{{ .Release.Namespace }}
-    - {{ include "ispwatch-agent.fullname" . }}-webhook.{{ .Release.Namespace }}.svc
-    - {{ include "ispwatch-agent.fullname" . }}-webhook.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "telvyn-agent.fullname" . }}-webhook
+    - {{ include "telvyn-agent.fullname" . }}-webhook.{{ .Release.Namespace }}
+    - {{ include "telvyn-agent.fullname" . }}-webhook.{{ .Release.Namespace }}.svc
+    - {{ include "telvyn-agent.fullname" . }}-webhook.{{ .Release.Namespace }}.svc.cluster.local
   issuerRef:
-    name: {{ include "ispwatch-agent.fullname" . }}-webhook-selfsign
+    name: {{ include "telvyn-agent.fullname" . }}-webhook-selfsign
     kind: Issuer
 {{- else }}
 apiVersion: v1
@@ -52,10 +52,10 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}-webhook
+  name: {{ include "telvyn-agent.fullname" . }}-webhook
   namespace: {{ .Release.Namespace }}
   labels:
-    app.kubernetes.io/name: ispwatch-agent
+    app.kubernetes.io/name: telvyn-agent
     app.kubernetes.io/component: webhook
 spec:
   # 2 réplicas + maxUnavailable 0: reiniciar ou atualizar o webhook não deixa janela em que
@@ -68,7 +68,7 @@ spec:
       maxSurge: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: ispwatch-agent
+      app.kubernetes.io/name: telvyn-agent
       app.kubernetes.io/component: webhook
   template:
     metadata:
@@ -77,30 +77,30 @@ spec:
         checksum/webhook-certificate: {{ $cert.Cert | sha256sum }}
       {{- end }}
       labels:
-        app.kubernetes.io/name: ispwatch-agent
+        app.kubernetes.io/name: telvyn-agent
         app.kubernetes.io/component: webhook
     spec:
-      serviceAccountName: {{ include "ispwatch-agent.fullname" . }}
+      serviceAccountName: {{ include "telvyn-agent.fullname" . }}
       containers:
         - name: webhook
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # Bypassa o entrypoint.sh (que escolhe modo por env e rodaria ingest):
           # roda o binário direto em modo webhook.
-          command: ["/usr/local/bin/collector"]
+          command: ["/usr/local/bin/telvyn-agent"]
           args: ["--webhook"]
           ports:
             - { name: https, containerPort: 8443 }
           env:
-            - name: ISPWATCH_CLUSTER
+            - name: TELVYN_CLUSTER
               value: {{ .Values.clusterName | quote }}
             # Certless (mesmo modelo do DaemonSet): lista de workloads vem do
             # gateway via Bearer; sem mTLS.
-            - name: ISPWATCH_INGEST_URL
+            - name: TELVYN_INGEST_URL
               value: {{ required "values.ingest.url é obrigatório p/ o webhook" .Values.ingest.url | quote }}
-            - name: ISPWATCH_INGEST_TOKEN
+            - name: TELVYN_INGEST_TOKEN
               value: {{ required "values.ingest.token é obrigatório p/ o webhook" .Values.ingest.token | quote }}
-            - name: ISPWATCH_AGENT_IMAGE
+            - name: TELVYN_AGENT_IMAGE
               value: {{ default (printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion)) .Values.webhook.agentImageRef | quote }}
             - name: TELVYN_NODE_AGENT_IMAGE
               value: {{ .Values.webhook.nodeAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
@@ -114,12 +114,12 @@ spec:
               value: {{ .Values.webhook.phpAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
             - name: TELVYN_JAVA_AGENT_IMAGE
               value: {{ .Values.webhook.javaAgentImageRef | default .Values.webhook.runtimeBundleImageRef | quote }}
-            - name: ISPWATCH_OTLP_ENDPOINT
+            - name: TELVYN_OTLP_ENDPOINT
               value: {{ .Values.webhook.otlpEndpoint | quote }}
-            - name: ISPWATCH_OTLP_PROTOCOL
+            - name: TELVYN_OTLP_PROTOCOL
               value: {{ .Values.webhook.otlpProtocol | default "http/protobuf" | quote }}
           volumeMounts:
-            - { name: tls, mountPath: /etc/ispwatch/webhook, readOnly: true }
+            - { name: tls, mountPath: /etc/telvyn/webhook, readOnly: true }
           readinessProbe:
             httpGet: { path: /healthz, port: https, scheme: HTTPS }
             initialDelaySeconds: 3
@@ -130,30 +130,30 @@ spec:
       volumes:
         - name: tls
           secret:
-            secretName: {{ include "ispwatch-agent.fullname" . }}-webhook-tls
+            secretName: {{ include "telvyn-agent.fullname" . }}-webhook-tls
 {{- if gt (int (.Values.webhook.replicas | default 2)) 1 }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}-webhook
+  name: {{ include "telvyn-agent.fullname" . }}-webhook
   namespace: {{ .Release.Namespace }}
 spec:
   minAvailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: ispwatch-agent
+      app.kubernetes.io/name: telvyn-agent
       app.kubernetes.io/component: webhook
 {{- end }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}-webhook
+  name: {{ include "telvyn-agent.fullname" . }}-webhook
   namespace: {{ .Release.Namespace }}
 spec:
   selector:
-    app.kubernetes.io/name: ispwatch-agent
+    app.kubernetes.io/name: telvyn-agent
     app.kubernetes.io/component: webhook
   ports:
     - port: {{ .Values.webhook.service.port }}
@@ -163,20 +163,20 @@ spec:
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}-webhook
+  name: {{ include "telvyn-agent.fullname" . }}-webhook
   {{- if eq (.Values.webhook.certificateProvider | default "helm") "cert-manager" }}
   annotations:
     # cainjector preenche clientConfig.caBundle a partir do Secret da Certificate.
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "ispwatch-agent.fullname" . }}-webhook
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "telvyn-agent.fullname" . }}-webhook
   {{- end }}
 webhooks:
-  - name: javaagent.ispwatch.io
+  - name: javaagent.telvyn.io
     clientConfig:
       {{- if ne (.Values.webhook.certificateProvider | default "helm") "cert-manager" }}
       caBundle: {{ $ca.Cert | b64enc }}
       {{- end }}
       service:
-        name: {{ include "ispwatch-agent.fullname" . }}-webhook
+        name: {{ include "telvyn-agent.fullname" . }}-webhook
         namespace: {{ .Release.Namespace }}
         path: /mutate
         port: {{ .Values.webhook.service.port }}
