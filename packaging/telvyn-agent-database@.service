@@ -1,6 +1,6 @@
 [Unit]
-Description=IspWatch Agent de Banco (%i)
-Documentation=https://docs.ispwatch.com/agent
+Description=Telvyn Agent de Banco (%i)
+Documentation=https://docs.telvyn.com/agent
 After=network-online.target
 Wants=network-online.target
 
@@ -14,8 +14,8 @@ Group=tvdb-%i
 # Cada instância de banco recebe um EnvironmentFile, binário e diretórios de
 # estado próprios. O identificador %i é um slug derivado pelo instalador do
 # installation_id opaco, nunca o nome do banco fornecido pelo usuário.
-EnvironmentFile=-/etc/ispwatch-database-%i/agent.env
-ExecStart=/usr/local/lib/ispwatch/database-%i/ispwatch-agent
+EnvironmentFile=-/etc/telvyn-database-%i/agent.env
+ExecStart=/usr/local/lib/telvyn/database-%i/telvyn-agent
 Restart=on-failure
 RestartSec=10s
 StartLimitInterval=60s
@@ -32,7 +32,7 @@ ProtectHome=true
 PrivateTmp=true
 # Os caminhos são exclusivos da instância: dois bancos no mesmo host nunca
 # compartilham WAL, cursor, marcador de revogação ou logs do agente.
-ReadWritePaths=/var/lib/ispwatch/database-%i /var/log/ispwatch/database-%i
+ReadWritePaths=/var/lib/telvyn/database-%i /var/log/telvyn/database-%i
 
 ProtectKernelTunables=true
 ProtectKernelModules=true
@@ -53,7 +53,7 @@ UMask=0027
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=ispwatch-agent-database-%i
+SyslogIdentifier=telvyn-agent-database-%i
 
 [Install]
 WantedBy=multi-user.target

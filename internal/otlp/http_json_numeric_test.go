@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ispwatch/collector/internal/apm/sampler"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/sampler"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 func TestJSONNumericAttributesCountBeforeSampling(t *testing.T) {

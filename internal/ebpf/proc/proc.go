@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ispwatch/collector/internal/ebpf/cgroup"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/cgroup"
 )
 
 var root = "/proc"

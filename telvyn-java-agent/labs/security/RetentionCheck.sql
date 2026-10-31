@@ -1,7 +1,7 @@
 -- Point diagnostic on real laboratory records. No INSERT, UPDATE or DELETE.
 -- psql -v tenant=<authorized tenant> -v ON_ERROR_STOP=1 -f RetentionCheck.sql
 BEGIN READ ONLY;
-SET LOCAL ROLE ispwatch_app;
+SET LOCAL ROLE telvyn_app;
 SELECT set_config('app.tenant_id', :'tenant', true);
 DO $$
 DECLARE sample public.noc_apm_attack_lab_event; before_cutoff integer; after_cutoff integer;

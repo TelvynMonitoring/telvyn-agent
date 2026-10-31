@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ispwatch/collector/internal/checks"
-	"github.com/ispwatch/collector/internal/otlp"
+	"github.com/telvynmonitoring/telvyn-agent/internal/checks"
+	"github.com/telvynmonitoring/telvyn-agent/internal/otlp"
 )
 
 // ParseSyslog keeps the original RFC3164/RFC5424 message and receiver timestamp.

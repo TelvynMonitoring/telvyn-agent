@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ispwatch/collector/internal/ebpf/common"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/common"
 	"k8s.io/klog/v2"
 )
 

@@ -45,8 +45,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gopkg.in/yaml.v3"
 
-	"github.com/ispwatch/collector/internal/snmp/profiles"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/snmp/profiles"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // Profile representa um YAML de perfil SNMP parseado. Name vem do nome

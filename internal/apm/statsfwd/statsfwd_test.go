@@ -9,8 +9,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/ispwatch/collector/internal/apm/concentrator"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/concentrator"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 func TestForwarder_SendMontaPayloadEHeaders(t *testing.T) {

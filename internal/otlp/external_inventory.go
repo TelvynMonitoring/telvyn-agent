@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ispwatch/collector/internal/inventory"
+	"github.com/telvynmonitoring/telvyn-agent/internal/inventory"
 )
 
 // PostExternalInventory sends a validated snapshot separately from metrics. A

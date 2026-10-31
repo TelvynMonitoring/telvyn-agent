@@ -3,7 +3,7 @@ package ebpf
 import (
 	"testing"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 func postgresMonitorConfig(id, monitorID, server, port string) *collectorv1.CheckConfig {

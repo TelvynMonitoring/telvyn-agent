@@ -9,15 +9,15 @@ services:
         VERSION: lab
     image: telvyn-agent:persistence-lab
     environment:
-      ISPWATCH_INGEST_URL: http://quarkus:8080/api/ingest/v1
-      ISPWATCH_INGEST_TOKEN: ${ISPWATCH_INGEST_TOKEN:?Defina ISPWATCH_INGEST_TOKEN com um token kind=agent e capability metrics}
-      ISPWATCH_NODE_NAME: telvyn-persistence-lab
-      ISPWATCH_STATE_DIR: /var/lib/ispwatch
-      ISPWATCH_CHECKS_ENABLED: "0"
-      ISPWATCH_OTLP_HTTP_DISABLE: "1"
+      TELVYN_INGEST_URL: http://quarkus:8080/api/ingest/v1
+      TELVYN_INGEST_TOKEN: ${TELVYN_INGEST_TOKEN:?Defina TELVYN_INGEST_TOKEN com um token kind=agent e capability metrics}
+      TELVYN_NODE_NAME: telvyn-persistence-lab
+      TELVYN_STATE_DIR: /var/lib/telvyn
+      TELVYN_CHECKS_ENABLED: "0"
+      TELVYN_OTLP_HTTP_DISABLE: "1"
       COLLECTOR_LOG_LEVEL: debug
     volumes:
-      - agent_state:/var/lib/ispwatch
+      - agent_state:/var/lib/telvyn
     networks:
       - telvyn_backend
     restart: "no"
@@ -29,4 +29,4 @@ volumes:
 networks:
   telvyn_backend:
     external: true
-    name: ${TELVYN_BACKEND_NETWORK:-ispwatch-dev_ispwatch-net}
+    name: ${TELVYN_BACKEND_NETWORK:-telvyn-dev_telvyn-net}

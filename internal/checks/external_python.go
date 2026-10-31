@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ispwatch/collector/internal/checkpackages"
-	"github.com/ispwatch/collector/internal/inventory"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/checkpackages"
+	"github.com/telvynmonitoring/telvyn-agent/internal/inventory"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const externalInputLimit = 1 << 20

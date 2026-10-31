@@ -1,5 +1,5 @@
 // Package checks defines the continuous self-metric collection framework
-// for the IspWatch agent. A Check runs in-process at a fixed cadence and
+// for the Telvyn agent. A Check runs in-process at a fixed cadence and
 // emits Metrics about the host where the agent is installed (Local Agent
 // mode per D-12) or the device it polls (Collector mode).
 //
@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // Check is the interface implemented by every continuous metric collector

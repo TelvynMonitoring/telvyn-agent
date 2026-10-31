@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ispwatch/collector/internal/clock"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/clock"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 func TestNodeSystemPublishesNTPUnderNodeIdentity(t *testing.T) {
@@ -23,7 +23,7 @@ func TestNodeSystemPublishesNTPUnderNodeIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	t.Setenv("ISPWATCH_NTP_SERVERS", server.LocalAddr().String())
+	t.Setenv("TELVYN_NTP_SERVERS", server.LocalAddr().String())
 	go func() {
 		request := make([]byte, 48)
 		_, client, err := server.ReadFromUDP(request)
@@ -65,7 +65,7 @@ func TestNodeSystemPublishesNTPUnderNodeIdentity(t *testing.T) {
 }
 
 func TestNodeSystemPublishesIntakeIndependentlyOfNTP(t *testing.T) {
-	t.Setenv("ISPWATCH_NTP_SERVERS", "127.0.0.1:9")
+	t.Setenv("TELVYN_NTP_SERVERS", "127.0.0.1:9")
 	now := time.Now()
 	clock.ObserveIntakeDate(now.Add(5*time.Second).UTC().Format(http.TimeFormat), now)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

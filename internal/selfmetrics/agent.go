@@ -7,9 +7,9 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/ispwatch/collector/internal/agentstats"
-	"github.com/ispwatch/collector/internal/sendbuf"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/agentstats"
+	"github.com/telvynmonitoring/telvyn-agent/internal/sendbuf"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // StartAgentStats emite, a cada interval, as filas de envio e o consumo do processo do

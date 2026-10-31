@@ -1,4 +1,4 @@
-// Package clusteragent implementa o modo ISPWATCH_AGENT_KIND=k8s.cluster: uma
+// Package clusteragent implementa o modo TELVYN_AGENT_KIND=k8s.cluster: uma
 // réplica que fala com o API server do Kubernetes (in-cluster), faz LIST dos
 // Events do cluster inteiro e os empurra pelo ingest certless (noc_k8s_event).
 //
@@ -29,8 +29,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ispwatch/collector/internal/k8smeta"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/k8smeta"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // Ingest é o subset do IngestExporter usado aqui (facilita fake em teste):

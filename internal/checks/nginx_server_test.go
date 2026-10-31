@@ -12,7 +12,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const nginxCanonicalBody = `Active connections: 291

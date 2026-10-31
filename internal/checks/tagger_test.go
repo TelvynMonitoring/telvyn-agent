@@ -10,7 +10,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // mkMetric constrói uma Metric simples para os testes do tagger.
@@ -45,7 +45,7 @@ func TestTagger_Filter_UnderBudget(t *testing.T) {
 }
 
 // TestTagger_Filter_OverBudget_DropsExcedente verifica que séries acima do
-// budget são dropadas e geram meta-métrica ispwatch.tagger.dropped.
+// budget são dropadas e geram meta-métrica telvyn.tagger.dropped.
 func TestTagger_Filter_OverBudget_DropsExcedente(t *testing.T) {
 	tg := NewTagger(3, slog.Default())
 
@@ -71,8 +71,8 @@ func TestTagger_Filter_OverBudget_DropsExcedente(t *testing.T) {
 		t.Fatalf("drops: want 1, got %d", len(drops))
 	}
 	d := drops[0]
-	if d.GetMetricName() != "ispwatch.tagger.dropped" {
-		t.Errorf("drop metric name: want ispwatch.tagger.dropped, got %q", d.GetMetricName())
+	if d.GetMetricName() != "telvyn.tagger.dropped" {
+		t.Errorf("drop metric name: want telvyn.tagger.dropped, got %q", d.GetMetricName())
 	}
 	if d.GetTags()["host"] != "hostA" {
 		t.Errorf("drop tag host: want hostA, got %q", d.GetTags()["host"])
@@ -136,7 +136,7 @@ func TestTagger_Filter_BudgetPorHost_IsolaHosts(t *testing.T) {
 }
 
 // TestTagger_Filter_MetaMetric_FastPath verifica que meta-métricas
-// (ispwatch.tagger.* e ispwatch.check.*) bypassam o budget — Pitfall 4.
+// (telvyn.tagger.* e telvyn.check.*) bypassam o budget — Pitfall 4.
 func TestTagger_Filter_MetaMetric_FastPath(t *testing.T) {
 	tg := NewTagger(1, slog.Default())
 
@@ -147,8 +147,8 @@ func TestTagger_Filter_MetaMetric_FastPath(t *testing.T) {
 
 	// Meta-métricas devem passar mesmo com budget cheio.
 	in := []*collectorv1.Metric{
-		mkMetric("hostA", "ispwatch.tagger.dropped", map[string]string{"metric": "x"}),
-		mkMetric("hostA", "ispwatch.check.errors", map[string]string{"check_id": "y"}),
+		mkMetric("hostA", "telvyn.tagger.dropped", map[string]string{"metric": "x"}),
+		mkMetric("hostA", "telvyn.check.errors", map[string]string{"check_id": "y"}),
 	}
 	kept, drops := tg.Filter(in)
 	if len(kept) != 2 {

@@ -3,7 +3,7 @@
 // listener parseia o trap (v1/v2c via gosnmp.TrapListener) e encaminha pro backend
 // (/api/ingest/v1/snmptrap); o backend mapeia source_ip→host e classifica o OID.
 //
-// Gateado por ISPWATCH_SNMP_TRAPS_ENABLED=1 (um agente, cada
+// Gateado por TELVYN_SNMP_TRAPS_ENABLED=1 (um agente, cada
 // capability liga/desliga). Bind em :162 exige root (o DaemonSet já roda privileged).
 
 package main
@@ -19,7 +19,7 @@ import (
 
 	"github.com/gosnmp/gosnmp"
 
-	"github.com/ispwatch/collector/internal/otlp"
+	"github.com/telvynmonitoring/telvyn-agent/internal/otlp"
 )
 
 // snmpTrapOID.0 (SNMPv2-MIB) — varbind que carrega o OID do trap num trap v2c.
@@ -28,7 +28,7 @@ const snmpTrapOIDVar = "1.3.6.1.6.3.1.1.4.1.0"
 // startSnmpTrapListener sobe o receptor UDP/162 e encaminha cada trap pro backend.
 // Fail-soft: erro de bind só loga e desiste (não derruba o agente). Para no ctx.Done.
 func startSnmpTrapListener(ctx context.Context, log *slog.Logger, exporter *otlp.IngestExporter) {
-	addr := getenvOr("ISPWATCH_SNMP_TRAP_ADDR", "0.0.0.0:162")
+	addr := getenvOr("TELVYN_SNMP_TRAP_ADDR", "0.0.0.0:162")
 	tl := gosnmp.NewTrapListener()
 	tl.Params = gosnmp.Default // aceita community v1/v2c
 	tl.OnNewTrap = func(pkt *gosnmp.SnmpPacket, u *net.UDPAddr) {

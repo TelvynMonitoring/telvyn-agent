@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/ispwatch/collector/internal/apm/sampler"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/sampler"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"

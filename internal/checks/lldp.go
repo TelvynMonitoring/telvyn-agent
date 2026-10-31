@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/gosnmp/gosnmp"
-	"github.com/ispwatch/collector/internal/snmp"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/snmp"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

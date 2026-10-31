@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ispwatch/collector/internal/ebpf/l7"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/l7"
 )
 
 // physicalL7Latency é o guard que barra o dado de latência corrompido do kernel

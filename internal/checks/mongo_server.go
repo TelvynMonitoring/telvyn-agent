@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"google.golang.org/protobuf/types/known/timestamppb"

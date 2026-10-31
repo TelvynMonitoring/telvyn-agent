@@ -33,7 +33,7 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 type httpThroughputCheck struct {
@@ -119,7 +119,7 @@ func (c *httpThroughputCheck) Run(ctx context.Context) ([]*collectorv1.Metric, e
 		now := timestamppb.Now()
 		return []*collectorv1.Metric{c.metric(now, "http.throughput_success", 0)}, nil
 	}
-	req.Header.Set("User-Agent", "ispwatch-collector/link-probe")
+	req.Header.Set("User-Agent", "telvyn-collector/link-probe")
 	req.Header.Set("Accept-Encoding", "identity") // sem compressao: medir bytes do fio
 
 	start := time.Now()

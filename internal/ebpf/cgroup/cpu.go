@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ispwatch/collector/internal/ebpf/common"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/common"
 )
 
 type CPUStat struct {

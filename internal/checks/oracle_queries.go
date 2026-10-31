@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const sqlOracleQueryStats = `SELECT SQL_ID, NVL(SUBSTR(SQL_TEXT,1,4000),' '), EXECUTIONS,

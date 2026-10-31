@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -404,7 +404,7 @@ func TestRuntime_RunContextHasDeadline(t *testing.T) {
 	case metrics := <-out:
 		found := false
 		for _, m := range metrics {
-			if m.MetricName == "ispwatch.check.errors" && m.Tags["check_id"] == "deadline" {
+			if m.MetricName == "telvyn.check.errors" && m.Tags["check_id"] == "deadline" {
 				found = true
 			}
 		}
@@ -463,7 +463,7 @@ func TestRuntime_Reload_UnknownType_LogsAndSkips(t *testing.T) {
 }
 
 // TestRuntime_RunError_EmitsCheckErrorMetric verifies that when Run() returns
-// an error, a meta-metric "ispwatch.check.errors" with tag check_id is emitted
+// an error, a meta-metric "telvyn.check.errors" with tag check_id is emitted
 // on the out channel.
 func TestRuntime_RunError_EmitsCheckErrorMetric(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -488,7 +488,7 @@ func TestRuntime_RunError_EmitsCheckErrorMetric(t *testing.T) {
 		select {
 		case metrics := <-out:
 			for _, m := range metrics {
-				if m.MetricName == "ispwatch.check.errors" {
+				if m.MetricName == "telvyn.check.errors" {
 					if m.Tags["check_id"] == "failing" {
 						rt.Reload(nil)
 						return // test passed
@@ -497,7 +497,7 @@ func TestRuntime_RunError_EmitsCheckErrorMetric(t *testing.T) {
 			}
 		case <-deadline:
 			rt.Reload(nil)
-			t.Fatal("timeout: did not receive ispwatch.check.errors metric")
+			t.Fatal("timeout: did not receive telvyn.check.errors metric")
 		}
 	}
 }
@@ -543,7 +543,7 @@ func TestRuntime_RunError_CircuitBreak_After5Consecutive(t *testing.T) {
 
 // TestRuntime_SetTagger_FiltersOverBudget verifica que o Runtime, depois de
 // SetTagger com budget=2, filtra as séries que excedem o budget e ainda assim
-// faz chegar a meta-métrica `ispwatch.tagger.dropped` no canal out.
+// faz chegar a meta-métrica `telvyn.tagger.dropped` no canal out.
 func TestRuntime_SetTagger_FiltersOverBudget(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -575,7 +575,7 @@ func TestRuntime_SetTagger_FiltersOverBudget(t *testing.T) {
 		select {
 		case metrics := <-out:
 			for _, m := range metrics {
-				if m.MetricName == "ispwatch.tagger.dropped" {
+				if m.MetricName == "telvyn.tagger.dropped" {
 					gotDrop = true
 				}
 				if m.MetricName == "snmp.iface.in" {

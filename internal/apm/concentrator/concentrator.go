@@ -11,15 +11,15 @@ package concentrator
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/ispwatch/collector/internal/apm/primarytags"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/primarytags"
 	"log/slog"
 	"net"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/ispwatch/collector/internal/latency"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/latency"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const (

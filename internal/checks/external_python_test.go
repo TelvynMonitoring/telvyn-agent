@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/ispwatch/collector/internal/checkpackages"
+	"github.com/telvynmonitoring/telvyn-agent/internal/checkpackages"
 )
 
 const externalTestID = "11111111-1111-4111-8111-111111111111"

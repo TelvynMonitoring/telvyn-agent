@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
-	"github.com/ispwatch/collector/internal/apm/usage"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/usage"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"

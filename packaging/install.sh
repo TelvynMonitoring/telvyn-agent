@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Telvyn / IspWatch Agent — script canônico de instalação Linux (systemd).
+# Telvyn / Telvyn Agent — script canônico de instalação Linux (systemd).
 # Atribuições de terceiros: ../THIRD_PARTY_NOTICES.md.
 #
 # Modelo CERTLESS/INGEST: o agent autentica no gateway
@@ -8,64 +8,62 @@
 #
 # Uso (o portal gera o comando pronto na tela "Instalar agent"):
 #   curl -fsSL <este script> | \
-#     ISPWATCH_INGEST_URL='https://telvyn.suaempresa.com' \
-#     ISPWATCH_INGEST_TOKEN='iwI_...' \
-#     ISPWATCH_AGENT_KIND=linux \
+#     TELVYN_INGEST_URL='https://telvyn.suaempresa.com' \
+#     TELVYN_INGEST_TOKEN='iwI_...' \
+#     TELVYN_AGENT_KIND=linux \
 #     sudo -E bash
 
 set -euo pipefail
 
 # === Config ============================================================
 # Obrigatórios (Bearer certless):
-#   ISPWATCH_INGEST_URL    base do portal (https://...); o agent normaliza o
+#   TELVYN_INGEST_URL    base do portal (https://...); o agent normaliza o
 #                          sufixo /api/ingest/v1 sozinho.
-#   ISPWATCH_INGEST_TOKEN  token iwI_ (Bearer).
+#   TELVYN_INGEST_TOKEN  token iwI_ (Bearer).
 # Opcionais:
-#   ISPWATCH_AGENT_KIND    linux (default) — registra a máquina como host de app.
-#   ISPWATCH_AGENT_PROFILE database — Agent dedicado a uma instância PostgreSQL.
-#   ISPWATCH_DATABASE_ENGINE postgres — motor do Agent de Banco.
-#   ISPWATCH_DATABASE_INSTALLATION_ID — legado; aceito só para instalações
+#   TELVYN_AGENT_KIND    linux (default) — registra a máquina como host de app.
+#   TELVYN_AGENT_PROFILE database — Agent dedicado a uma instância PostgreSQL.
+#   TELVYN_DATABASE_ENGINE postgres — motor do Agent de Banco.
+#   TELVYN_DATABASE_INSTALLATION_ID — legado; aceito só para instalações
 #                                     antigas. Instalações novas se vinculam
 #                                     automaticamente pelo UUID da máquina.
-#   ISPWATCH_HOSTNAME      nome reportado (default: FQDN da máquina).
-#   qualquer ISPWATCH_*/COLLECTOR_LOG_LEVEL extra é repassado ao agente (toggles).
-ISPWATCH_AGENT_VERSION="${ISPWATCH_AGENT_VERSION:-latest}"
-ISPWATCH_AGENT_KIND="${ISPWATCH_AGENT_KIND:-linux}"
-ISPWATCH_AGENT_PROFILE="${ISPWATCH_AGENT_PROFILE:-}"
-ISPWATCH_DATABASE_INSTALLATION_ID="${ISPWATCH_DATABASE_INSTALLATION_ID:-}"
-ISPWATCH_DATABASE_ENROLLMENT_ID="${ISPWATCH_DATABASE_ENROLLMENT_ID:-}"
-ISPWATCH_DATABASE_ENGINE="${ISPWATCH_DATABASE_ENGINE:-postgres}"
-# ISPWATCH_UPGRADE=true → atualiza uma instalação existente sem reescrever seu
+#   TELVYN_HOSTNAME      nome reportado (default: FQDN da máquina).
+#   qualquer TELVYN_*/COLLECTOR_LOG_LEVEL extra é repassado ao agente (toggles).
+TELVYN_AGENT_VERSION="${TELVYN_AGENT_VERSION:-latest}"
+TELVYN_AGENT_KIND="${TELVYN_AGENT_KIND:-linux}"
+TELVYN_AGENT_PROFILE="${TELVYN_AGENT_PROFILE:-}"
+TELVYN_DATABASE_INSTALLATION_ID="${TELVYN_DATABASE_INSTALLATION_ID:-}"
+TELVYN_DATABASE_ENROLLMENT_ID="${TELVYN_DATABASE_ENROLLMENT_ID:-}"
+TELVYN_DATABASE_ENGINE="${TELVYN_DATABASE_ENGINE:-postgres}"
+# TELVYN_UPGRADE=true → atualiza uma instalação existente sem reescrever seu
 # EnvironmentFile. Para o profile database o instalador encontra o serviço
 # local; o operador nunca precisa informar um identificador.
-ISPWATCH_UPGRADE="${ISPWATCH_UPGRADE:-false}"
-# ISPWATCH_REINSTALL=true → instala de novo por cima de uma instalação existente, com o token e a configuração do
+TELVYN_UPGRADE="${TELVYN_UPGRADE:-false}"
+# TELVYN_REINSTALL=true → instala de novo por cima de uma instalação existente, com o token e a configuração do
 # comando novo (ex.: o monitoramento do banco foi excluído no Telvyn e o Agent antigo foi revogado). Sem ela, uma
 # instalação existente é recusada, para ninguém substituir por engano um Agent que funciona.
-ISPWATCH_REINSTALL="${ISPWATCH_REINSTALL:-false}"
-# ISPWATCH_LANGUAGE_AGENTS=java,node → instala também os agentes Telvyn de linguagem em /opt/telvyn/<linguagem>, para
+TELVYN_REINSTALL="${TELVYN_REINSTALL:-false}"
+# TELVYN_LANGUAGE_AGENTS=java,node → instala também os agentes Telvyn de linguagem em /opt/telvyn/<linguagem>, para
 # instrumentar aplicações Java/Node nesta máquina (no Kubernetes eles chegam pela injeção do webhook).
-ISPWATCH_LANGUAGE_AGENTS="${ISPWATCH_LANGUAGE_AGENTS:-}"
+TELVYN_LANGUAGE_AGENTS="${TELVYN_LANGUAGE_AGENTS:-}"
 if [[ "${TELVYN_EXTERNAL_EXECUTION_MODE:-}" == "approved-unisolated" ]]; then
     if [[ ! -x "${TELVYN_EXTERNAL_PYTHON:-/usr/bin/python3}" || -z "${TELVYN_EXTERNAL_APPROVED_ENDPOINTS:-}" ]]; then
         echo "ERROR: Proxmox requires Python 3 and TELVYN_EXTERNAL_APPROVED_ENDPOINTS before installation." >&2
         exit 1
     fi
 fi
-GITHUB_REPO="${ISPWATCH_GITHUB_REPO:-TelvynMonitoring/telvyn-agent-releases}"
-# ISPWATCH_DOWNLOAD_BASE permite redirecionar para mirror/dev local sem
+GITHUB_REPO="${TELVYN_GITHUB_REPO:-TelvynMonitoring/telvyn-agent-releases}"
+# TELVYN_DOWNLOAD_BASE permite redirecionar para mirror/dev local sem
 # editar o script (usado pelos smoke tests e por VMs de dev).
-ISPWATCH_DOWNLOAD_BASE="${ISPWATCH_DOWNLOAD_BASE:-https://github.com/${GITHUB_REPO}/releases/download}"
+TELVYN_DOWNLOAD_BASE="${TELVYN_DOWNLOAD_BASE:-https://github.com/${GITHUB_REPO}/releases/download}"
 
 INSTALL_DIR="/usr/local/bin"
-ETC_DIR="/etc/ispwatch"
-BASE_LIB_DIR="/var/lib/ispwatch"
-BASE_LOG_DIR="/var/log/ispwatch"
-GENERIC_BINARY_PATH="${INSTALL_DIR}/ispwatch-agent"
+ETC_DIR="/etc/telvyn"
+BASE_LIB_DIR="/var/lib/telvyn"
+BASE_LOG_DIR="/var/log/telvyn"
+GENERIC_BINARY_PATH="${INSTALL_DIR}/telvyn-agent"
 GENERIC_UNIT_NAME="telvyn-agent.service"
 GENERIC_UNIT_PATH="/etc/systemd/system/${GENERIC_UNIT_NAME}"
-LEGACY_GENERIC_UNIT_NAME="ispwatch-agent.service"
-LEGACY_GENERIC_UNIT_PATH="/etc/systemd/system/${LEGACY_GENERIC_UNIT_NAME}"
 DATABASE_UNIT_NAME="telvyn-agent.service"
 DATABASE_UNIT_PATH="/etc/systemd/system/${DATABASE_UNIT_NAME}"
 DATABASE_UPDATE_UNIT_NAME="telvyn-agent-update.service"
@@ -79,17 +77,15 @@ DATABASE_LIB_DIR="/var/lib/telvyn-agent"
 DATABASE_LOG_DIR="/var/log/telvyn-agent"
 DATABASE_SERVICE_USER="telvyn"
 DATABASE_SERVICE_GROUP="telvyn"
-LEGACY_DATABASE_ENV_FILE=""
-LEGACY_DATABASE_UNIT_NAME=""
 
 # === Validação =========================================================
 # No modelo certless, INGEST_URL + INGEST_TOKEN são obrigatórios (substituem
-# o antigo ISPWATCH_ENROLL_TOKEN do fluxo mTLS).
+# o antigo TELVYN_ENROLL_TOKEN do fluxo mTLS).
 # No modo upgrade, INGEST_URL/TOKEN vêm do agent.env existente — não exigir.
-if [[ "$ISPWATCH_UPGRADE" != "true" ]]; then
+if [[ "$TELVYN_UPGRADE" != "true" ]]; then
     missing=""
-    [[ -z "${ISPWATCH_INGEST_URL:-}" ]]   && missing="${missing} ISPWATCH_INGEST_URL"
-    [[ -z "${ISPWATCH_INGEST_TOKEN:-}" ]] && missing="${missing} ISPWATCH_INGEST_TOKEN"
+    [[ -z "${TELVYN_INGEST_URL:-}" ]]   && missing="${missing} TELVYN_INGEST_URL"
+    [[ -z "${TELVYN_INGEST_TOKEN:-}" ]] && missing="${missing} TELVYN_INGEST_TOKEN"
     if [[ -n "$missing" ]]; then
         echo "ERROR: variável(is) de ambiente obrigatória(s) ausente(s):${missing}" >&2
         echo "" >&2
@@ -98,27 +94,27 @@ if [[ "$ISPWATCH_UPGRADE" != "true" ]]; then
         echo "Dica: esqueceu o 'sudo -E'? Sem -E, o sudo descarta as env vars." >&2
         echo "" >&2
         echo "  curl -fsSL <URL> | \\" >&2
-        echo "    ISPWATCH_INGEST_URL='https://telvyn.suaempresa.com' \\" >&2
-        echo "    ISPWATCH_INGEST_TOKEN='iwI_...' \\" >&2
+        echo "    TELVYN_INGEST_URL='https://telvyn.suaempresa.com' \\" >&2
+        echo "    TELVYN_INGEST_TOKEN='iwI_...' \\" >&2
         echo "    sudo -E bash" >&2
         exit 1
     fi
 fi
 
-AGENT_PROFILE_NORMALIZED=$(printf '%s' "$ISPWATCH_AGENT_PROFILE" | tr '[:upper:]' '[:lower:]')
+AGENT_PROFILE_NORMALIZED=$(printf '%s' "$TELVYN_AGENT_PROFILE" | tr '[:upper:]' '[:lower:]')
 if [[ "$AGENT_PROFILE_NORMALIZED" == "database" ]]; then
-    ISPWATCH_AGENT_PROFILE="database"
+    TELVYN_AGENT_PROFILE="database"
 fi
 
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && "$ISPWATCH_DATABASE_ENGINE" != "postgres" ]]; then
-    echo "ERROR: ISPWATCH_DATABASE_ENGINE deve ser postgres para este release." >&2
+if [[ "$TELVYN_AGENT_PROFILE" == "database" && "$TELVYN_DATABASE_ENGINE" != "postgres" ]]; then
+    echo "ERROR: TELVYN_DATABASE_ENGINE deve ser postgres para este release." >&2
     exit 1
 fi
 
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-    AGENT_KIND_NORMALIZED=$(printf '%s' "$ISPWATCH_AGENT_KIND" | tr '[:upper:]' '[:lower:]')
+if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
+    AGENT_KIND_NORMALIZED=$(printf '%s' "$TELVYN_AGENT_KIND" | tr '[:upper:]' '[:lower:]')
     if [[ "$AGENT_KIND_NORMALIZED" != "linux" && "$AGENT_KIND_NORMALIZED" != "docker" ]]; then
-        echo "ERROR: Agent de Banco requer ISPWATCH_AGENT_KIND=linux ou docker; não use kind database." >&2
+        echo "ERROR: Agent de Banco requer TELVYN_AGENT_KIND=linux ou docker; não use kind database." >&2
         exit 1
     fi
 fi
@@ -131,7 +127,7 @@ fi
 # Um host PostgreSQL tem um único Agent de Banco. O agente gera sua própria
 # identidade local e envia também a identidade estável da máquina; o backend
 # preserva a instância existente sem pedir UUIDs ao operador.
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
     UNIT_NAME="$DATABASE_UNIT_NAME"
     UNIT_PATH="$DATABASE_UNIT_PATH"
     CONFIG_DIR="$DATABASE_CONFIG_DIR"
@@ -142,29 +138,6 @@ if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
     BINARY_PATH="$DATABASE_BINARY_PATH"
     SERVICE_USER="$DATABASE_SERVICE_USER"
     SERVICE_GROUP="$DATABASE_SERVICE_GROUP"
-
-    # Migração sem intervenção: releases anteriores usavam uma unit derivada
-    # do UUID. Há somente um Agent de Banco por host; se houver uma única
-    # instalação legada, preservamos o segredo e migramos para a unit estável.
-    if [[ "$ISPWATCH_UPGRADE" == "true" && ! -f "$ENV_FILE" ]]; then
-        if [[ -f "/etc/telvyn/database-agent.env" ]]; then
-            # v0.4.21 usava nomes de serviço derivados do perfil. Migra sem
-            # expor a identidade ou exigir qualquer parâmetro do operador.
-            LEGACY_DATABASE_ENV_FILE="/etc/telvyn/database-agent.env"
-            LEGACY_DATABASE_UNIT_NAME="telvyn-agent-database.service"
-        else
-            mapfile -t legacy_env_files < <(find /etc -maxdepth 2 -type f -path '/etc/ispwatch-database-*/agent.env' 2>/dev/null | sort)
-            if [[ ${#legacy_env_files[@]} -eq 1 ]]; then
-                LEGACY_DATABASE_ENV_FILE="${legacy_env_files[0]}"
-                legacy_dir=$(basename "$(dirname "$LEGACY_DATABASE_ENV_FILE")")
-                LEGACY_DATABASE_UNIT_NAME="ispwatch-agent-database@${legacy_dir#ispwatch-database-}.service"
-            elif [[ ${#legacy_env_files[@]} -gt 1 ]]; then
-                echo "ERROR: foram encontrados vários Agents de Banco legados neste host." >&2
-                echo "       Mantenha apenas um Agent de Banco por servidor antes de atualizar." >&2
-                exit 1
-            fi
-        fi
-    fi
 else
     UNIT_NAME="$GENERIC_UNIT_NAME"
     UNIT_PATH="$GENERIC_UNIT_PATH"
@@ -184,10 +157,6 @@ if [[ -f "$UNIT_PATH" ]] && ! grep -Fq "EnvironmentFile=-${ENV_FILE}" "$UNIT_PAT
     echo "ERROR: ${UNIT_NAME} já pertence a outro perfil de Agent neste host." >&2
     exit 1
 fi
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && -f "$LEGACY_GENERIC_UNIT_PATH" ]]; then
-    echo "ERROR: Agent genérico legado detectado; atualize-o antes de instalar outro perfil neste host." >&2
-    exit 1
-fi
 
 # === Traps =============================================================
 on_error() {
@@ -197,7 +166,7 @@ on_error() {
     exit 1
 }
 on_exit() {
-    rm -f /tmp/ispwatch-install-*.tar.gz /tmp/ispwatch-install-*.sha256 2>/dev/null || true
+    rm -f /tmp/telvyn-install-*.tar.gz /tmp/telvyn-install-*.sha256 2>/dev/null || true
 }
 trap 'on_error $LINENO' ERR
 trap on_exit EXIT
@@ -244,37 +213,37 @@ fi
 # singleton por host: ele descobre todos os bancos visíveis para o usuário de
 # leitura configurado no PostgreSQL.
 INSTALLED=false
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-    if [[ -f "$ENV_FILE" ]] || [[ -f "$BINARY_PATH" ]] || [[ -n "$LEGACY_DATABASE_ENV_FILE" ]]; then
+if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
+    if [[ -f "$ENV_FILE" ]] || [[ -f "$BINARY_PATH" ]]; then
         INSTALLED=true
     fi
-elif [[ -f "$GENERIC_BINARY_PATH" ]] || [[ -f "$GENERIC_UNIT_PATH" ]] || [[ -f "$LEGACY_GENERIC_UNIT_PATH" ]]; then
+elif [[ -f "$GENERIC_BINARY_PATH" ]] || [[ -f "$GENERIC_UNIT_PATH" ]]; then
     INSTALLED=true
 fi
-if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
+if [[ "$TELVYN_UPGRADE" == "true" ]]; then
     if [[ "$INSTALLED" != "true" ]]; then
-        echo "ERROR: ISPWATCH_UPGRADE=true, mas não há a instalação selecionada do agent aqui para atualizar." >&2
-        echo "       Rode o instalador normal (sem ISPWATCH_UPGRADE) primeiro." >&2
+        echo "ERROR: TELVYN_UPGRADE=true, mas não há a instalação selecionada do agent aqui para atualizar." >&2
+        echo "       Rode o instalador normal (sem TELVYN_UPGRADE) primeiro." >&2
         exit 1
     fi
     echo "Modo upgrade: ${UNIT_NAME} detectado — troco apenas seu binário e reinicio (config preservada)."
-elif [[ "$INSTALLED" == "true" && "$ISPWATCH_REINSTALL" == "true" ]]; then
+elif [[ "$INSTALLED" == "true" && "$TELVYN_REINSTALL" == "true" ]]; then
     echo "Reinstalação: ${UNIT_NAME} detectado — token, configuração e binário passam a ser os deste comando."
 elif [[ "$INSTALLED" == "true" ]]; then
     echo "WARN: instalação existente do Agent Telvyn detectada para ${UNIT_NAME}." >&2
-    echo "      Para ATUALIZAR no lugar (preserva token/config), rode com ISPWATCH_UPGRADE=true:" >&2
-    if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+    echo "      Para ATUALIZAR no lugar (preserva token/config), rode com TELVYN_UPGRADE=true:" >&2
+    if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
         echo "        sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}" >&2
     else
-        echo "        curl -fsSL <URL> | ISPWATCH_UPGRADE=true sudo -E bash" >&2
+        echo "        curl -fsSL <URL> | TELVYN_UPGRADE=true sudo -E bash" >&2
     fi
     echo "      Para REINSTALAR com este comando (token novo; ex.: depois de excluir o monitoramento no Telvyn)," >&2
-    echo "      rode o mesmo comando acrescentando ISPWATCH_REINSTALL=true." >&2
+    echo "      rode o mesmo comando acrescentando TELVYN_REINSTALL=true." >&2
     exit 1
 fi
 
 # === Resolução de versão ===============================================
-if [[ "$ISPWATCH_AGENT_VERSION" == "latest" ]]; then
+if [[ "$TELVYN_AGENT_VERSION" == "latest" ]]; then
     VERSION=$(curl --proto '=https' --retry 5 --retry-delay 5 -sSL \
         "https://api.github.com/repos/$GITHUB_REPO/releases/latest" \
         | grep '"tag_name"' | head -1 | cut -d'"' -f4)
@@ -283,16 +252,16 @@ if [[ "$ISPWATCH_AGENT_VERSION" == "latest" ]]; then
         exit 1
     fi
 else
-    VERSION="$ISPWATCH_AGENT_VERSION"
+    VERSION="$TELVYN_AGENT_VERSION"
 fi
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
     echo "Instalando o Agent de Banco Telvyn ${VERSION} para linux-${GO_ARCH}"
 else
     echo "Instalando o Agent Telvyn ${VERSION} para linux-${GO_ARCH}"
 fi
 
-TARBALL="ispwatch-agent-${VERSION}-linux-${GO_ARCH}.tar.gz"
-URL="${ISPWATCH_DOWNLOAD_BASE}/${VERSION}/${TARBALL}"
+TARBALL="telvyn-agent-${VERSION}-linux-${GO_ARCH}.tar.gz"
+URL="${TELVYN_DOWNLOAD_BASE}/${VERSION}/${TARBALL}"
 
 # === Agentes de linguagem (Java/Node) ==================================
 # Pacote único da release (telvyn-language-agents-<versão>.tar.gz, conferido pelo .sha256), com o mesmo conteúdo da
@@ -300,12 +269,12 @@ URL="${ISPWATCH_DOWNLOAD_BASE}/${VERSION}/${TARBALL}"
 # com o que já carregaram e pegam a versão nova no próximo restart. No upgrade, as linguagens já instaladas são
 # atualizadas para a versão do Agent.
 LANGUAGE_AGENTS_DIR="/opt/telvyn"
-LANGUAGE_AGENTS_WANTED="${ISPWATCH_LANGUAGE_AGENTS// /}"
-if [[ -n "$LANGUAGE_AGENTS_WANTED" && "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-    echo "WARN: ISPWATCH_LANGUAGE_AGENTS é ignorado no Agent de Banco." >&2
+LANGUAGE_AGENTS_WANTED="${TELVYN_LANGUAGE_AGENTS// /}"
+if [[ -n "$LANGUAGE_AGENTS_WANTED" && "$TELVYN_AGENT_PROFILE" == "database" ]]; then
+    echo "WARN: TELVYN_LANGUAGE_AGENTS é ignorado no Agent de Banco." >&2
     LANGUAGE_AGENTS_WANTED=""
 fi
-if [[ "$ISPWATCH_UPGRADE" == "true" && -z "$LANGUAGE_AGENTS_WANTED" && "$ISPWATCH_AGENT_PROFILE" != "database" ]]; then
+if [[ "$TELVYN_UPGRADE" == "true" && -z "$LANGUAGE_AGENTS_WANTED" && "$TELVYN_AGENT_PROFILE" != "database" ]]; then
     for lang in java node; do
         if [[ -d "${LANGUAGE_AGENTS_DIR}/${lang}" ]]; then
             LANGUAGE_AGENTS_WANTED="${LANGUAGE_AGENTS_WANTED:+${LANGUAGE_AGENTS_WANTED},}${lang}"
@@ -315,7 +284,7 @@ fi
 for lang in ${LANGUAGE_AGENTS_WANTED//,/ }; do
     case "$lang" in
         java|node) ;;
-        *) echo "ERROR: ISPWATCH_LANGUAGE_AGENTS aceita java e node (recebi '${lang}')." >&2; exit 1 ;;
+        *) echo "ERROR: TELVYN_LANGUAGE_AGENTS aceita java e node (recebi '${lang}')." >&2; exit 1 ;;
     esac
 done
 
@@ -324,8 +293,8 @@ install_language_agents() {
     local bundle="telvyn-language-agents-${VERSION}"
     local work
     work=$(mktemp -d /tmp/telvyn-language-agents-XXXXXX)
-    curl --proto '=https' --retry 5 --retry-delay 5 -fsSL -o "${work}/${bundle}.tar.gz"         "${ISPWATCH_DOWNLOAD_BASE}/${VERSION}/${bundle}.tar.gz"
-    curl --proto '=https' --retry 5 --retry-delay 5 -fsSL -o "${work}/${bundle}.tar.gz.sha256"         "${ISPWATCH_DOWNLOAD_BASE}/${VERSION}/${bundle}.tar.gz.sha256"
+    curl --proto '=https' --retry 5 --retry-delay 5 -fsSL -o "${work}/${bundle}.tar.gz"         "${TELVYN_DOWNLOAD_BASE}/${VERSION}/${bundle}.tar.gz"
+    curl --proto '=https' --retry 5 --retry-delay 5 -fsSL -o "${work}/${bundle}.tar.gz.sha256"         "${TELVYN_DOWNLOAD_BASE}/${VERSION}/${bundle}.tar.gz.sha256"
     (cd "$work" && sha256sum -c "${bundle}.tar.gz.sha256")
     tar -xzf "${work}/${bundle}.tar.gz" -C "$work"
     mkdir -p "$LANGUAGE_AGENTS_DIR"
@@ -354,15 +323,15 @@ install_language_agents() {
 }
 
 # === Download + verify =================================================
-TMP_TARBALL="/tmp/ispwatch-install-${VERSION}-${GO_ARCH}.tar.gz"
-TMP_SHA="/tmp/ispwatch-install-${VERSION}-${GO_ARCH}.sha256"
+TMP_TARBALL="/tmp/telvyn-install-${VERSION}-${GO_ARCH}.tar.gz"
+TMP_SHA="/tmp/telvyn-install-${VERSION}-${GO_ARCH}.sha256"
 
 curl --proto '=https' --retry 5 --retry-delay 5 -fsSL -o "$TMP_TARBALL" "$URL"
 curl --proto '=https' --retry 5 --retry-delay 5 -fsSL -o "$TMP_SHA" "${URL}.sha256"
 
 # sha256sum -c espera o arquivo no diretório corrente. Mover o sidecar pra um
 # working dir temporário evita conflito com nomes absolutos.
-WORK_DIR=$(mktemp -d /tmp/ispwatch-install-XXXXXX)
+WORK_DIR=$(mktemp -d /tmp/telvyn-install-XXXXXX)
 cp "$TMP_TARBALL" "${WORK_DIR}/${TARBALL}"
 # O .sha256 publicado pelo release pipeline contém apenas o basename do tarball.
 cp "$TMP_SHA" "${WORK_DIR}/${TARBALL}.sha256"
@@ -379,37 +348,37 @@ mkdir -p "$CONFIG_DIR" "$LIB_DIR" "$LOG_DIR" "$BINARY_DIR"
 
 # === Extract + install =================================================
 tar -xzf "${WORK_DIR}/${TARBALL}" -C "$WORK_DIR"
-EXTRACTED_DIR=$(find "$WORK_DIR" -maxdepth 1 -type d -name "ispwatch-agent-${VERSION}-*" | head -1)
+EXTRACTED_DIR=$(find "$WORK_DIR" -maxdepth 1 -type d -name "telvyn-agent-${VERSION}-*" | head -1)
 if [[ -z "$EXTRACTED_DIR" ]]; then
     echo "ERROR: diretório extraído não encontrado em $WORK_DIR." >&2
     exit 1
 fi
 
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && ! -f "$EXTRACTED_DIR/telvyn-agent.service" ]]; then
+if [[ "$TELVYN_AGENT_PROFILE" == "database" && ! -f "$EXTRACTED_DIR/telvyn-agent.service" ]]; then
     echo "ERROR: o release ${VERSION} não contém a unit do Agent de Banco; escolha uma release compatível." >&2
     exit 1
 fi
-install -m 0755 -o root -g root "$EXTRACTED_DIR/ispwatch-agent" "$BINARY_PATH"
+install -m 0755 -o root -g root "$EXTRACTED_DIR/telvyn-agent" "$BINARY_PATH"
 if [[ -d "$EXTRACTED_DIR/integrations" ]]; then
     install -d -m 0755 /opt/telvyn/integrations
     cp -R "$EXTRACTED_DIR/integrations/." /opt/telvyn/integrations/
     chown -R root:root /opt/telvyn/integrations
     chmod -R go-w /opt/telvyn/integrations
 fi
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
     install -m 0644 -o root -g root "$EXTRACTED_DIR/telvyn-agent.service" "$UNIT_PATH"
     install -m 0644 -o root -g root "$EXTRACTED_DIR/telvyn-agent-update.service" "$DATABASE_UPDATE_UNIT_PATH"
     install -d -m 0755 -o root -g root "$(dirname "$DATABASE_UPDATE_INSTALLER")"
     install -m 0755 -o root -g root "$EXTRACTED_DIR/install.sh" "$DATABASE_UPDATE_INSTALLER"
 else
-    install -m 0644 "$EXTRACTED_DIR/ispwatch-agent.service" "$UNIT_PATH"
+    install -m 0644 "$EXTRACTED_DIR/telvyn-agent.service" "$UNIT_PATH"
 fi
 
 # === F2b: helper de atualização remota (privilegiado) ==================
 # O agente roda SEM privilégio (User=telvyn) e não pode trocar o próprio
 # binário nem se reiniciar. A atualização é delegada ao gerenciador de pacotes;
 # quem APLICA o upgrade é um componente ROOT à parte — este helper. Fluxo:
-#   config-pull manda should_update → agente escreve /var/lib/ispwatch/update-requested
+#   config-pull manda should_update → agente escreve /var/lib/telvyn/update-requested
 #   → o .path (root) observa → dispara o .service (root) → roda o upgrade oficial.
 # O marcador NÃO carrega payload (sem versão/URL vindo do servidor): um agente
 # comprometido não faz o root rodar comando arbitrário — o helper roda SEMPRE o
@@ -417,109 +386,82 @@ fi
 # tanto no install novo quanto no upgrade (idempotente). O profile database
 # tem seu próprio helper: o serviço e seu EnvironmentFile são únicos no host,
 # então não há UUID para o operador informar.
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
 mkdir -p "$(dirname "$DATABASE_UPDATE_SCRIPT")"
 cat > "$DATABASE_UPDATE_SCRIPT" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-exec env ISPWATCH_UPGRADE=true ISPWATCH_AGENT_PROFILE=database \\
+exec env TELVYN_UPGRADE=true TELVYN_AGENT_PROFILE=database \\
   "${DATABASE_UPDATE_INSTALLER}"
 EOF
 chmod 0755 "$DATABASE_UPDATE_SCRIPT"
 chown root:root "$DATABASE_UPDATE_SCRIPT"
-elif [[ "$ISPWATCH_AGENT_PROFILE" != "database" ]]; then
-UPGRADE_SCRIPT_URL="${ISPWATCH_INSTALL_SCRIPT_URL:-https://raw.githubusercontent.com/${GITHUB_REPO}/main/packaging/install.sh}"
-cat > "$INSTALL_DIR/ispwatch-agent-upgrade" <<EOF
+elif [[ "$TELVYN_AGENT_PROFILE" != "database" ]]; then
+UPGRADE_SCRIPT_URL="${TELVYN_INSTALL_SCRIPT_URL:-https://raw.githubusercontent.com/${GITHUB_REPO}/main/packaging/install.sh}"
+cat > "$INSTALL_DIR/telvyn-agent-upgrade" <<EOF
 #!/usr/bin/env bash
-# Gerado por install.sh (F2b). Roda como ROOT via ispwatch-agent-update.service.
+# Gerado por install.sh (F2b). Roda como ROOT via telvyn-agent-update.service.
 set -euo pipefail
 # Apaga o marcador ANTES do upgrade: o install.sh (chamado abaixo) re-liga o
 # .path, e se o marcador ainda existisse o .path re-dispararia este .service →
 # loop. Removendo primeiro, o re-enable não re-dispara. O ExecStopPost do
 # .service é rede de segurança pro caso de falha antes daqui.
-rm -f /var/lib/ispwatch/update-requested
-logger -t ispwatch-agent-upgrade "atualização disparada — rodando upgrade oficial"
-curl --proto '=https' --retry 5 --retry-delay 5 -fsSL "${UPGRADE_SCRIPT_URL}" | ISPWATCH_UPGRADE=true bash
-logger -t ispwatch-agent-upgrade "upgrade concluído"
+rm -f /var/lib/telvyn/update-requested
+logger -t telvyn-agent-upgrade "atualização disparada — rodando upgrade oficial"
+curl --proto '=https' --retry 5 --retry-delay 5 -fsSL "${UPGRADE_SCRIPT_URL}" | TELVYN_UPGRADE=true bash
+logger -t telvyn-agent-upgrade "upgrade concluído"
 EOF
-chmod 0755 "$INSTALL_DIR/ispwatch-agent-upgrade"
-chown root:root "$INSTALL_DIR/ispwatch-agent-upgrade"
+chmod 0755 "$INSTALL_DIR/telvyn-agent-upgrade"
+chown root:root "$INSTALL_DIR/telvyn-agent-upgrade"
 
-cat > /etc/systemd/system/ispwatch-agent-update.service <<'EOF'
+cat > /etc/systemd/system/telvyn-agent-update.service <<'EOF'
 [Unit]
-Description=IspWatch Agent — helper de atualização (root, F2b)
-Documentation=https://docs.ispwatch.com/agent
+Description=Telvyn Agent — helper de atualização (root, F2b)
+Documentation=https://docs.telvyn.com/agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/ispwatch-agent-upgrade
+ExecStart=/usr/local/bin/telvyn-agent-upgrade
 # Remove o marcador ao fim (sucesso OU falha) pra rearmar o .path e não repetir.
-ExecStopPost=-/bin/rm -f /var/lib/ispwatch/update-requested
+ExecStopPost=-/bin/rm -f /var/lib/telvyn/update-requested
 TimeoutStartSec=300
 EOF
 
-cat > /etc/systemd/system/ispwatch-agent-update.path <<'EOF'
+cat > /etc/systemd/system/telvyn-agent-update.path <<'EOF'
 [Unit]
-Description=IspWatch Agent — observa pedido de atualização remota (F2b)
+Description=Telvyn Agent — observa pedido de atualização remota (F2b)
 
 [Path]
 # O agente (sem privilégio) escreve este arquivo quando o config-pull manda
 # should_update. A EXISTÊNCIA dispara o .service root (o gatilho não tem payload).
-PathExists=/var/lib/ispwatch/update-requested
-Unit=ispwatch-agent-update.service
+PathExists=/var/lib/telvyn/update-requested
+Unit=telvyn-agent-update.service
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now ispwatch-agent-update.path
+systemctl enable --now telvyn-agent-update.path
 fi
 
 # === Upgrade: binário+unit trocados → reinicia e sai ===================
 # Preserva o EnvironmentFile (token/config/toggles) — não passa pela reescrita
-# abaixo. Na migração da unit antiga, copia o segredo sem o exibir e troca
-# apenas o serviço do Agent de Banco.
-if [[ "$ISPWATCH_UPGRADE" == "true" ]]; then
-    if [[ -n "$LEGACY_DATABASE_ENV_FILE" ]]; then
-        grep -Ev '^(ISPWATCH_STATE_DIR|ISPWATCH_LOGS_CURSOR_PATH|ISPWATCH_DATABASE_REVOKED_MARKER_PATH)=' \
-            "$LEGACY_DATABASE_ENV_FILE" > "$ENV_FILE"
-        {
-            echo "ISPWATCH_STATE_DIR=${LIB_DIR}"
-            echo "ISPWATCH_LOGS_CURSOR_PATH=${LIB_DIR}/log_cursors.json"
-            echo "ISPWATCH_DATABASE_REVOKED_MARKER_PATH=${LIB_DIR}/database-agent-revoked"
-        } >> "$ENV_FILE"
-        chown "root:${SERVICE_GROUP}" "$ENV_FILE"
-        chmod 0640 "$ENV_FILE"
-    fi
+# abaixo.
+if [[ "$TELVYN_UPGRADE" == "true" ]]; then
     # A unit pode ter mudado de usuário entre versões. Ajusta ownership antes
     # do restart para que o novo usuário consiga ler a configuração e usar o
     # WAL/arquivos de estado sem tornar o processo privilegiado.
     chown -R "$SERVICE_USER:$SERVICE_GROUP" "$LIB_DIR" "$LOG_DIR"
     chown "root:$SERVICE_GROUP" "$CONFIG_DIR" "$ENV_FILE" 2>/dev/null || true
     systemctl daemon-reload
-    if [[ -n "$LEGACY_DATABASE_UNIT_NAME" ]]; then
-        systemctl disable --now "$LEGACY_DATABASE_UNIT_NAME" || true
-        systemctl enable --now "$UNIT_NAME"
-    elif [[ "$ISPWATCH_AGENT_PROFILE" != "database" && -f "$LEGACY_GENERIC_UNIT_PATH" ]]; then
-        systemctl disable --now "$LEGACY_GENERIC_UNIT_NAME"
-        if ! systemctl enable --now "$UNIT_NAME" || ! systemctl is-active --quiet "$UNIT_NAME"; then
-            systemctl disable --now "$UNIT_NAME" || true
-            systemctl enable --now "$LEGACY_GENERIC_UNIT_NAME" || true
-            echo "ERROR: migração para ${UNIT_NAME} falhou; serviço legado restaurado." >&2
-            exit 1
-        fi
-        rm -f -- "$LEGACY_GENERIC_UNIT_PATH"
-        systemctl daemon-reload
-    else
-        systemctl restart "$UNIT_NAME"
-    fi
+    systemctl restart "$UNIT_NAME"
     rm -rf "$WORK_DIR"
     install_language_agents
     echo ""
-    if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+    if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
         echo "OK — Agent atualizado para ${VERSION} (config preservada)."
         echo "Status:     sudo systemctl status ${UNIT_NAME}"
         echo "Atualizar:  sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}"
@@ -538,18 +480,18 @@ chmod 0750 "$LOG_DIR"
 chown "root:$SERVICE_GROUP" "$CONFIG_DIR"
 chmod 0750 "$CONFIG_DIR"
 
-# Cleanup do work dir (o trap on_exit cobre os /tmp/ispwatch-install-*.*).
+# Cleanup do work dir (o trap on_exit cobre os /tmp/telvyn-install-*.*).
 rm -rf "$WORK_DIR"
 
 # === EnvironmentFile do agent (certless) ===============================
 # O systemd lê este arquivo (EnvironmentFile) e injeta as vars no processo do
 # agent. Modo 0640 root:<grupo-da-unit>: contém o token iwI_ (segredo),
 # legível só pelo root e pelo usuário daquela unit.
-HOSTNAME_VALUE="${ISPWATCH_HOSTNAME:-$(hostname -f 2>/dev/null || hostname)}"
+HOSTNAME_VALUE="${TELVYN_HOSTNAME:-$(hostname -f 2>/dev/null || hostname)}"
 DATABASE_REVOKED_MARKER_PATH=""
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-    if [[ -n "${ISPWATCH_DATABASE_REVOKED_MARKER_PATH:-}" && "${ISPWATCH_DATABASE_REVOKED_MARKER_PATH:-}" != "${LIB_DIR}/database-agent-revoked" ]]; then
-        echo "WARN: ISPWATCH_DATABASE_REVOKED_MARKER_PATH é ignorado no instalador de banco; o marcador fica isolado no estado da instância." >&2
+if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
+    if [[ -n "${TELVYN_DATABASE_REVOKED_MARKER_PATH:-}" && "${TELVYN_DATABASE_REVOKED_MARKER_PATH:-}" != "${LIB_DIR}/database-agent-revoked" ]]; then
+        echo "WARN: TELVYN_DATABASE_REVOKED_MARKER_PATH é ignorado no instalador de banco; o marcador fica isolado no estado da instância." >&2
     fi
     DATABASE_REVOKED_MARKER_PATH="${LIB_DIR}/database-agent-revoked"
 fi
@@ -558,45 +500,45 @@ umask 077
 {
     echo "# Gerado por install.sh — modelo certless (Bearer iwI_)."
     echo "# Edite à vontade e rode: sudo systemctl restart ${UNIT_NAME}"
-    echo "ISPWATCH_INGEST_URL=${ISPWATCH_INGEST_URL}"
-    echo "ISPWATCH_INGEST_TOKEN=${ISPWATCH_INGEST_TOKEN}"
-    echo "ISPWATCH_AGENT_KIND=${ISPWATCH_AGENT_KIND}"
-    if [[ -n "$ISPWATCH_AGENT_PROFILE" ]]; then
-        echo "ISPWATCH_AGENT_PROFILE=${ISPWATCH_AGENT_PROFILE}"
+    echo "TELVYN_INGEST_URL=${TELVYN_INGEST_URL}"
+    echo "TELVYN_INGEST_TOKEN=${TELVYN_INGEST_TOKEN}"
+    echo "TELVYN_AGENT_KIND=${TELVYN_AGENT_KIND}"
+    if [[ -n "$TELVYN_AGENT_PROFILE" ]]; then
+        echo "TELVYN_AGENT_PROFILE=${TELVYN_AGENT_PROFILE}"
     fi
-    if [[ -n "$ISPWATCH_DATABASE_INSTALLATION_ID" ]]; then
-        echo "ISPWATCH_DATABASE_INSTALLATION_ID=${ISPWATCH_DATABASE_INSTALLATION_ID}"
+    if [[ -n "$TELVYN_DATABASE_INSTALLATION_ID" ]]; then
+        echo "TELVYN_DATABASE_INSTALLATION_ID=${TELVYN_DATABASE_INSTALLATION_ID}"
     fi
-    if [[ -n "$ISPWATCH_DATABASE_ENROLLMENT_ID" ]]; then
-        echo "ISPWATCH_DATABASE_ENROLLMENT_ID=${ISPWATCH_DATABASE_ENROLLMENT_ID}"
+    if [[ -n "$TELVYN_DATABASE_ENROLLMENT_ID" ]]; then
+        echo "TELVYN_DATABASE_ENROLLMENT_ID=${TELVYN_DATABASE_ENROLLMENT_ID}"
     fi
-    if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-        echo "ISPWATCH_DATABASE_ENGINE=${ISPWATCH_DATABASE_ENGINE}"
+    if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
+        echo "TELVYN_DATABASE_ENGINE=${TELVYN_DATABASE_ENGINE}"
     fi
     if [[ -n "$DATABASE_REVOKED_MARKER_PATH" ]]; then
-        echo "ISPWATCH_DATABASE_REVOKED_MARKER_PATH=${DATABASE_REVOKED_MARKER_PATH}"
+        echo "TELVYN_DATABASE_REVOKED_MARKER_PATH=${DATABASE_REVOKED_MARKER_PATH}"
     fi
-    if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
-        echo "ISPWATCH_DATABASE_AGENT_ID_PATH=${LIB_DIR}/agent-id"
+    if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
+        echo "TELVYN_DATABASE_AGENT_ID_PATH=${LIB_DIR}/agent-id"
     fi
-    echo "ISPWATCH_INSTALL_MODE=linux"
-    echo "ISPWATCH_NODE_NAME=${HOSTNAME_VALUE}"
+    echo "TELVYN_INSTALL_MODE=linux"
+    echo "TELVYN_NODE_NAME=${HOSTNAME_VALUE}"
     # Fila durável de métricas/APM: payloads não confirmados sobrevivem ao
     # restart do serviço e ficam no mesmo diretório persistente do agent.
-    echo "ISPWATCH_STATE_DIR=${LIB_DIR}"
+    echo "TELVYN_STATE_DIR=${LIB_DIR}"
     # Cursor dos logs (se ligados) fica sob o dir gravável do serviço.
-    echo "ISPWATCH_LOGS_CURSOR_PATH=${LIB_DIR}/log_cursors.json"
+    echo "TELVYN_LOGS_CURSOR_PATH=${LIB_DIR}/log_cursors.json"
 } > "$ENV_FILE"
 
-# Repasse dos toggles: qualquer ISPWATCH_*/COLLECTOR_LOG_LEVEL que o operador
+# Repasse dos toggles: qualquer TELVYN_*/COLLECTOR_LOG_LEVEL que o operador
 # passou (via sudo -E) vai pro agent.env, MENOS as vars de controle do próprio
 # instalador (já consumidas acima). Mantém o contrato "1 agente, toggles" sem
 # este script precisar conhecer cada capability — evita a defasagem que
 # quebrava a instalação quando o front ganhava um toggle novo.
-INSTALLER_VARS=" ISPWATCH_AGENT_VERSION ISPWATCH_GITHUB_REPO ISPWATCH_DOWNLOAD_BASE ISPWATCH_INSTALL_ONLY ISPWATCH_HOSTNAME ISPWATCH_ENROLL_TOKEN ISPWATCH_SITE ISPWATCH_DOCKER_INTEGRATION ISPWATCH_INGEST_URL ISPWATCH_INGEST_TOKEN ISPWATCH_AGENT_KIND ISPWATCH_AGENT_PROFILE ISPWATCH_DATABASE_INSTALLATION_ID ISPWATCH_DATABASE_ENROLLMENT_ID ISPWATCH_DATABASE_ENGINE ISPWATCH_DATABASE_REVOKED_MARKER_PATH ISPWATCH_UPGRADE ISPWATCH_INSTALL_SCRIPT_URL ISPWATCH_NODE_NAME ISPWATCH_STATE_DIR ISPWATCH_LOGS_CURSOR_PATH ISPWATCH_REINSTALL ISPWATCH_LANGUAGE_AGENTS "
+INSTALLER_VARS=" TELVYN_AGENT_VERSION TELVYN_GITHUB_REPO TELVYN_DOWNLOAD_BASE TELVYN_INSTALL_ONLY TELVYN_HOSTNAME TELVYN_ENROLL_TOKEN TELVYN_SITE TELVYN_DOCKER_INTEGRATION TELVYN_INGEST_URL TELVYN_INGEST_TOKEN TELVYN_AGENT_KIND TELVYN_AGENT_PROFILE TELVYN_DATABASE_INSTALLATION_ID TELVYN_DATABASE_ENROLLMENT_ID TELVYN_DATABASE_ENGINE TELVYN_DATABASE_REVOKED_MARKER_PATH TELVYN_UPGRADE TELVYN_INSTALL_SCRIPT_URL TELVYN_NODE_NAME TELVYN_STATE_DIR TELVYN_LOGS_CURSOR_PATH TELVYN_REINSTALL TELVYN_LANGUAGE_AGENTS "
 for name in $(compgen -v); do
     case "$name" in
-        ISPWATCH_*|COLLECTOR_LOG_LEVEL|TELVYN_EXTERNAL_*) ;;
+        TELVYN_*|COLLECTOR_LOG_LEVEL|TELVYN_EXTERNAL_*) ;;
         *) continue ;;
     esac
     case "$INSTALLER_VARS" in *" $name "*) continue ;; esac
@@ -608,7 +550,7 @@ umask 022
 # iniciar mesmo se uma instalação REMOVIDA tinha deixado o marcador local. O
 # marcador nunca é limpo pelo binário após um HTTP 410; só uma instalação nova
 # explícita do portal pode reativar a coleta.
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
     rm -f -- "$DATABASE_REVOKED_MARKER_PATH"
     # A fresh database installation is a new Agent identity. The machine UUID
     # comes from the OS and remains unchanged, so Telvyn can transfer the
@@ -620,13 +562,13 @@ chown "root:$SERVICE_GROUP" "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
 
 # === Docker integration (opt-in) =======================================
-# ISPWATCH_DOCKER_INTEGRATION=true dá ao usuário do serviço acesso ao socket
+# TELVYN_DOCKER_INTEGRATION=true dá ao usuário do serviço acesso ao socket
 # do Docker (/var/run/docker.sock) via grupo `docker`. Esse grupo é
 # root-equivalente no host (membros podem montar / como root via container);
 # por isso é opt-in explícito. Default OFF.
-if [[ "$ISPWATCH_AGENT_PROFILE" == "database" && "${ISPWATCH_DOCKER_INTEGRATION:-false}" == "true" ]]; then
+if [[ "$TELVYN_AGENT_PROFILE" == "database" && "${TELVYN_DOCKER_INTEGRATION:-false}" == "true" ]]; then
     echo "WARN: integração Docker ignorada para o profile database; ele não coleta containers nem acessa docker.sock." >&2
-elif [[ "${ISPWATCH_DOCKER_INTEGRATION:-false}" == "true" ]]; then
+elif [[ "${TELVYN_DOCKER_INTEGRATION:-false}" == "true" ]]; then
     # groupadd -f cria o grupo se ainda não existir (hosts sem Docker). Quando
     # o operador instalar Docker depois, o grupo é o mesmo (gid pode mudar, mas
     # a pertinência permanece pelo nome).
@@ -641,26 +583,26 @@ install_language_agents
 
 # === Start =============================================================
 systemctl daemon-reload
-if [[ "${ISPWATCH_INSTALL_ONLY:-}" != "true" ]]; then
+if [[ "${TELVYN_INSTALL_ONLY:-}" != "true" ]]; then
     systemctl enable --now "$UNIT_NAME"
     # Na reinstalação o serviço já rodava com o token antigo: enable --now não o reinicia.
-    if [[ "$ISPWATCH_REINSTALL" == "true" ]]; then
+    if [[ "$TELVYN_REINSTALL" == "true" ]]; then
         systemctl restart "$UNIT_NAME"
     fi
     echo ""
-    if [[ "$ISPWATCH_AGENT_PROFILE" == "database" ]]; then
+    if [[ "$TELVYN_AGENT_PROFILE" == "database" ]]; then
         echo "OK — Agent instalado e iniciado."
         echo "Status:     sudo systemctl status ${UNIT_NAME}"
         echo "Reiniciar:  sudo systemctl restart ${UNIT_NAME}"
         echo "Atualizar:  sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}"
         echo "Logs:       sudo journalctl -u ${UNIT_NAME} -f"
     else
-        echo "OK — ${UNIT_NAME} instalado e iniciado (kind=${ISPWATCH_AGENT_KIND})."
+        echo "OK — ${UNIT_NAME} instalado e iniciado (kind=${TELVYN_AGENT_KIND})."
         echo "Status: systemctl status ${UNIT_NAME}"
         echo "Logs:   journalctl -u ${UNIT_NAME} -f"
     fi
 else
     echo ""
-    echo "OK — ${UNIT_NAME} instalado (ISPWATCH_INSTALL_ONLY=true; não iniciado)."
+    echo "OK — ${UNIT_NAME} instalado (TELVYN_INSTALL_ONLY=true; não iniciado)."
     echo "Iniciar: sudo systemctl enable --now ${UNIT_NAME}"
 fi

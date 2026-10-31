@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // Forwarder agrega spans recebidos via Push, faz flush periódico em

@@ -7,7 +7,7 @@ import (
 	"log"
 	"math"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 

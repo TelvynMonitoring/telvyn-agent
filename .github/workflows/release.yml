@@ -35,7 +35,7 @@ jobs:
             v="${{ github.event.inputs.version }}"
           fi
           # O nome do asset embute a versão COM o v (bate com o tag_name que o
-          # install.sh resolve via GitHub API). Ex: ispwatch-agent-v0.3.0-linux-amd64.tar.gz
+          # install.sh resolve via GitHub API). Ex: telvyn-agent-v0.3.0-linux-amd64.tar.gz
           if ! printf '%s' "$v" | grep -Eq '^v[0-9A-Za-z._-]+$'; then
             echo "::error::versão '$v' inválida (esperado vX.Y.Z)"; exit 1
           fi
@@ -70,7 +70,7 @@ jobs:
       - name: Build multi-arch tarballs
         run: make release-multiarch VERSION=${{ steps.vars.outputs.version }}
 
-      # Agentes Java/Node para máquinas comuns (ISPWATCH_LANGUAGE_AGENTS no install.sh): um pacote só, sem
+      # Agentes Java/Node para máquinas comuns (TELVYN_LANGUAGE_AGENTS no install.sh): um pacote só, sem
       # arquitetura (jars e JavaScript; as dependências nativas opcionais do Node trazem binários prontos).
       - uses: actions/setup-java@v4
         with:

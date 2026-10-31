@@ -1,4 +1,4 @@
-# IspWatch SNMP profile — cisco-ios. Schema reference: RESEARCH.md Pattern 1.
+# Telvyn SNMP profile — cisco-ios. Schema reference: RESEARCH.md Pattern 1.
 #
 # Cobre Cisco IOS / IOS XE classico — sysObjectID prefix 1.3.6.1.4.1.9.1.*
 # (catalogo enterprise Cisco). Para NX-OS use cisco-nx-os.yaml (prefix

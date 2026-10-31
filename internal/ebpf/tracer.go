@@ -20,9 +20,9 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/perf"
-	"github.com/ispwatch/collector/internal/ebpf/common"
-	"github.com/ispwatch/collector/internal/ebpf/l7"
-	"github.com/ispwatch/collector/internal/ebpf/proc"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/common"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/l7"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/proc"
 	"github.com/vishvananda/netns"
 	"golang.org/x/sys/unix"
 	"inet.af/netaddr"
@@ -342,9 +342,9 @@ func (t *Tracer) ebpf(ch chan<- Event) error {
 	// spikes under pgbench-style sustained load (~1k qps). 256KB ≈ 2k events
 	// per CPU at 128B avg event size, which absorbs the slowest userland
 	// drain (gRPC backpressure) without dropping. Override via env
-	// ISPWATCH_EBPF_L7_BUFFER_PAGES if needed.
+	// TELVYN_EBPF_L7_BUFFER_PAGES if needed.
 	l7Pages := 64
-	if v := os.Getenv("ISPWATCH_EBPF_L7_BUFFER_PAGES"); v != "" {
+	if v := os.Getenv("TELVYN_EBPF_L7_BUFFER_PAGES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			l7Pages = n
 		}

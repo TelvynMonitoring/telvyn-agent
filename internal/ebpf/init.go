@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
-	"github.com/ispwatch/collector/internal/ebpf/proc"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/proc"
 	"github.com/florianl/go-conntrack"
 	"github.com/vishvananda/netns"
 	"inet.af/netaddr"

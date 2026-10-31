@@ -30,7 +30,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // fakeRedisFetcher devolve INFO fixture estática. Permite parametrizar

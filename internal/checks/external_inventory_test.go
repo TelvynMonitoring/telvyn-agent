@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ispwatch/collector/internal/inventory"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/inventory"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 func TestExternalInventoryReportEmptyAndFailure(t *testing.T) {

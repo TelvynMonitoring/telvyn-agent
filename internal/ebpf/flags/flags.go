@@ -73,7 +73,7 @@ func GetString(fl *string) string {
 	return *fl
 }
 
-// ISPWATCH: init() upstream chamava kingpin.Parse() no startup, consumindo
+// TELVYN: init() upstream chamava kingpin.Parse() no startup, consumindo
 // os.Args do binário. Isso quebra o parsing do nosso main.go (collector
 // flags via internal/config + manual switch pra --enroll-only/--webhook).
 // Desabilitamos — as vars ficam nos defaults declarados acima, e quem

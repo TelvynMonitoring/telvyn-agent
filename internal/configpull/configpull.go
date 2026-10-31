@@ -20,7 +20,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"github.com/ispwatch/collector/internal/apm/sampler"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/sampler"
 	"io"
 	"log/slog"
 	"net/http"
@@ -32,9 +32,9 @@ import (
 
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/ispwatch/collector/internal/apm/processing"
-	"github.com/ispwatch/collector/internal/snmp"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/processing"
+	"github.com/telvynmonitoring/telvyn-agent/internal/snmp"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // Applier é a interface mínima exposta pelo scheduler pra receber deltas.

@@ -3,7 +3,7 @@ package otlp
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/ispwatch/collector/internal/apm/primarytags"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/primarytags"
 	"sort"
 	"strings"
 

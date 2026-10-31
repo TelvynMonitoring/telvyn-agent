@@ -21,7 +21,7 @@ serviço do backend é iniciado ou parado por este compose.
 3. Exporte o token apenas na sessão local:
 
    ```powershell
-   $env:ISPWATCH_INGEST_TOKEN = "iwI_..."
+   $env:TELVYN_INGEST_TOKEN = "iwI_..."
    ```
 
 ## Subir o agent real
@@ -33,7 +33,7 @@ docker compose logs -f agent
 ```
 
 O outbox fica no volume Docker `telvyn-agent-persistence-lab-state` e é
-montado em `/var/lib/ispwatch`. Não use `docker compose down -v` durante o
+montado em `/var/lib/telvyn`. Não use `docker compose down -v` durante o
 teste, porque isso apaga o estado persistido do laboratório.
 
 ## Validar o restart sem perder métricas
@@ -42,7 +42,7 @@ O comando abaixo desconecta somente o agent da rede do backend. O Quarkus
 continua rodando:
 
 ```powershell
-docker network disconnect ispwatch-dev_ispwatch-net telvyn-agent-persistence-lab-agent-1
+docker network disconnect telvyn-dev_telvyn-net telvyn-agent-persistence-lab-agent-1
 ```
 
 Aguarde um ciclo de coleta e reinicie somente o agent:
@@ -54,7 +54,7 @@ docker compose restart agent
 Depois reconecte o agent ao backend:
 
 ```powershell
-docker network connect ispwatch-dev_ispwatch-net telvyn-agent-persistence-lab-agent-1
+docker network connect telvyn-dev_telvyn-net telvyn-agent-persistence-lab-agent-1
 docker compose logs -f agent
 ```
 

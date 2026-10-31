@@ -1,5 +1,5 @@
-ISPWatch Collector Agent
-Copyright (C) ISPWatch
+Telvyn Collector Agent
+Copyright (C) Telvyn
 
 This product includes software derived from the coroot-node-agent project
 (https://github.com/coroot/coroot-node-agent), Copyright (C) Coroot Labs,
@@ -18,9 +18,9 @@ The derived code lives under internal/ebpf/ and includes:
     (internal/ebpf/common/, internal/ebpf/proc/, internal/ebpf/cgroup/,
     internal/ebpf/flags/)
 
-Modifications made by ISPWatch to the upstream code include (but are not
+Modifications made by Telvyn to the upstream code include (but are not
 limited to): import path rewrites, package renames, integration with the
-ISPWatch agent transport (gRPC StreamSpans) and metrics pipeline.
+Telvyn agent transport (gRPC StreamSpans) and metrics pipeline.
 
 Apache License, Version 2.0 — see LICENSE-APACHE-2.0 in this directory for
 the full license text.

@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	metricscolpb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -127,7 +127,7 @@ func TestForbiddenSignalDoesNotBlockHostMetricsQueue(t *testing.T) {
 }
 
 func TestDatabaseProfileMetricsUseExporterInstallationID(t *testing.T) {
-	t.Setenv("ISPWATCH_STATE_DIR", t.TempDir())
+	t.Setenv("TELVYN_STATE_DIR", t.TempDir())
 	var body []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/ingest/v1/metrics" {

@@ -1,24 +1,24 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}
+  name: {{ include "telvyn-agent.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "ispwatch-agent.labels" . | nindent 4 }}
+    {{- include "telvyn-agent.labels" . | nindent 4 }}
 spec:
   selector:
     matchLabels:
-      {{- include "ispwatch-agent.selectorLabels" . | nindent 6 }}
+      {{- include "telvyn-agent.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "ispwatch-agent.selectorLabels" . | nindent 8 }}
+        {{- include "telvyn-agent.selectorLabels" . | nindent 8 }}
       {{- with .Values.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "ispwatch-agent.fullname" . }}
+      serviceAccountName: {{ include "telvyn-agent.fullname" . }}
       hostNetwork: {{ .Values.hostNetwork }}
       {{- if .Values.hostNetwork }}
       # Sob hostNetwork o pod herda o resolv.conf do nó e perde o DNS do
@@ -55,7 +55,7 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
-            - name: ISPWATCH_HOST_TAGS
+            - name: TELVYN_HOST_TAGS
               value: {{ .Values.hostTags | default dict | toJson | quote }}
             - name: NODE_NAME
               valueFrom:
@@ -69,28 +69,28 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            - name: ISPWATCH_CLUSTER
+            - name: TELVYN_CLUSTER
               value: {{ .Values.clusterName | quote }}
             # Modo ingest certless: manda OTLP com token Bearer pro
             # gateway /api/ingest/v1. Sem enrollment, sem mTLS, sem cert.
-            - name: ISPWATCH_INGEST_URL
+            - name: TELVYN_INGEST_URL
               value: {{ required "values.ingest.url é obrigatório (modo certless)" .Values.ingest.url | quote }}
-            - name: ISPWATCH_INGEST_TOKEN
+            - name: TELVYN_INGEST_TOKEN
               value: {{ required "values.ingest.token é obrigatório (modo certless)" .Values.ingest.token | quote }}
             # Fila durável de métricas/APM; o volume usa o estado do nó, não
             # emptyDir, para sobreviver à recriação do pod.
-            - name: ISPWATCH_STATE_DIR
-              value: "/var/lib/ispwatch-collector"
+            - name: TELVYN_STATE_DIR
+              value: "/var/lib/telvyn-collector"
             # Coleta de k8s no modo ingest: registra o nó + roda o kubelet
             # check local (pods/containers). O SA token é montado em
             # /var/run/secrets/.../token; kubelet self-signed → insecure.
-            - name: ISPWATCH_AGENT_KIND
+            - name: TELVYN_AGENT_KIND
               value: "k8s.node"
-            - name: ISPWATCH_KUBELET_URL
+            - name: TELVYN_KUBELET_URL
               value: {{ .Values.ebpfTracing.kubeletURL | default "https://localhost:10250" | quote }}
-            - name: ISPWATCH_KUBELET_TOKEN_FILE
+            - name: TELVYN_KUBELET_TOKEN_FILE
               value: "/var/run/secrets/kubernetes.io/serviceaccount/token"
-            - name: ISPWATCH_KUBELET_INSECURE
+            - name: TELVYN_KUBELET_INSECURE
               value: {{ .Values.ebpfTracing.kubeletInsecure | default "1" | quote }}
             - name: COLLECTOR_LOG_LEVEL
               value: {{ .Values.logLevel | default "info" | quote }}
@@ -102,34 +102,34 @@ spec:
             {{- end }}
             {{- if .Values.logs.enabled }}
             # Coleta de logs: taila /var/log/pods (CRI) → OTLP JSON + Bearer.
-            - name: ISPWATCH_LOGS_ENABLED
+            - name: TELVYN_LOGS_ENABLED
               value: "1"
             {{- with .Values.logs.excludeNamespaces }}
-            - name: ISPWATCH_LOGS_EXCLUDE_NAMESPACES
+            - name: TELVYN_LOGS_EXCLUDE_NAMESPACES
               value: {{ join "," . | quote }}
             {{- end }}
             {{- end }}
             {{- if .Values.ebpfTracing.enabled }}
-            - name: ISPWATCH_EBPF_TRACING
+            - name: TELVYN_EBPF_TRACING
               value: "1"
             {{- end }}
             {{- if .Values.profiling.enabled }}
             # Profiler contínuo de CPU (eBPF perf_event → flame graph por
             # pod/serviço no portal). Só tem efeito no modo ingest.
-            - name: ISPWATCH_PROFILING_ENABLED
+            - name: TELVYN_EBPF_PROFILING_ENABLED
               value: "1"
             {{- end }}
             {{- if .Values.sbomScan.enabled }}
             # Vulnerabilidade de aplicação (camada 2/3): Trivy gera o SBOM das
             # imagens rodando e o agent manda a lista pro gateway (/sbom).
-            - name: ISPWATCH_SBOM_SCAN
+            - name: TELVYN_SBOM_SCAN
               value: "1"
-            - name: ISPWATCH_SBOM_INTERVAL
+            - name: TELVYN_SBOM_INTERVAL
               value: {{ .Values.sbomScan.interval | default "1h" | quote }}
-            - name: ISPWATCH_SBOM_CONTAINERD_ADDR
+            - name: TELVYN_SBOM_CONTAINERD_ADDR
               value: {{ .Values.sbomScan.containerdAddr | default "/run/containerd/containerd.sock" | quote }}
             {{- with .Values.sbomScan.trivyArgs }}
-            - name: ISPWATCH_SBOM_TRIVY_ARGS
+            - name: TELVYN_SBOM_TRIVY_ARGS
               value: {{ . | quote }}
             {{- end }}
             # Trivy escreve cache em /tmp (emptyDir gravável; rootfs é RO no default).
@@ -144,7 +144,7 @@ spec:
               mountPath: /host/sys
               readOnly: true
             - name: wal
-              mountPath: /var/lib/ispwatch-collector
+              mountPath: /var/lib/telvyn-collector
             - name: tmp
               mountPath: /tmp
             # machine-id do HOST (dedup por machine-id: funde o nó com o agente
@@ -190,7 +190,7 @@ spec:
             # de impacto similar.
             privileged: true
             # eBPF kprobes/perf_event precisam de CAP_SYS_ADMIN, e o image
-            # USER do Dockerfile (ispwatch uid 10001) não tem capabilities
+            # USER do Dockerfile (telvyn uid 10001) não tem capabilities
             # mesmo com privileged. Override pra root só quando eBPF ativo.
             runAsUser: 0
             runAsGroup: 0
@@ -228,7 +228,7 @@ spec:
             path: /sys
         - name: wal
           hostPath:
-            path: /var/lib/ispwatch-collector
+            path: /var/lib/telvyn-collector
             type: DirectoryOrCreate
         - name: tmp
           emptyDir: {}

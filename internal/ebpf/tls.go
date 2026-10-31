@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf/link"
-	"github.com/ispwatch/collector/internal/ebpf/common"
-	"github.com/ispwatch/collector/internal/ebpf/proc"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/common"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/proc"
 	"k8s.io/klog/v2"
 )
 

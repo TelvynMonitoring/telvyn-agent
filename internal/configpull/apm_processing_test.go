@@ -3,7 +3,7 @@ package configpull
 import (
 	"context"
 	"fmt"
-	"github.com/ispwatch/collector/internal/apm/processing"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/processing"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"

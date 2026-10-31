@@ -63,8 +63,8 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/ispwatch/collector/internal/quarkus"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/quarkus"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const (
@@ -493,7 +493,7 @@ func (c *k8sKubeletCheck) Run(ctx context.Context) ([]*collectorv1.Metric, error
 	}
 	c.containerCPU = nextContainerCPU
 	out = append(out, c.metric(now, "k8s.node.pods_total", float64(podCount), nodeTags))
-	if socket := strings.TrimSpace(os.Getenv("ISPWATCH_CRI_SOCKET")); socket != "" {
+	if socket := strings.TrimSpace(os.Getenv("TELVYN_CRI_SOCKET")); socket != "" {
 		images, err := c.runtimeImages(ctx, socket, nodeName)
 		if err != nil {
 			slog.Warn("inventário CRI indisponível", "error", err)

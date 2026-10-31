@@ -1,0 +1,13 @@
+apiVersion: v2
+name: telvyn-agent
+description: Telvyn monitoring agent — DaemonSet for k8s clusters
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - observability
+  - kubernetes
+  - telvyn
+maintainers:
+  - name: telvyn
+home: https://telvyn.com

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/ispwatch/collector/internal/ebpf/proc"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/proc"
 )
 
 // symbolizer resolve endereço de user-space → nome de função, lendo

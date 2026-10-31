@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 func sp(traceID string, status int32, durNano int64) *collectorv1.Span {

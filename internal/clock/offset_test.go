@@ -75,7 +75,7 @@ func testServer(t *testing.T, offset time.Duration, alter func([]byte)) string {
 
 func TestOffsetSecondsUsesMedian(t *testing.T) {
 	servers := []string{testServer(t, 100*time.Millisecond, nil), testServer(t, 300*time.Millisecond, nil), testServer(t, 200*time.Millisecond, nil)}
-	t.Setenv("ISPWATCH_NTP_SERVERS", strings.Join(servers, ","))
+	t.Setenv("TELVYN_NTP_SERVERS", strings.Join(servers, ","))
 	offset, ok := OffsetSeconds(context.Background())
 	if !ok || math.Abs(offset-.2) > .03 {
 		t.Fatalf("median offset=%v, ok=%v", offset, ok)

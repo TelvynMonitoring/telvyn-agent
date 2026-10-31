@@ -1,8 +1,8 @@
 # AGENTS.md — Telvyn Agent
 
-Leia `CONTEXT.md` antes de alterar este repositório. O produto se chama Telvyn;
-nomes `ispwatch` ainda presentes em variáveis e caminhos são legado compatível e não
-devem ser renomeados incidentalmente.
+Leia `CONTEXT.md` antes de alterar este repositório. O produto se chama Telvyn; variáveis,
+caminhos e binários usam o prefixo `telvyn`/`TELVYN_` e não há compatibilidade com
+nomes antigos.
 
 Regras essenciais:
 

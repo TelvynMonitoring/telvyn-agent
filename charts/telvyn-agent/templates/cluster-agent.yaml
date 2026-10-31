@@ -1,6 +1,6 @@
 {{- if .Values.clusterAgent.enabled }}
 {{- /*
-  Cluster Agent (modo ISPWATCH_AGENT_KIND=k8s.cluster): 1 réplica que fala com
+  Cluster Agent (modo TELVYN_AGENT_KIND=k8s.cluster): 1 réplica que fala com
   o API server in-cluster e faz LIST dos Events do cluster inteiro (OOMKilled,
   BackOff, FailedScheduling, Unhealthy…) → push certless pro noc_k8s_event
   (timeline na cluster page). Visão cross-node que o DaemonSet (kubelet local)
@@ -14,17 +14,17 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}-cluster
+  name: {{ include "telvyn-agent.fullname" . }}-cluster
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "ispwatch-agent.clusterLabels" . | nindent 4 }}
+    {{- include "telvyn-agent.clusterLabels" . | nindent 4 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}-cluster
+  name: {{ include "telvyn-agent.fullname" . }}-cluster
   labels:
-    {{- include "ispwatch-agent.clusterLabels" . | nindent 4 }}
+    {{- include "telvyn-agent.clusterLabels" . | nindent 4 }}
 rules:
   # Least-privilege: concede só o que o cluster-agent realmente chama.
   # - events: timeline de eventos (F2).
@@ -50,41 +50,41 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}-cluster
+  name: {{ include "telvyn-agent.fullname" . }}-cluster
   labels:
-    {{- include "ispwatch-agent.clusterLabels" . | nindent 4 }}
+    {{- include "telvyn-agent.clusterLabels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "ispwatch-agent.fullname" . }}-cluster
+  name: {{ include "telvyn-agent.fullname" . }}-cluster
 subjects:
   - kind: ServiceAccount
-    name: {{ include "ispwatch-agent.fullname" . }}-cluster
+    name: {{ include "telvyn-agent.fullname" . }}-cluster
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "ispwatch-agent.fullname" . }}-cluster
+  name: {{ include "telvyn-agent.fullname" . }}-cluster
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "ispwatch-agent.clusterLabels" . | nindent 4 }}
+    {{- include "telvyn-agent.clusterLabels" . | nindent 4 }}
 spec:
   # 1 réplica (singleton) — HA/leader-election fica pra próxima leva.
   replicas: 1
   selector:
     matchLabels:
-      {{- include "ispwatch-agent.clusterSelectorLabels" . | nindent 6 }}
+      {{- include "telvyn-agent.clusterSelectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "ispwatch-agent.clusterSelectorLabels" . | nindent 8 }}
+        {{- include "telvyn-agent.clusterSelectorLabels" . | nindent 8 }}
       {{- with .Values.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "ispwatch-agent.fullname" . }}-cluster
+      serviceAccountName: {{ include "telvyn-agent.fullname" . }}-cluster
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -109,31 +109,31 @@ spec:
               add: ["NET_RAW"]
           env:
             # Certless (mesmo gateway do DaemonSet): OTLP+Bearer, sem mTLS.
-            - name: ISPWATCH_INGEST_URL
+            - name: TELVYN_INGEST_URL
               value: {{ required "values.ingest.url é obrigatório p/ o cluster-agent" .Values.ingest.url | quote }}
-            - name: ISPWATCH_INGEST_TOKEN
+            - name: TELVYN_INGEST_TOKEN
               value: {{ required "values.ingest.token é obrigatório p/ o cluster-agent" .Values.ingest.token | quote }}
             # Modo cluster: dispara o branch k8s.cluster (LIST de events no API server).
-            - name: ISPWATCH_AGENT_KIND
+            - name: TELVYN_AGENT_KIND
               value: "k8s.cluster"
-            - name: ISPWATCH_CLUSTER
+            - name: TELVYN_CLUSTER
               value: {{ .Values.clusterName | quote }}
-            - name: ISPWATCH_CLUSTER_INTERVAL_SEC
+            - name: TELVYN_CLUSTER_INTERVAL_SEC
               value: {{ .Values.clusterAgent.intervalSeconds | quote }}
             {{- if .Values.clusterAgent.includeNormalEvents }}
-            - name: ISPWATCH_CLUSTER_EVENTS_INCLUDE_NORMAL
+            - name: TELVYN_CLUSTER_EVENTS_INCLUDE_NORMAL
               value: "1"
             {{- end }}
-            - name: ISPWATCH_K8S_INSECURE
+            - name: TELVYN_K8S_INSECURE
               value: {{ .Values.clusterAgent.apiInsecure | quote }}
             # Não registra collector nem roda checagens agendadas — só eventos.
-            - name: ISPWATCH_CHECKS_ENABLED
+            - name: TELVYN_CHECKS_ENABLED
               value: "0"
             - name: COLLECTOR_LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
-            - { name: state, mountPath: /var/lib/ispwatch-collector }
+            - { name: state, mountPath: /var/lib/telvyn-collector }
           resources:
             {{- toYaml .Values.clusterAgent.resources | nindent 12 }}
       volumes:

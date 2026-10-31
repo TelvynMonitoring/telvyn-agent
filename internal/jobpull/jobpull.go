@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ispwatch/collector/internal/tools"
+	"github.com/telvynmonitoring/telvyn-agent/internal/tools"
 )
 
 type Config struct {

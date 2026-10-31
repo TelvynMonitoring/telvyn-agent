@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const sqlMSSQLCatalogTables = `SELECT TOP (10001) s.name, o.name, o.type_desc,

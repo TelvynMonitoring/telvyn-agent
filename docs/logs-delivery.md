@@ -1,7 +1,7 @@
 # Entrega durável de logs
 
 O coletor usa a fila bbolt existente (`internal/sendbuf`) para CRI, syslog e OTLP/HTTP.
-Os registros ficam em `sendbuf/logs.bolt`, abaixo de `ISPWATCH_STATE_DIR`, no volume
+Os registros ficam em `sendbuf/logs.bolt`, abaixo de `TELVYN_STATE_DIR`, no volume
 persistente já instalado pelo chart/systemd. Não é necessário um serviço novo.
 
 - CRI/syslog gravam antes de liberar o leitor; o cursor não avança antes da gravação.

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const sqlMSSQLQueryStats = `SELECT TOP (200) CONVERT(varchar(34), q.query_hash, 1),

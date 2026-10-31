@@ -105,10 +105,10 @@ jobs:
 
       - name: Package + push chart (OCI)
         run: |
-          helm package charts/ispwatch-agent \
+          helm package charts/telvyn-agent \
             --version "${{ steps.vars.outputs.version }}" \
             --app-version "${{ steps.vars.outputs.version }}"
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
-          helm push ispwatch-agent-*.tgz \
+          helm push telvyn-agent-*.tgz \
             "oci://ghcr.io/${{ steps.vars.outputs.owner }}/charts"

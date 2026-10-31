@@ -12,7 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ispwatch/collector/internal/checkpackages"
+	"github.com/telvynmonitoring/telvyn-agent/internal/checkpackages"
 )
 
 func main() {

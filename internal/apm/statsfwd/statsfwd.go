@@ -16,9 +16,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/ispwatch/collector/internal/apm/concentrator"
-	"github.com/ispwatch/collector/internal/sendbuf"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/concentrator"
+	"github.com/telvynmonitoring/telvyn-agent/internal/sendbuf"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // Teto da fila de reenvio: o payload típico de um flush (10s de buckets) tem

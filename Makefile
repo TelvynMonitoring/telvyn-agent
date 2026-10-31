@@ -3,7 +3,7 @@
 # ----------------------------------------------------------------------
 # Defaults — override on the command line: `make run TENANT_ID=foo ...`
 # ----------------------------------------------------------------------
-TENANT_ID    ?= ispwatch
+TENANT_ID    ?= telvyn
 COLLECTOR_ID ?= coll-dev-01
 SERVER       ?= localhost:8443
 PKI_DIR      ?= ../pki
@@ -57,7 +57,7 @@ lint-no-disk:
 	@echo "lint-no-disk: OK"
 
 clean:
-	rm -f collector collector.exe ispwatch-agent
+	rm -f collector collector.exe telvyn-agent
 	rm -f proto/v1/*.pb.go
 	rm -rf dist
 
@@ -70,9 +70,8 @@ clean:
 #                    make release-local VERSION=v0.3.0 GOARCH=arm64
 #
 # Layout do tarball:
-#   ispwatch-agent-<version>-<goos>-<goarch>/
-#     ispwatch-agent              (binário Go, static via CGO_ENABLED=0)
-#     ispwatch-agent.service      (systemd unit, copiado de packaging/)
+#   telvyn-agent-<version>-<goos>-<goarch>/
+#     telvyn-agent              (binário Go, static via CGO_ENABLED=0)
 #     telvyn-agent.service          (serviço único do host)
 #     telvyn-agent-update.service   (atualização sem identificar a unit)
 #     install.sh                   (bootstrap local para atualizações do banco)
@@ -83,7 +82,7 @@ clean:
 VERSION ?= dev-$(shell date +%s)
 GOOS    ?= linux
 GOARCH  ?= amd64
-DIST_NAME = ispwatch-agent-$(VERSION)-$(GOOS)-$(GOARCH)
+DIST_NAME = telvyn-agent-$(VERSION)-$(GOOS)-$(GOARCH)
 DIST_DIR  = dist/$(DIST_NAME)
 
 release-ci:
@@ -91,8 +90,7 @@ release-ci:
 	mkdir -p $(DIST_DIR)
 	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) \
 	  go build -trimpath -ldflags="-s -w -X main.Version=$(VERSION)" \
-	  -o $(DIST_DIR)/ispwatch-agent ./cmd/collector
-	cp packaging/ispwatch-agent.service $(DIST_DIR)/
+	  -o $(DIST_DIR)/telvyn-agent ./cmd/collector
 	cp packaging/telvyn-agent.service $(DIST_DIR)/
 	cp packaging/telvyn-agent-update.service $(DIST_DIR)/
 	cp packaging/install.sh $(DIST_DIR)/
@@ -104,7 +102,7 @@ release-ci:
 	@echo "==> Built: dist/$(DIST_NAME).tar.gz"
 	@cat dist/$(DIST_NAME).tar.gz.sha256
 
-# Agentes Telvyn de linguagem para máquinas comuns (instalados pelo install.sh com ISPWATCH_LANGUAGE_AGENTS).
+# Agentes Telvyn de linguagem para máquinas comuns (instalados pelo install.sh com TELVYN_LANGUAGE_AGENTS).
 release-language-agents:
 	bash packaging/build-language-agents.sh $(VERSION) dist
 

@@ -18,15 +18,11 @@ grep -Fq 'EnvironmentFile=-/etc/telvyn/agent.env' ../telvyn-agent.service
 grep -Fq 'ReadWritePaths=/var/lib/telvyn-agent /var/log/telvyn-agent' ../telvyn-agent.service
 grep -Fq 'DATABASE_UNIT_NAME="telvyn-agent.service"' ../install.sh
 grep -Fq 'GENERIC_UNIT_NAME="telvyn-agent.service"' ../install.sh
-grep -Fq 'LEGACY_GENERIC_UNIT_NAME="ispwatch-agent.service"' ../install.sh
-grep -Fq 'systemctl disable --now "$LEGACY_GENERIC_UNIT_NAME"' ../install.sh
-grep -Fq 'systemctl enable --now "$LEGACY_GENERIC_UNIT_NAME"' ../install.sh
 grep -Fq 'EnvironmentFile=-${ENV_FILE}' ../install.sh
-grep -Fq 'Description=Telvyn Agent' ../ispwatch-agent.service
-grep -Fq 'SyslogIdentifier=telvyn-agent' ../ispwatch-agent.service
+grep -Fq 'Description=Telvyn Agent' ../telvyn-agent.service
+grep -Fq 'SyslogIdentifier=telvyn-agent' ../telvyn-agent.service
 grep -Fq 'DATABASE_UPDATE_UNIT_NAME="telvyn-agent-update.service"' ../install.sh
 grep -Fq 'sudo systemctl start ${DATABASE_UPDATE_UNIT_NAME}' ../install.sh
-grep -Fq 'foram encontrados vários Agents de Banco legados neste host' ../install.sh
 
 # Copia o install.sh pro contexto de build pra cada Dockerfile poder
 # fazer COPY (build context é este diretório).
@@ -35,8 +31,8 @@ trap 'rm -f ./install.sh' EXIT
 
 for distro in ubuntu-22.04 debian-11 rocky-9; do
     echo "=== Testing $distro ==="
-    docker build -f "Dockerfile.${distro}" -t "ispwatch-install-test:${distro}" .
-    docker run --rm "ispwatch-install-test:${distro}"
+    docker build -f "Dockerfile.${distro}" -t "telvyn-install-test:${distro}" .
+    docker run --rm "telvyn-install-test:${distro}"
     echo "OK: $distro"
 done
 

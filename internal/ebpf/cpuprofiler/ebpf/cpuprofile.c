@@ -2,7 +2,7 @@
 //
 // Coleção eBPF SEPARADA do tracer L7 (proc/file/tcp/l7): compila num .o próprio,
 // carrega numa *ebpf.Collection própria, e roda atrás do toggle
-// ISPWATCH_PROFILING_ENABLED. Se o verifier rejeitar num kernel, só o profiler
+// TELVYN_EBPF_PROFILING_ENABLED. Se o verifier rejeitar num kernel, só o profiler
 // fica off — o L7 nunca é tocado.
 //
 // Ideia: um programa BPF_PROG_TYPE_PERF_EVENT disparado por um perf_event de

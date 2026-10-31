@@ -19,7 +19,7 @@
 //     client.NewClientWithOpts + WithAPIVersionNegotiation; em testes
 //     usa fake do _test.go. Sem dependência de daemon real em CI.
 //   - Factory tenta `Ping(ctx)` cedo com timeout 3s; falha permission
-//     denied → erro com hint `ISPWATCH_DOCKER_INTEGRATION=true`
+//     denied → erro com hint `TELVYN_DOCKER_INTEGRATION=true`
 //     (Pitfall 2). Sem isso o scheduler tentaria pra sempre e poluiria
 //     logs com erros idênticos.
 //   - Stats em paralelo limitado por `semaphore.NewWeighted(5)`
@@ -53,7 +53,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const (
@@ -110,7 +110,7 @@ func newDockerHostCheck(cfg *collectorv1.CheckConfig) (Check, error) {
 	if _, err := cli.Ping(pingCtx); err != nil {
 		_ = cli.Close()
 		// Mensagem inclui hint pro operador habilitar via install.sh.
-		return nil, fmt.Errorf("docker.host: ping failed (%w); run install.sh with ISPWATCH_DOCKER_INTEGRATION=true to add telvyn user to docker group", err)
+		return nil, fmt.Errorf("docker.host: ping failed (%w); run install.sh with TELVYN_DOCKER_INTEGRATION=true to add telvyn user to docker group", err)
 	}
 
 	interval := cfg.GetInterval().AsDuration()

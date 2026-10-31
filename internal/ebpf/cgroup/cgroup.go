@@ -8,14 +8,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ispwatch/collector/internal/ebpf/common"
-	"github.com/ispwatch/collector/internal/ebpf/flags"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/common"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/flags"
 	"k8s.io/klog/v2"
 )
 
 var (
 	// cgRoot/cg2Root default pro mountpoint canônico em qualquer Linux moderno.
-	// O ispwatch agent renomeia `kingpin.Parse()` do flags.go pra `initIfEverWanted()`
+	// O telvyn agent renomeia `kingpin.Parse()` do flags.go pra `initIfEverWanted()`
 	// (pra não roubar os args do main.go), o que faria `*flags.CgroupRoot` cair
 	// pra string vazia e quebrar todos os reads do cgroup. Inicializamos no init()
 	// abaixo SÓ se o flag tiver sido parseado.

@@ -1,6 +1,6 @@
 # internal/ebpf
 
-eBPF-based L7 protocol tracing for the ISPWatch agent.
+eBPF-based L7 protocol tracing for the Telvyn agent.
 
 ## Origin
 
@@ -24,12 +24,12 @@ license text.
 | `cgroup/` | `./cgroup/` |
 | `flags/` | `./flags/` |
 
-## ISPWatch modifications
+## Telvyn modifications
 
 - Go package `ebpftracer` renamed to `ebpf` to match our `internal/ebpf/`
   layout.
 - All `github.com/coroot/coroot-node-agent/...` imports rewritten to
-  `github.com/ispwatch/collector/internal/ebpf/...`.
+  `github.com/telvynmonitoring/telvyn-agent/internal/ebpf/...`.
 - Output integration: events from the tracer are forwarded to the agent's
   gRPC `StreamSpans` transport instead of the upstream Prometheus pusher.
 - (Future) container/pod discovery may be replaced by our own `k8s.kubelet`

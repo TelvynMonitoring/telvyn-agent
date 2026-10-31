@@ -31,7 +31,7 @@ var defaultServers = []string{
 // subprocess, or requires CAP_SYS_TIME.
 func OffsetSeconds(ctx context.Context) (float64, bool) {
 	var offsets []float64
-	for _, server := range ntpServers(os.Getenv("ISPWATCH_NTP_SERVERS")) {
+	for _, server := range ntpServers(os.Getenv("TELVYN_NTP_SERVERS")) {
 		if offset, ok := query(ctx, server); ok {
 			offsets = append(offsets, offset)
 		}

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ispwatch/collector/internal/clock"
+	"github.com/telvynmonitoring/telvyn-agent/internal/clock"
 )
 
 func TestPostRawObservesOnlyAcceptedIntakeDate(t *testing.T) {

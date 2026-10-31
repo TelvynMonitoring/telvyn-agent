@@ -1,4 +1,4 @@
-module github.com/ispwatch/collector
+module github.com/telvynmonitoring/telvyn-agent
 
 go 1.25.0
 

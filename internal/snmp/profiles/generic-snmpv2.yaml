@@ -1,4 +1,4 @@
-# IspWatch SNMP profile — generic-snmpv2.
+# Telvyn SNMP profile — generic-snmpv2.
 #
 # Fallback explicito quando o sysObjectID do device nao casa nenhum perfil
 # vendor especifico. Carrega so o que esta na SNMPv2-MIB / HOST-RESOURCES-MIB

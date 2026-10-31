@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/cilium/ebpf/link"
-	"github.com/ispwatch/collector/internal/ebpf/proc"
+	"github.com/telvynmonitoring/telvyn-agent/internal/ebpf/proc"
 	"golang.org/x/exp/maps"
 	"k8s.io/klog/v2"
 )

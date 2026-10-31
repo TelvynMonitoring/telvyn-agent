@@ -1,6 +1,6 @@
 // cursor.go — persiste offset+inode de cada container log file pra sobreviver
 // restarts do agent sem re-ler tudo. Formato: JSON simples (mapa container_id →
-// {offset, inode}). Arquivo default: /var/lib/ispwatch/log_cursors.json.
+// {offset, inode}). Arquivo default: /var/lib/telvyn/log_cursors.json.
 //
 // Best-effort: se não conseguir ler/gravar o arquivo, o tailer reinicia do EOF
 // (comportamento degradado mas não fatal).
@@ -14,7 +14,7 @@ import (
 	"sync"
 )
 
-const DefaultCursorPath = "/var/lib/ispwatch/log_cursors.json"
+const DefaultCursorPath = "/var/lib/telvyn/log_cursors.json"
 
 // CursorEntry armazena o estado de progresso de um container log file.
 type CursorEntry struct {

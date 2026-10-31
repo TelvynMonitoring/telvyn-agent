@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	_ "github.com/sijms/go-ora/v2"
 )
 

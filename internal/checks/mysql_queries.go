@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 // O resumo por digest não guarda o usuário: as consultas de monitoramento saem do ranking pelo formato que só o

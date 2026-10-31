@@ -24,7 +24,7 @@
 // Compressão Content-Encoding: aceita gzip (transparente).
 //
 // CORS: por default Allow-Origin "*" pra simplificar dogfood. Operador pode
-// restringir via ISPWATCH_OTLP_HTTP_CORS_ORIGINS=csv,list. Headers/methods
+// restringir via TELVYN_OTLP_HTTP_CORS_ORIGINS=csv,list. Headers/methods
 // liberados o suficiente pra OTel Web SDK funcionar sem ajustes.
 //
 // Sem TLS: assume-se que o caminho cliente→agent é confiável (mesmo nó via
@@ -58,8 +58,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/ispwatch/collector/internal/apm/usage"
-	collectorv1 "github.com/ispwatch/collector/proto/v1"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/usage"
+	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
 
 const (
@@ -151,7 +151,7 @@ type endpointKey struct {
 // NewHTTPReceiver constrói o receiver. addr vazio usa DefaultHTTPListenAddr;
 // maxBody <= 0 usa DefaultMaxBodyBytes. corsOrigins vazio ou "*" libera
 // qualquer origem (útil pra dev/dogfood). Em produção restrita, passe lista
-// explícita ["https://app.ispwatch.example.com"].
+// explícita ["https://app.telvyn.example.com"].
 func NewHTTPReceiver(addr string, sink SpanSink, log *slog.Logger, maxBody int64, corsOrigins []string) *HTTPReceiver {
 	if addr == "" {
 		addr = DefaultHTTPListenAddr
