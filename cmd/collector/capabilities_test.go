@@ -18,13 +18,35 @@ func TestCollectorCapabilitiesForSnmpAgent(t *testing.T) {
 	}
 }
 
-func TestCollectorCapabilitiesForNonSnmpAgent(t *testing.T) {
+func TestCollectorCapabilitiesForLinuxAgentDefaultsToNetwork(t *testing.T) {
 	t.Setenv("TELVYN_AGENT_KIND", "linux")
-	t.Setenv("TELVYN_ICMP", "1")
 
-	want := []string{"metrics", "checks"}
+	want := []string{"metrics", "checks", "snmp", "icmp", "lldp", "ssh", "ssh_readonly_v1"}
 	if got := collectorCapabilities(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("collectorCapabilities() = %v, want %v", got, want)
+	}
+}
+
+func TestCollectorCapabilitiesForLinuxAgentCanOptOut(t *testing.T) {
+	t.Setenv("TELVYN_AGENT_KIND", "linux")
+	t.Setenv("TELVYN_SSH", "0")
+	t.Setenv("TELVYN_LLDP", "off")
+
+	want := []string{"metrics", "checks", "snmp", "icmp"}
+	if got := collectorCapabilities(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("collectorCapabilities() = %v, want %v", got, want)
+	}
+}
+
+func TestCollectorCapabilitiesForOtherKindsStayBase(t *testing.T) {
+	for _, kind := range []string{"docker", "k8s.node", ""} {
+		t.Setenv("TELVYN_AGENT_KIND", kind)
+		t.Setenv("TELVYN_ICMP", "1")
+
+		want := []string{"metrics", "checks"}
+		if got := collectorCapabilities(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("kind %q: collectorCapabilities() = %v, want %v", kind, got, want)
+		}
 	}
 }
 
