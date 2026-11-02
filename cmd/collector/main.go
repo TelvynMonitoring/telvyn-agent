@@ -1286,7 +1286,11 @@ func collectorCapabilities() []string {
 		// instância, sem liberar SNMP/APM por inferência.
 		return append(caps, "db-postgres", "host-metrics")
 	}
-	if !strings.EqualFold(getenvOr("TELVYN_AGENT_KIND", ""), "snmp") {
+	// Todo agent Linux (e o kind snmp, que já existia) anuncia os protocolos de rede por padrão; as credenciais
+	// vêm do Telvyn e as checagens só rodam nos coletores escolhidos. Para desligar um, TELVYN_SNMP=0 etc.
+	switch strings.ToLower(strings.TrimSpace(getenvOr("TELVYN_AGENT_KIND", ""))) {
+	case "linux", "snmp":
+	default:
 		return caps
 	}
 	for _, item := range []struct {
@@ -1298,7 +1302,7 @@ func collectorCapabilities() []string {
 		{"TELVYN_LLDP", "lldp"},
 		{"TELVYN_SSH", "ssh"},
 	} {
-		if envEnabled(item.env) {
+		if envEnabledByDefault(item.env) {
 			caps = append(caps, item.cap)
 			if item.env == "TELVYN_SSH" {
 				caps = append(caps, "ssh_readonly_v1")
@@ -1332,6 +1336,16 @@ func collectorInstallMode() string {
 		return "k8s"
 	default:
 		return ""
+	}
+}
+
+// envEnabledByDefault é verdadeiro quando a variável não existe; só 0, false, no ou off desligam.
+func envEnabledByDefault(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(getenvOr(name, "1"))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
 	}
 }
 
