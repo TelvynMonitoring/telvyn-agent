@@ -21,7 +21,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/telvyn-agent /var/log/telvyn-agent
+ReadWritePaths=-/var/lib/telvyn-agent -/var/log/telvyn-agent -/var/lib/telvyn -/var/log/telvyn
 
 ProtectKernelTunables=true
 ProtectKernelModules=true
