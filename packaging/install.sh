@@ -344,6 +344,15 @@ cp "$TMP_SHA" "${WORK_DIR}/${TARBALL}.sha256"
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
     useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
+# Logs do host (TELVYN_LOGS_ENABLED=1): o usuário do serviço precisa ler o journal e os arquivos em /var/log.
+# Só entra nesses grupos (só leitura) quando a coleta de logs foi pedida.
+if [[ "${TELVYN_LOGS_ENABLED:-}" == "1" ]]; then
+    for log_group in systemd-journal adm; do
+        if getent group "$log_group" >/dev/null 2>&1; then
+            usermod -aG "$log_group" "$SERVICE_USER"
+        fi
+    done
+fi
 mkdir -p "$CONFIG_DIR" "$LIB_DIR" "$LOG_DIR" "$BINARY_DIR"
 
 # === Extract + install =================================================
