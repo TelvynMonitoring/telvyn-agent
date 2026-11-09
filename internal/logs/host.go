@@ -33,6 +33,9 @@ const (
 // DefaultHostLogGlobs: arquivos de log de aplicação/serviços. Syslog, auth e kernel já vêm pelo journald.
 var DefaultHostLogGlobs = []string{"/var/log/*.log", "/var/log/*/*.log"}
 
+// SyslogFileGlobs: syslog clássico (sem extensão .log). Só entram quando não há journald para entregá-los.
+var SyslogFileGlobs = []string{"/var/log/syslog", "/var/log/messages", "/var/log/secure"}
+
 // journalDuplicates são arquivos que o journald já entrega (rsyslog espelha o journal neles).
 var journalDuplicates = []string{"auth.log", "kern.log", "dpkg.log", "alternatives.log", "cloud-init.log", "cloud-init-output.log", "ubuntu-advantage.log", "bootstrap.log", "unattended-upgrades.log"}
 
@@ -57,12 +60,17 @@ func RunHostLogs(ctx context.Context, log *slog.Logger, cfg HostLogsConfig, push
 			go runHostJournald(ctx, log, cfg.Hostname, push)
 		}
 	}
-	if len(cfg.Files) > 0 {
+	files := cfg.Files
+	if !journald && strings.Join(files, ",") == strings.Join(DefaultHostLogGlobs, ",") {
+		// Sem journald (host sem systemd ou journal desligado) e com os globs padrão: o syslog clássico vira a fonte do sistema.
+		files = append(append([]string{}, files...), SyslogFileGlobs...)
+	}
+	if len(files) > 0 {
 		exclude := append([]string{"/var/log/telvyn*", "/var/log/telvyn-agent*", "/var/log/pods/*", "/var/log/containers/*", "/var/log/journal/*"}, cfg.ExcludeGlobs...)
 		if journald {
 			exclude = append(exclude, journalDuplicates...)
 		}
-		t := &hostFileTailer{log: log, hostname: cfg.Hostname, globs: cfg.Files, exclude: exclude, push: push,
+		t := &hostFileTailer{log: log, hostname: cfg.Hostname, globs: files, exclude: exclude, push: push,
 			cursors: NewCursorStore(cfg.CursorPath, log), files: map[string]*hostFile{}}
 		t.run(ctx)
 		return

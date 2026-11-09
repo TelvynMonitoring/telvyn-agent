@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -157,5 +158,16 @@ func TestLineSeverity(t *testing.T) {
 		if _, got := lineSeverity(line); got != want {
 			t.Errorf("%q: %s, esperado %s", line, got, want)
 		}
+	}
+}
+
+func TestSyslogGlobsForaDoPadraoDeArquivos(t *testing.T) {
+	for _, g := range DefaultHostLogGlobs {
+		if ok, _ := path.Match(g, "/var/log/syslog"); ok {
+			t.Fatalf("o glob padrão %s já cobre o syslog", g)
+		}
+	}
+	if len(SyslogFileGlobs) != 3 {
+		t.Fatal("syslog, messages e secure")
 	}
 }

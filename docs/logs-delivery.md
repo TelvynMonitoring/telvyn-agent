@@ -41,6 +41,9 @@ Sem Kubernetes, `TELVYN_LOGS_ENABLED=1` liga também a coleta do próprio host (
   `host_file_cursors.json`, ao lado do cursor CRI; sobrevive a reinício, rotação e truncamento. Quando há journald, os arquivos que
   o journal já entrega (auth.log, kern.log, dpkg.log, cloud-init…) são ignorados; `/var/log/telvyn*`, `pods`, `containers` e
   `journal` também.
+- **Sem journald:** sem `journalctl` (ou com `TELVYN_HOST_LOGS_JOURNALD=0`), e com os globs padrão, entram também `/var/log/syslog`, `/var/log/messages` e
+  `/var/log/secure` (e `auth.log`/`kern.log` pelo glob `*.log`), para o syslog clássico não ficar de fora. Se
+  você define `TELVYN_HOST_LOGS_FILES`, valem só os seus globs.
 - **Severidade nos arquivos:** campo `level` quando a linha é JSON; senão palavra-chave (error/warn/debug); padrão INFO.
 - **Permissões:** o usuário `telvyn` precisa dos grupos `systemd-journal` (journal) e `adm` (arquivos); o `install.sh` os adiciona
   quando `TELVYN_LOGS_ENABLED=1`. Arquivo sem permissão é pulado em silêncio.
