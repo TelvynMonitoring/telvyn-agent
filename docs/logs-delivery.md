@@ -29,3 +29,22 @@ para aparentar sucesso. Corrigir credenciais/política quando o log indicar recu
 Não reutilizar o volume entre instalações/tenants distintos. Preservar o diretório
 na atualização do agente. A release pública só contém a mudança depois do merge e
 publicação; uma imagem candidata de homologação não atualiza instalações existentes.
+
+## Logs de host Linux (journald e arquivos)
+
+Sem Kubernetes, `TELVYN_LOGS_ENABLED=1` liga também a coleta do próprio host (no Kubernetes quem coleta é o leitor CRI):
+
+- **journald:** subprocesso `journalctl -f -o json`; a unidade vira o serviço (`nginx.service` → `nginx`). Só lê o que chega
+  depois do início do agente (`-n 0`): o que o journal gravou com o agente parado não é recuperado.
+- **Arquivos:** `/var/log/*.log` e `/var/log/*/*.log` (serviço = pasta, como `nginx`, ou o nome do arquivo). Na primeira
+  varredura começa do fim; arquivos que aparecem depois são lidos do começo. Cursor (inode + offset) em
+  `host_file_cursors.json`, ao lado do cursor CRI; sobrevive a reinício, rotação e truncamento. Quando há journald, os arquivos que
+  o journal já entrega (auth.log, kern.log, dpkg.log, cloud-init…) são ignorados; `/var/log/telvyn*`, `pods`, `containers` e
+  `journal` também.
+- **Severidade nos arquivos:** campo `level` quando a linha é JSON; senão palavra-chave (error/warn/debug); padrão INFO.
+- **Permissões:** o usuário `telvyn` precisa dos grupos `systemd-journal` (journal) e `adm` (arquivos); o `install.sh` os adiciona
+  quando `TELVYN_LOGS_ENABLED=1`. Arquivo sem permissão é pulado em silêncio.
+- **Variáveis:** `TELVYN_HOST_LOGS=0` desliga tudo; `TELVYN_HOST_LOGS_JOURNALD=0` só o journal; `TELVYN_HOST_LOGS_FILES`
+  troca os globs (separados por vírgula; `off` desliga os arquivos); `TELVYN_HOST_LOGS_EXCLUDE` lista globs a ignorar.
+- **Limites:** não junta linhas multilinha (stack trace vira várias entradas); linha acima de 16 KiB é cortada; no máximo 200
+  arquivos acompanhados.
