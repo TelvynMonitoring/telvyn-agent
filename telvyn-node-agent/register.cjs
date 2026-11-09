@@ -122,7 +122,8 @@ if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
   }
   // Attack detection and blocking run before the application handles the request. Installed before the SDK so the
   // OpenTelemetry server wrapper is outside: the request span is active and records the blocked response.
-  if (security?.guard) {
+  // The disabled placeholder (no TELVYN_SECURITY_ENABLED and no service/environment identity) has no request hooks: skip them all.
+  if (security?.guard && security.within) {
     for (const module of [require('node:http'), require('node:https')]) {
       const emit = module.Server.prototype.emit;
       module.Server.prototype.emit = function (event, request, response) {
