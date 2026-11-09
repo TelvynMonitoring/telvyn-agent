@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Logs de host Linux (sem Kubernetes) com `TELVYN_LOGS_ENABLED=1`: lê o journald (`journalctl -f`) e arquivos `*.log` de
+  `/var/log` (`/var/log/*.log` e `/var/log/*/*.log`), pelo mesmo WAL durável. Ajustes: `TELVYN_HOST_LOGS=0`,
+  `TELVYN_HOST_LOGS_JOURNALD=0`, `TELVYN_HOST_LOGS_FILES` (globs; `off` desliga) e `TELVYN_HOST_LOGS_EXCLUDE`. O `install.sh`
+  coloca o usuário do serviço nos grupos `systemd-journal` e `adm` (leitura) quando `TELVYN_LOGS_ENABLED=1`.
+
 ## [0.4.36] - 2026-10-10
 
 - Ship the Proxmox HTTPS collector in official images and Linux archives, with

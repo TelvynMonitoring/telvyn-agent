@@ -745,6 +745,7 @@ func runIngestMode(ingestURL string) {
 	if logsExp != nil {
 		if getenvOr("TELVYN_LOGS_ENABLED", "0") == "1" {
 			startIngestPodLogs(ctx, log, logsExp, hostID)
+			startHostLogs(ctx, log, logsExp, hostID)
 		}
 		if getenvOr("TELVYN_SYSLOG_ENABLED", "0") == "1" {
 			go func() {
@@ -793,6 +794,42 @@ func runIngestMode(ingestURL string) {
 	}
 	<-ctx.Done()
 	<-metricsSenderDone
+}
+
+// startHostLogs liga os logs de um host Linux comum (journald + arquivos em /var/log). Em Kubernetes quem
+// coleta é o leitor CRI, então só roda onde não há service account de pod. Desliga com TELVYN_HOST_LOGS=0;
+// TELVYN_HOST_LOGS_JOURNALD=0 desliga só o journal; TELVYN_HOST_LOGS_FILES troca os globs (vírgula) e "off"
+// desliga os arquivos; TELVYN_HOST_LOGS_EXCLUDE lista globs a ignorar.
+func startHostLogs(ctx context.Context, log *slog.Logger, logsExp *otlp.LogsExporter, hostID string) {
+	if getenvOr("TELVYN_HOST_LOGS", "1") == "0" {
+		return
+	}
+	if _, err := os.Stat(getenvOr("TELVYN_KUBELET_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token")); err == nil {
+		return
+	}
+	split := func(v string) []string {
+		var out []string
+		for _, item := range strings.Split(v, ",") {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	}
+	files := logs.DefaultHostLogGlobs
+	if v := strings.TrimSpace(getenvOr("TELVYN_HOST_LOGS_FILES", "")); v == "off" {
+		files = nil
+	} else if v != "" {
+		files = split(v)
+	}
+	cursorDir := filepath.Dir(getenvOr("TELVYN_LOGS_CURSOR_PATH", "/var/lib/telvyn-collector/log_cursors.json"))
+	go logs.RunHostLogs(ctx, log, logs.HostLogsConfig{
+		Hostname:     hostID,
+		Journald:     getenvOr("TELVYN_HOST_LOGS_JOURNALD", "1") != "0",
+		Files:        files,
+		ExcludeGlobs: split(getenvOr("TELVYN_HOST_LOGS_EXCLUDE", "")),
+		CursorPath:   filepath.Join(cursorDir, "host_file_cursors.json"),
+	}, logsExp.Push)
 }
 
 // startIngestPodLogs monta o pipeline de logs de pod no modo ingest: um
