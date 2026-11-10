@@ -1031,7 +1031,7 @@ func enrichHrStorageRow(tableOID string, row map[string]gosnmp.SnmpPDU, rowTags 
 		}
 	}
 	if pdu, ok := findRowPDU(row, hrStorageDescrCol); ok {
-		if s := strings.TrimSpace(pduString(pdu)); s != "" {
+		if s := normalizeTagValue(pduString(pdu)); s != "" {
 			rowTags["storage_descr"] = s
 		}
 	}
@@ -1115,6 +1115,24 @@ func resolveTableTags(row map[string]gosnmp.SnmpPDU, tags []ProfileMetricTag) ma
 		out[t.Tag] = pduString(pdu)
 	}
 	return out
+}
+
+// maxTagValueLen limita o tamanho de um valor de tag vindo do device.
+const maxTagValueLen = 128
+
+// normalizeTagValue estabiliza valores de tag lidos do device: colapsa espaços,
+// remove o sufixo volátil " Serial Number ..." do descritor de volume do Windows
+// e limita o tamanho. Valores que mudam entre coletas criariam uma série nova a
+// cada ciclo e consumiriam o orçamento sem acrescentar informação.
+func normalizeTagValue(v string) string {
+	v = strings.Join(strings.Fields(v), " ")
+	if i := strings.Index(v, " Serial Number"); i > 0 {
+		v = v[:i]
+	}
+	if len(v) > maxTagValueLen {
+		v = strings.TrimSpace(v[:maxTagValueLen])
+	}
+	return v
 }
 
 // pduString converte uma PDU para string adequada pra tag. OctetString
