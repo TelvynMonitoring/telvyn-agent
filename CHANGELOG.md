@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Orçamento de cardinalidade por equipamento SNMP (não mais somado entre equipamentos com o mesmo `host_id`), com métrica
+  `telvyn.tagger.over_budget` (séries ignoradas, `device`, `top_metrics`) e nome do equipamento no aviso.
+- Parâmetro `drop_tags` no check SNMP para remover tags por métrica antes da cardinalidade (séries iguais são somadas).
+  Ver `docs/cardinalidade.md`.
 - Logs de host Linux (sem Kubernetes) com `TELVYN_LOGS_ENABLED=1`: lê o journald (`journalctl -f`) e arquivos `*.log` de
   `/var/log` (`/var/log/*.log` e `/var/log/*/*.log`), pelo mesmo WAL durável. Ajustes: `TELVYN_HOST_LOGS=0`,
   `TELVYN_HOST_LOGS_JOURNALD=0`, `TELVYN_HOST_LOGS_FILES` (globs; `off` desliga) e `TELVYN_HOST_LOGS_EXCLUDE`. O `install.sh`
@@ -21,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cardinalidade por host e não são mais descartadas quando o host estoura o limite.
 
 ### Changed
+- Tagger: orçamento padrão sobe para 50000 séries por equipamento (teto 100000) e a janela de séries inativas cai de 24h para 6h.
+- SNMP: tags de linha vazias são omitidas, espaços colapsados, sufixo volátil "Serial Number" removido e tamanho limitado a 128.
 - Tagger: o aviso de descarte deixa de ser um por série. Agora há no máximo um aviso por host a cada 5 minutos, com a
   contagem de séries descartadas, a cardinalidade atual, o orçamento e as 5 métricas mais afetadas. A métrica
   `telvyn.tagger.dropped` passa a sair agregada por host/métrica em cada lote (valor = séries descartadas), mantendo as
