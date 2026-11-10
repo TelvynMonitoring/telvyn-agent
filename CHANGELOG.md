@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TELVYN_HOST_LOGS_JOURNALD=0`, `TELVYN_HOST_LOGS_FILES` (globs; `off` desliga) e `TELVYN_HOST_LOGS_EXCLUDE`. O `install.sh`
   coloca o usuário do serviço nos grupos `systemd-journal` e `adm` (leitura) quando `TELVYN_LOGS_ENABLED=1`.
 
+### Fixed
+- Tagger: as métricas de saúde do coletor SNMP (`snmp.collector.*` e `snmp.device.*`) ficam fora do orçamento de
+  cardinalidade por host e não são mais descartadas quando o host estoura o limite.
+
+### Changed
+- Tagger: o aviso de descarte deixa de ser um por série. Agora há no máximo um aviso por host a cada 5 minutos, com a
+  contagem de séries descartadas, a cardinalidade atual, o orçamento e as 5 métricas mais afetadas. A métrica
+  `telvyn.tagger.dropped` passa a sair agregada por host/métrica em cada lote (valor = séries descartadas), mantendo as
+  tags `host` e `metric`. O orçamento padrão não mudou.
+
 ## [0.4.36] - 2026-10-10
 
 - Ship the Proxmox HTTPS collector in official images and Linux archives, with

@@ -215,7 +215,7 @@ func TestTagger_Filter_LogEstruturado_TemCamposObrigatorios(t *testing.T) {
 	if err := json.Unmarshal([]byte(last), &entry); err != nil {
 		t.Fatalf("log line is not JSON: %v — line=%s", err, last)
 	}
-	for _, field := range []string{"host_id", "metric", "current_cardinality", "budget"} {
+	for _, field := range []string{"host_id", "top_metrics", "current_cardinality", "budget"} {
 		if _, ok := entry[field]; !ok {
 			t.Errorf("log entry missing field %q — entry=%v", field, entry)
 		}
@@ -223,7 +223,92 @@ func TestTagger_Filter_LogEstruturado_TemCamposObrigatorios(t *testing.T) {
 	if entry["host_id"] != "hostA" {
 		t.Errorf("log host_id: want hostA, got %v", entry["host_id"])
 	}
-	if entry["metric"] != "snmp.iface.in" {
-		t.Errorf("log metric: want snmp.iface.in, got %v", entry["metric"])
+}
+
+// TestTagger_Filter_IsencaoSaudeSNMP garante que snmp.collector.* e
+// snmp.device.* passam com o orçamento cheio e as demais são descartadas.
+func TestTagger_Filter_IsencaoSaudeSNMP(t *testing.T) {
+	tg := NewTagger(1, slog.Default())
+	tg.Filter([]*collectorv1.Metric{
+		mkMetric("hostA", "snmp.iface.in", map[string]string{"iface": "eth0"}),
+	})
+
+	kept, drops := tg.Filter([]*collectorv1.Metric{
+		mkMetric("hostA", "snmp.collector.up", map[string]string{"target": "a"}),
+		mkMetric("hostA", "snmp.device.reachable", map[string]string{"target": "b"}),
+		mkMetric("hostA", "snmp.iface.out", map[string]string{"iface": "eth9"}),
+		mkMetric("hostA", "cpu.usage", nil),
+	})
+	if len(kept) != 2 {
+		t.Errorf("kept: want 2 (saúde SNMP), got %d", len(kept))
+	}
+	if len(drops) != 2 {
+		t.Errorf("drops: want 2 (snmp.iface.out e cpu.usage), got %d", len(drops))
+	}
+}
+
+// TestTagger_Filter_DropAgregadoPorMetrica garante uma meta-métrica por
+// host/métrica com Value igual à quantidade descartada.
+func TestTagger_Filter_DropAgregadoPorMetrica(t *testing.T) {
+	tg := NewTagger(1, slog.Default())
+	tg.Filter([]*collectorv1.Metric{mkMetric("hostA", "m", map[string]string{"i": "0"})})
+
+	_, drops := tg.Filter([]*collectorv1.Metric{
+		mkMetric("hostA", "m", map[string]string{"i": "1"}),
+		mkMetric("hostA", "m", map[string]string{"i": "2"}),
+		mkMetric("hostA", "m", map[string]string{"i": "3"}),
+	})
+	if len(drops) != 1 {
+		t.Fatalf("drops: want 1, got %d", len(drops))
+	}
+	if drops[0].GetValue() != 3 || drops[0].GetTags()["metric"] != "m" {
+		t.Errorf("drop: value=%v tags=%v, want 3 / metric=m", drops[0].GetValue(), drops[0].GetTags())
+	}
+}
+
+// TestTagger_Filter_AvisoAgregadoUmPorJanela garante no máximo um Warn por
+// host a cada 5 minutos, com a contagem acumulada na janela.
+func TestTagger_Filter_AvisoAgregadoUmPorJanela(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	tg := NewTagger(1, logger)
+	clock := time.Now()
+	tg.now = func() time.Time { return clock }
+
+	tg.Filter([]*collectorv1.Metric{mkMetric("hostA", "m", map[string]string{"i": "0"})})
+	drop := func(i string) {
+		tg.Filter([]*collectorv1.Metric{mkMetric("hostA", "m", map[string]string{"i": i})})
+	}
+	warns := func() []map[string]any {
+		var out []map[string]any
+		for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+			if l == "" {
+				continue
+			}
+			var e map[string]any
+			if err := json.Unmarshal([]byte(l), &e); err != nil {
+				t.Fatalf("log não é JSON: %v", err)
+			}
+			out = append(out, e)
+		}
+		return out
+	}
+
+	drop("1")
+	clock = clock.Add(time.Minute)
+	drop("2")
+	drop("3")
+	if n := len(warns()); n != 1 {
+		t.Fatalf("na janela: want 1 aviso, got %d", n)
+	}
+
+	clock = clock.Add(5 * time.Minute)
+	drop("4")
+	w := warns()
+	if len(w) != 2 {
+		t.Fatalf("nova janela: want 2 avisos, got %d", len(w))
+	}
+	if w[1]["dropped_series"] != float64(3) {
+		t.Errorf("dropped_series: want 3, got %v", w[1]["dropped_series"])
 	}
 }
