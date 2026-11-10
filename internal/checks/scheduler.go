@@ -152,6 +152,7 @@ type runningCheck struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	cfgVer int64 // config_version do servidor — pra detectar updates idempotentes
+	forget func() // libera o orçamento do tagger quando o check para
 }
 
 // SetWorkerPools configura os semáforos de concorrência. Chamar antes de
@@ -289,6 +290,17 @@ func (r *Runtime) startCheck(c Check) {
 	ctx, cancel := context.WithCancel(r.parent)
 	done := make(chan struct{})
 	rc := &runningCheck{cancel: cancel, done: done}
+	if sc, ok := c.(taggerScoped); ok {
+		host, scope, _ := sc.TaggerScope()
+		rc.forget = func() {
+			r.mu.Lock()
+			tg := r.tagger
+			r.mu.Unlock()
+			if tg != nil {
+				tg.ForgetScope(host, scope)
+			}
+		}
+	}
 	r.checksMu.Lock()
 	r.checks[c.ID()] = rc
 	r.checksMu.Unlock()
@@ -314,6 +326,9 @@ func (r *Runtime) stopCheck(id string) bool {
 	case <-rc.done:
 	case <-time.After(r.stopTimeout):
 		r.log.Warn("checks delta: stop timeout", "check_id", id)
+	}
+	if rc.forget != nil {
+		rc.forget()
 	}
 	return true
 }
@@ -627,7 +642,7 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			// SNMP returns only collection diagnostics on failure; keep its error
 			// and circuit breaker while exposing reachability and packet counts.
 			if _, snmp := c.(*snmpGenericCheck); snmp && len(metrics) > 0 {
-				r.emit(metrics)
+				r.emitFor(c, metrics)
 			}
 			if failure, ok := any(c).(ExplainFailureProvider); ok {
 				r.pushExplain(c, failure.ExplainFailure(err))
@@ -670,7 +685,7 @@ func (r *Runtime) runCheckCore(ctx context.Context, c Check) {
 			r.pushInstanceDiscovery(c.ID(), *instanceDiscovery)
 		}
 		if len(metrics) > 0 {
-			r.emit(metrics)
+			r.emitFor(c, metrics)
 		}
 	}
 
@@ -982,12 +997,32 @@ func (r *Runtime) SetTagger(t *Tagger) {
 // `telvyn.tagger.dropped` que viajam no mesmo batch (fast-path no Filter
 // garante que elas próprias não sejam dropadas — Pitfall 4 do RESEARCH).
 func (r *Runtime) emit(metrics []*collectorv1.Metric) {
+	r.emitScoped("", "", metrics)
+}
+
+// taggerScoped é implementado pelos checks cujo orçamento de cardinalidade é
+// por equipamento (SNMP): host_id, escopo estável e nome legível.
+type taggerScoped interface {
+	TaggerScope() (hostID, scope, label string)
+}
+
+// emitFor emite as métricas de um check aplicando o orçamento do seu escopo.
+func (r *Runtime) emitFor(c Check, metrics []*collectorv1.Metric) {
+	if sc, ok := c.(taggerScoped); ok {
+		_, scope, label := sc.TaggerScope()
+		r.emitScoped(scope, label, metrics)
+		return
+	}
+	r.emit(metrics)
+}
+
+func (r *Runtime) emitScoped(scope, label string, metrics []*collectorv1.Metric) {
 	r.mu.Lock()
 	tagger := r.tagger
 	r.mu.Unlock()
 
 	if tagger != nil {
-		kept, drops := tagger.Filter(metrics)
+		kept, drops := tagger.FilterScoped(scope, label, metrics)
 		if len(drops) > 0 {
 			kept = append(kept, drops...)
 		}

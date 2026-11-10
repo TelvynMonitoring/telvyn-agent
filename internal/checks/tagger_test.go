@@ -67,6 +67,7 @@ func TestTagger_Filter_OverBudget_DropsExcedente(t *testing.T) {
 	if len(kept) != 0 {
 		t.Errorf("kept: want 0, got %d", len(kept))
 	}
+	drops = onlyDropped(drops)
 	if len(drops) != 1 {
 		t.Fatalf("drops: want 1, got %d", len(drops))
 	}
@@ -109,6 +110,7 @@ func TestTagger_Filter_RepeatSerie_NaoIncrementaCardinality(t *testing.T) {
 		mkMetric("hostA", "snmp.iface.in", map[string]string{"iface": "eth9"}),
 	}
 	_, drops = tg.Filter(nova)
+	drops = onlyDropped(drops)
 	if len(drops) != 1 {
 		t.Errorf("nova depois de repeat: drops=%d, want 1", len(drops))
 	}
@@ -242,6 +244,7 @@ func TestTagger_Filter_IsencaoSaudeSNMP(t *testing.T) {
 	if len(kept) != 2 {
 		t.Errorf("kept: want 2 (saúde SNMP), got %d", len(kept))
 	}
+	drops = onlyDropped(drops)
 	if len(drops) != 2 {
 		t.Errorf("drops: want 2 (snmp.iface.out e cpu.usage), got %d", len(drops))
 	}
@@ -258,6 +261,7 @@ func TestTagger_Filter_DropAgregadoPorMetrica(t *testing.T) {
 		mkMetric("hostA", "m", map[string]string{"i": "2"}),
 		mkMetric("hostA", "m", map[string]string{"i": "3"}),
 	})
+	drops = onlyDropped(drops)
 	if len(drops) != 1 {
 		t.Fatalf("drops: want 1, got %d", len(drops))
 	}
@@ -311,4 +315,65 @@ func TestTagger_Filter_AvisoAgregadoUmPorJanela(t *testing.T) {
 	if w[1]["dropped_series"] != float64(3) {
 		t.Errorf("dropped_series: want 3, got %v", w[1]["dropped_series"])
 	}
+}
+
+// Dois equipamentos sob o mesmo host_id não dividem o orçamento.
+func TestTagger_FilterScoped_DevicesNaoSePrejudicam(t *testing.T) {
+	tg := NewTagger(2, slog.Default())
+	a := []*collectorv1.Metric{
+		mkMetric("h", "snmp.if.in", map[string]string{"i": "1"}),
+		mkMetric("h", "snmp.if.in", map[string]string{"i": "2"}),
+		mkMetric("h", "snmp.if.in", map[string]string{"i": "3"}),
+	}
+	kept, drops := tg.FilterScoped("a@1.1.1.1", "sw-a", a)
+	if len(kept) != 2 {
+		t.Fatalf("device A kept=%d, want 2", len(kept))
+	}
+	var over *collectorv1.Metric
+	for _, d := range drops {
+		if d.MetricName == "telvyn.tagger.over_budget" {
+			over = d
+		}
+	}
+	if over == nil || over.Value != 1 || over.Tags["device"] != "sw-a" || over.Tags["top_metrics"] != "snmp.if.in=1" {
+		t.Fatalf("over_budget inesperada: %v", over)
+	}
+	kept, drops = tg.FilterScoped("b@2.2.2.2", "sw-b", a[:2])
+	if len(kept) != 2 || len(drops) != 0 {
+		t.Fatalf("device B kept=%d drops=%d, want 2/0", len(kept), len(drops))
+	}
+	tg.ForgetScope("h", "a@1.1.1.1")
+	kept, _ = tg.FilterScoped("a@1.1.1.1", "sw-a", a[2:])
+	if len(kept) != 1 {
+		t.Fatalf("após ForgetScope kept=%d, want 1", len(kept))
+	}
+}
+
+func TestTagger_BudgetPadrao50k(t *testing.T) {
+	if got := NewTagger(0, nil).Budget(); got != 50000 {
+		t.Fatalf("default = %d", got)
+	}
+}
+
+func TestApplyDropTags_AgregaPorSoma(t *testing.T) {
+	in := []*collectorv1.Metric{
+		mkMetric("h", "snmp.storage.used", map[string]string{"row_index": "1", "storage_descr": "a", "k": "x"}),
+		mkMetric("h", "snmp.storage.used", map[string]string{"row_index": "2", "storage_descr": "b", "k": "x"}),
+		mkMetric("h", "snmp.other", map[string]string{"row_index": "1"}),
+	}
+	out := applyDropTags(in, map[string][]string{"snmp.storage.used": {"row_index", "storage_descr"}})
+	if len(out) != 2 || out[0].Value != 2 || len(out[0].Tags) != 1 || out[1].Tags["row_index"] != "1" {
+		t.Fatalf("resultado inesperado: %v", out)
+	}
+}
+
+// onlyDropped separa as telvyn.tagger.dropped da telvyn.tagger.over_budget.
+func onlyDropped(in []*collectorv1.Metric) []*collectorv1.Metric {
+	var out []*collectorv1.Metric
+	for _, m := range in {
+		if m.MetricName == "telvyn.tagger.dropped" {
+			out = append(out, m)
+		}
+	}
+	return out
 }

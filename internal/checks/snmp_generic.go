@@ -114,6 +114,8 @@ type snmpGenericCheck struct {
 	profileID       string // "auto" ou nome explicito
 	clientFn        snmpClientFactory
 	disabledMetrics map[string]bool // métricas desabilitadas pelo usuário (per-host)
+	dropTags        map[string][]string // tags removidas por métrica (chave "*" vale para todas)
+	target          string
 	configVersion   int64
 
 	mu             sync.Mutex
@@ -177,7 +179,14 @@ func newSnmpGenericCheckWithFactory(cfg *collectorv1.CheckConfig, factory snmpCl
 		}
 	}
 
+	var dropTags map[string][]string
+	if dt := params["drop_tags"]; dt != "" {
+		_ = json.Unmarshal([]byte(dt), &dropTags)
+	}
+
 	return &snmpGenericCheck{
+		dropTags: dropTags,
+		target:   snmpParams.Target,
 		id:              id,
 		interval:        interval,
 		hostID:          cfg.GetHostId(),
@@ -268,6 +277,7 @@ func (c *snmpGenericCheck) Run(ctx context.Context) (metrics []*collectorv1.Metr
 		}
 		metrics = filtered
 	}
+	metrics = applyDropTags(metrics, c.dropTags)
 	expected := profile.MetricFamilies()
 	for name := range c.disabledMetrics {
 		delete(expected, name)
@@ -366,4 +376,46 @@ func (c *snmpGenericCheck) resolveProfile(ctx context.Context, runner snmpGeneri
 // CHECK-02 + CHECK-05 (reinterpretado) com este registro.
 func init() {
 	Default.Register("snmp.generic", newSnmpGenericCheck)
+}
+
+// TaggerScope identifica o equipamento para o orçamento de cardinalidade: cada
+// equipamento SNMP tem o seu, mesmo que vários compartilhem o host_id do check.
+func (c *snmpGenericCheck) TaggerScope() (hostID, scope, label string) {
+	label = c.target
+	for _, k := range []string{"hostname", "host_name", "device_name", "name"} {
+		if v := strings.TrimSpace(c.staticTags[k]); v != "" {
+			label = v
+			break
+		}
+	}
+	return c.hostID, c.id + "@" + c.target, label
+}
+
+// applyDropTags remove, ANTES do cálculo de cardinalidade, as tags indicadas em
+// rules (nome da métrica -> tags; "*" vale para todas). Séries que ficam
+// idênticas após a remoção são agregadas somando os valores.
+func applyDropTags(in []*collectorv1.Metric, rules map[string][]string) []*collectorv1.Metric {
+	if len(rules) == 0 || len(in) == 0 {
+		return in
+	}
+	out := make([]*collectorv1.Metric, 0, len(in))
+	index := map[string]*collectorv1.Metric{}
+	for _, m := range in {
+		drop := append(append([]string{}, rules["*"]...), rules[m.GetMetricName()]...)
+		if len(drop) == 0 || len(m.Tags) == 0 {
+			out = append(out, m)
+			continue
+		}
+		for _, k := range drop {
+			delete(m.Tags, k)
+		}
+		key := seriesKey(m)
+		if first, ok := index[key]; ok {
+			first.Value += m.Value
+			continue
+		}
+		index[key] = m
+		out = append(out, m)
+	}
+	return out
 }
