@@ -21,10 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coloca o usuário do serviço nos grupos `systemd-journal` e `adm` (leitura) quando `TELVYN_LOGS_ENABLED=1`.
 
 ### Fixed
+- Docker: com `TELVYN_DOCKER_INTEGRATION=true` o agente da imagem não conseguia abrir o `docker.sock` (`docker.host: ping failed ...
+  permission denied`), porque rodava como `telvyn` fora do grupo dono do socket. Só o `install.sh` (modo host) dava esse acesso.
 - Tagger: as métricas de saúde do coletor SNMP (`snmp.collector.*` e `snmp.device.*`) ficam fora do orçamento de
   cardinalidade por host e não são mais descartadas quando o host estoura o limite.
 
 ### Changed
+- Imagem Docker: não define mais `USER` (inicia como root, como a imagem do agente da Datadog), para ler o `docker.sock` montado sem
+  que o operador informe GID nem use `group_add`. O chart fixa `runAsUser/runAsGroup: 10001` no DaemonSet padrão e no webhook, então
+  o Kubernetes continua sem root; os modos eBPF, SBOM e detecção de runtime seguem pedindo `runAsUser: 0`.
 - Tagger: orçamento padrão sobe para 50000 séries por equipamento (teto 100000) e a janela de séries inativas cai de 24h para 6h.
 - SNMP: tags de linha vazias são omitidas, espaços colapsados, sufixo volátil "Serial Number" removido e tamanho limitado a 128.
 - Tagger: o aviso de descarte deixa de ser um por série. Agora há no máximo um aviso por host a cada 5 minutos, com a

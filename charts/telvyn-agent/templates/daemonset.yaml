@@ -213,6 +213,10 @@ spec:
             readOnlyRootFilesystem: false
             allowPrivilegeEscalation: false
             {{- else }}
+            # A imagem não define USER (roda como root no Docker); no cluster o
+            # agente segue como telvyn, sem root.
+            runAsUser: 10001
+            runAsGroup: 10001
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities:

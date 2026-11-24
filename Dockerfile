@@ -123,6 +123,8 @@ RUN mkdir -p /var/lib/telvyn /opt/telvyn-shared \
  && chown -R telvyn:telvyn /var/lib/telvyn /opt/telvyn-shared
 VOLUME ["/etc/telvyn/certs", "/var/lib/telvyn", "/opt/telvyn-shared"]
 
-USER telvyn:telvyn
+# Sem USER: a imagem roda como root, como o agent da Datadog, para ler o
+# /var/run/docker.sock montado (TELVYN_DOCKER_INTEGRATION=true) sem o operador
+# informar GID. O chart fixa runAsUser 10001 onde não precisa de root.
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/entrypoint.sh"]
