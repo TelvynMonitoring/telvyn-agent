@@ -14,6 +14,20 @@
 //   - docker.container.network_rx_bytes  (soma de stats.Networks[*].RxBytes)
 //   - docker.container.network_tx_bytes  (soma de stats.Networks[*].TxBytes)
 //
+// Métricas adicionais por container running (mesma tag container_name):
+//   - docker.container.cpu_throttled_periods / cpu_throttled_seconds (CFS throttling, contadores)
+//   - docker.container.mem_limit_bytes, mem_rss_bytes, mem_cache_bytes (cgroup v1 rss/cache; v2 anon/file)
+//   - docker.container.network_{rx,tx}_{packets,errors,dropped}       (soma das interfaces, contadores)
+//   - docker.container.blkio_{read,write}_{bytes,ops}                 (soma dos dispositivos, contadores)
+//   - docker.container.pids                                           (PidsStats.Current)
+//   - docker.container.info (valor 1) com tags de identidade: container_id, image, command,
+//     ports, mounts e created (epoch). Tags estáveis: só mudam se o container for recriado.
+//     blkio_*_ops só sai quando a API informa operações (cgroup v1); no cgroup v2 o Docker
+//     devolve io_serviced_recursive vazio e um 0 fixo enganaria.
+//   - Via ContainerInspect (best-effort, 1 chamada por container/tick):
+//     restart_count (real), oom_killed (0/1), uptime_seconds, health_status (1 healthy / 0 unhealthy,
+//     só quando o container tem healthcheck). Se o Inspect falhar essas métricas simplesmente não saem.
+//
 // Decisões locked:
 //   - Cliente Docker via interface seam `dockerClient` — em prod usa
 //     client.NewClientWithOpts + WithAPIVersionNegotiation; em testes
@@ -43,6 +57,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +83,7 @@ type dockerClient interface {
 	Ping(ctx context.Context) (dockertypes.Ping, error)
 	ContainerList(ctx context.Context, opts container.ListOptions) ([]container.Summary, error)
 	ContainerStatsOneShot(ctx context.Context, containerID string) (container.StatsResponseReader, error)
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
 	Close() error
 }
 
@@ -145,7 +161,7 @@ func (d *dockerHost) Tags() map[string]string { return d.staticTags }
 // Run executa um ciclo:
 //  1. ContainerList(All=true) → conta running/stopped
 //  2. Para cada running, ContainerStatsOneShot em paralelo (semaphore=5)
-//  3. Emite 2 métricas top-level + 5 por container running
+//  3. Emite 2 métricas top-level + as métricas por container running (ver cabeçalho)
 //
 // Erros pontuais de stats são pulados (best-effort); a Run só falha se
 // ContainerList falhar (sinal de daemon morto/permissão revogada).
@@ -169,7 +185,7 @@ func (d *dockerHost) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
 		}
 	}
 
-	out := make([]*collectorv1.Metric, 0, 2+running*5)
+	out := make([]*collectorv1.Metric, 0, 2+running*26)
 	out = append(out,
 		d.metric(now, "docker.containers_running", float64(running), nil),
 		d.metric(now, "docker.containers_stopped", float64(stopped), nil),
@@ -214,7 +230,7 @@ func (d *dockerHost) Run(ctx context.Context) ([]*collectorv1.Metric, error) {
 }
 
 // collectContainerStats faz um ContainerStatsOneShot, decodifica JSON e
-// produz as 5 métricas por container. Retorna nil em qualquer erro (best-
+// produz as métricas por container. Retorna nil em qualquer erro (best-
 // effort por Pitfall 8) — caller só agrega o que existir.
 func (d *dockerHost) collectContainerStats(ctx context.Context, now *timestamppb.Timestamp, c container.Summary) []*collectorv1.Metric {
 	rdr, err := d.cli.ContainerStatsOneShot(ctx, c.ID)
@@ -268,19 +284,184 @@ func (d *dockerHost) collectContainerStats(ctx context.Context, now *timestamppb
 		txBytes += n.TxBytes
 	}
 
-	// RestartCount: o Summary do ContainerList não expõe RestartCount
-	// diretamente (só via Inspect, que é caro). Por enquanto emite 0 — o
-	// dado real virá em iteração futura quando o engine pedir, pra evitar
-	// um Inspect por container por tick.
-	restart := 0.0
-
-	return []*collectorv1.Metric{
+	out := []*collectorv1.Metric{
 		d.metric(now, "docker.container.cpu_percent", cpuPct, tags),
 		d.metric(now, "docker.container.mem_used_bytes", memUsed, tags),
-		d.metric(now, "docker.container.restart_count", restart, tags),
 		d.metric(now, "docker.container.network_rx_bytes", float64(rxBytes), tags),
 		d.metric(now, "docker.container.network_tx_bytes", float64(txBytes), tags),
 	}
+	add := func(name string, v float64) { out = append(out, d.metric(now, name, v, tags)) }
+
+	// CPU throttling (contadores; zero quando o container não tem quota CFS).
+	add("docker.container.cpu_throttled_periods", float64(s.CPUStats.ThrottlingData.ThrottledPeriods))
+	add("docker.container.cpu_throttled_seconds", float64(s.CPUStats.ThrottlingData.ThrottledTime)/1e9)
+
+	// Memória: limite (0 = sem dado) e RSS/cache. cgroup v1 expõe rss/cache; v2 anon/file.
+	if s.MemoryStats.Limit > 0 {
+		add("docker.container.mem_limit_bytes", float64(s.MemoryStats.Limit))
+	}
+	if v, ok := firstStat(s.MemoryStats.Stats, "rss", "anon"); ok {
+		add("docker.container.mem_rss_bytes", float64(v))
+	}
+	if v, ok := firstStat(s.MemoryStats.Stats, "cache", "file"); ok {
+		add("docker.container.mem_cache_bytes", float64(v))
+	}
+
+	// Rede: pacotes, erros e descartes (soma das interfaces).
+	var rxPk, txPk, rxErr, txErr, rxDrop, txDrop uint64
+	for _, n := range s.Networks {
+		rxPk += n.RxPackets
+		txPk += n.TxPackets
+		rxErr += n.RxErrors
+		txErr += n.TxErrors
+		rxDrop += n.RxDropped
+		txDrop += n.TxDropped
+	}
+	add("docker.container.network_rx_packets", float64(rxPk))
+	add("docker.container.network_tx_packets", float64(txPk))
+	add("docker.container.network_rx_errors", float64(rxErr))
+	add("docker.container.network_tx_errors", float64(txErr))
+	add("docker.container.network_rx_dropped", float64(rxDrop))
+	add("docker.container.network_tx_dropped", float64(txDrop))
+
+	// Disco (blkio): bytes e operações de leitura/escrita, somando os dispositivos.
+	rdB, wrB := blkioSum(s.BlkioStats.IoServiceBytesRecursive)
+	add("docker.container.blkio_read_bytes", rdB)
+	add("docker.container.blkio_write_bytes", wrB)
+	if len(s.BlkioStats.IoServicedRecursive) > 0 {
+		rdOp, wrOp := blkioSum(s.BlkioStats.IoServicedRecursive)
+		add("docker.container.blkio_read_ops", rdOp)
+		add("docker.container.blkio_write_ops", wrOp)
+	}
+
+	add("docker.container.pids", float64(s.PidsStats.Current))
+
+	// Estado (Inspect, best-effort). Restart count só sai com dado real: antes era
+	// um 0 fixo, o que escondia reinícios de verdade.
+	if insp, err := d.cli.ContainerInspect(ctx, c.ID); err == nil && insp.ContainerJSONBase != nil {
+		add("docker.container.restart_count", float64(insp.RestartCount))
+		if st := insp.State; st != nil {
+			oom := 0.0
+			if st.OOMKilled {
+				oom = 1
+			}
+			add("docker.container.oom_killed", oom)
+			if started, err := time.Parse(time.RFC3339Nano, st.StartedAt); err == nil && !started.IsZero() && started.Year() > 1 {
+				add("docker.container.uptime_seconds", time.Since(started).Seconds())
+			}
+			if st.Health != nil {
+				switch st.Health.Status {
+				case container.Healthy:
+					add("docker.container.health_status", 1)
+				case container.Unhealthy:
+					add("docker.container.health_status", 0)
+				}
+			}
+		}
+	}
+
+	// Identidade (estável): permite ao portal mostrar imagem, comando, portas e volumes.
+	out = append(out, d.metric(now, "docker.container.info", 1, map[string]string{
+		"container_name": name,
+		"container_id":   shortID(c.ID),
+		"image":          truncateTag(c.Image, 200),
+		"command":        truncateTag(c.Command, 200),
+		"ports":          truncateTag(formatPorts(c.Ports), 300),
+		"mounts":         truncateTag(formatMounts(c.Mounts), 400),
+		"created":        fmt.Sprintf("%d", c.Created),
+	}))
+	return out
+}
+
+func shortID(id string) string {
+	id = strings.TrimPrefix(id, "sha256:")
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+// truncateTag limita o tamanho de um valor de tag (label no VictoriaMetrics), sem cortar no meio de um rune.
+func truncateTag(v string, max int) string {
+	v = strings.TrimSpace(v)
+	if len(v) <= max {
+		return v
+	}
+	r := []rune(v)
+	for len(string(r)) > max-1 {
+		r = r[:len(r)-1]
+	}
+	return string(r) + "…"
+}
+
+// formatPorts: "6379→6379/tcp,127.0.0.1:9000→9000/tcp,5432/tcp". Publicações em 0.0.0.0 e :: (o Docker lista as duas)
+// viram uma só, sem o IP; portas não publicadas aparecem só como porta/protocolo. Ordenado e sem repetição.
+func formatPorts(ports []container.Port) string {
+	seen := map[string]bool{}
+	var list []string
+	for _, p := range ports {
+		var item string
+		if p.PublicPort > 0 {
+			ip := fmt.Sprint(p.IP)
+			switch ip {
+			case "", "0.0.0.0", "::", "invalid IP", "<invalid netip.Addr>":
+				ip = ""
+			default:
+				if strings.Contains(ip, ":") {
+					ip = "[" + ip + "]"
+				}
+				ip += ":"
+			}
+			item = fmt.Sprintf("%s%d→%d/%s", ip, p.PublicPort, p.PrivatePort, p.Type)
+		} else {
+			item = fmt.Sprintf("%d/%s", p.PrivatePort, p.Type)
+		}
+		if !seen[item] {
+			seen[item] = true
+			list = append(list, item)
+		}
+	}
+	sort.Strings(list)
+	return strings.Join(list, ",")
+}
+
+// formatMounts: "nome-ou-origem:destino" por montagem (o tipo bind/volume fica implícito pelo caminho).
+func formatMounts(mounts []container.MountPoint) string {
+	var list []string
+	for _, m := range mounts {
+		src := m.Name
+		if src == "" {
+			src = m.Source
+		}
+		list = append(list, src+":"+m.Destination)
+	}
+	sort.Strings(list)
+	return strings.Join(list, ",")
+}
+
+// firstStat devolve o primeiro dos nomes que existir no mapa de stats de memória
+// (cgroup v1 e v2 usam chaves diferentes para a mesma grandeza).
+func firstStat(stats map[string]uint64, keys ...string) (uint64, bool) {
+	for _, k := range keys {
+		if v, ok := stats[k]; ok {
+			return v, true
+		}
+	}
+	return 0, false
+}
+
+// blkioSum soma leitura e escrita de todos os dispositivos. A API devolve "read"/"write"
+// em cgroup v2 e "Read"/"Write" em v1; outras operações (sync, total…) são ignoradas.
+func blkioSum(entries []container.BlkioStatEntry) (read, write float64) {
+	for _, e := range entries {
+		switch strings.ToLower(e.Op) {
+		case "read":
+			read += float64(e.Value)
+		case "write":
+			write += float64(e.Value)
+		}
+	}
+	return read, write
 }
 
 // metric merge static_tags + extra (extra ganha em conflito).

@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Check `docker.host`: novas métricas por container (`docker.container.*`): `cpu_throttled_periods/seconds`, `mem_limit_bytes`,
+  `mem_rss_bytes`, `mem_cache_bytes` (cgroup v1 `rss/cache`, v2 `anon/file`), `network_{rx,tx}_{packets,errors,dropped}`,
+  `blkio_{read,write}_bytes`, `pids`, `oom_killed`, `uptime_seconds` e `health_status` (1 saudável, 0 com falha; só com healthcheck).
+  `blkio_{read,write}_ops` só saem quando a API informa operações (cgroup v1; no v2 o Docker não preenche).
+- Check `docker.host`: `docker.container.info` (valor 1) com tags estáveis `container_id`, `image`, `command`, `ports`, `mounts` e
+  `created`, para o portal mostrar a identidade do container.
 - Orçamento de cardinalidade por equipamento SNMP (não mais somado entre equipamentos com o mesmo `host_id`), com métrica
   `telvyn.tagger.over_budget` (séries ignoradas, `device`, `top_metrics`) e nome do equipamento no aviso.
 - Parâmetro `drop_tags` no check SNMP para remover tags por métrica antes da cardinalidade (séries iguais são somadas).
@@ -21,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   coloca o usuário do serviço nos grupos `systemd-journal` e `adm` (leitura) quando `TELVYN_LOGS_ENABLED=1`.
 
 ### Fixed
+- Check `docker.host`: `docker.container.restart_count` era sempre 0; agora vem do `ContainerInspect` e não é emitido se o Inspect falhar.
 - Docker: com `TELVYN_DOCKER_INTEGRATION=true` o agente da imagem não conseguia abrir o `docker.sock` (`docker.host: ping failed ...
   permission denied`), porque rodava como `telvyn` fora do grupo dono do socket. Só o `install.sh` (modo host) dava esse acesso.
 - Tagger: as métricas de saúde do coletor SNMP (`snmp.collector.*` e `snmp.device.*`) ficam fora do orçamento de
