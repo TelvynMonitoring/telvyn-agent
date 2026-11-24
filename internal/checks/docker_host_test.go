@@ -46,6 +46,10 @@ type fakeDockerClient struct {
 	statsErrs  map[string]error
 	statsDelay map[string]time.Duration // delay para teste de semaphore
 
+	// Inspect (restart_count, oom, uptime, health).
+	inspectByID map[string]container.InspectResponse
+	inspectErr  error
+
 	closed atomic.Bool
 
 	// instrumentação de semaphore: contadores e máximo concorrente
@@ -100,6 +104,20 @@ func (f *fakeDockerClient) ContainerStatsOneShot(ctx context.Context, containerI
 		}, nil
 	}
 	return container.StatsResponseReader{}, errors.New("no fixture for container")
+}
+
+// ContainerInspect devolve fixture de inspectByID; sem fixture devolve um container "running"
+// sem reinícios (o suficiente para os testes que não olham o Inspect).
+func (f *fakeDockerClient) ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error) {
+	if f.inspectErr != nil {
+		return container.InspectResponse{}, f.inspectErr
+	}
+	if r, ok := f.inspectByID[containerID]; ok {
+		return r, nil
+	}
+	return container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{
+		State: &container.State{Status: "running", Running: true, StartedAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)},
+	}}, nil
 }
 
 func (f *fakeDockerClient) Close() error {
@@ -239,11 +257,11 @@ func TestDockerHost_RunEmitsPerContainerMetrics(t *testing.T) {
 	}
 
 	wantNames := map[string]bool{
-		"docker.container.cpu_percent":       false,
-		"docker.container.mem_used_bytes":    false,
-		"docker.container.restart_count":     false,
-		"docker.container.network_rx_bytes":  false,
-		"docker.container.network_tx_bytes":  false,
+		"docker.container.cpu_percent":      false,
+		"docker.container.mem_used_bytes":   false,
+		"docker.container.restart_count":    false,
+		"docker.container.network_rx_bytes": false,
+		"docker.container.network_tx_bytes": false,
 	}
 	for _, m := range metrics {
 		if _, ok := wantNames[m.MetricName]; !ok {
@@ -410,3 +428,204 @@ func itoa(i int) string {
 // ensure import compatibility for sync (used implicitly via atomic; some IDEs
 // will mark unused otherwise) — keep a no-op guard.
 var _ = sync.Mutex{}
+
+// metricsByName indexa os valores de um container pelo nome da métrica.
+func metricsByName(metrics []*collectorv1.Metric, ctr string) map[string]float64 {
+	got := map[string]float64{}
+	for _, m := range metrics {
+		if m.Tags["container_name"] == ctr {
+			got[m.MetricName] = m.Value
+		}
+	}
+	return got
+}
+
+// TestDockerHost_RunEmitsExtendedMetrics — throttling, limite/RSS/cache (cgroup v1), pacotes/erros/
+// descartes de rede, blkio, PIDs e os dados do Inspect (restart real, OOM, health, uptime).
+func TestDockerHost_RunEmitsExtendedMetrics(t *testing.T) {
+	stats := minimalStats("abc")
+	stats.CPUStats.ThrottlingData = container.ThrottlingData{ThrottledPeriods: 7, ThrottledTime: 2_500_000_000}
+	stats.MemoryStats = container.MemoryStats{
+		Usage: 300, Limit: 1000,
+		Stats: map[string]uint64{"cache": 40, "rss": 90},
+	}
+	stats.Networks = map[string]container.NetworkStats{
+		"eth0": {RxPackets: 10, TxPackets: 20, RxErrors: 1, TxErrors: 2, RxDropped: 3, TxDropped: 4},
+		"eth1": {RxPackets: 5, TxPackets: 5, RxErrors: 1, TxErrors: 1, RxDropped: 1, TxDropped: 1},
+	}
+	stats.BlkioStats = container.BlkioStats{
+		IoServiceBytesRecursive: []container.BlkioStatEntry{
+			{Op: "Read", Value: 100}, {Op: "Write", Value: 50}, {Op: "Read", Value: 11}, {Op: "Total", Value: 999}, {Op: "Sync", Value: 5},
+		},
+		IoServicedRecursive: []container.BlkioStatEntry{{Op: "read", Value: 4}, {Op: "write", Value: 6}},
+	}
+	stats.PidsStats = container.PidsStats{Current: 12}
+	cli := &fakeDockerClient{
+		listResult: []container.Summary{{ID: "abc", Names: []string{"/web"}, State: container.StateRunning}},
+		statsByID:  map[string]container.StatsResponse{"abc": stats},
+		inspectByID: map[string]container.InspectResponse{"abc": {ContainerJSONBase: &container.ContainerJSONBase{
+			RestartCount: 3,
+			State: &container.State{
+				OOMKilled: true,
+				StartedAt: time.Now().Add(-90 * time.Second).UTC().Format(time.RFC3339Nano),
+				Health:    &container.Health{Status: container.Unhealthy},
+			},
+		}}},
+	}
+	dh := newDockerHostWithClient("h", nil, cli)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	metrics, err := dh.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := metricsByName(metrics, "web")
+	want := map[string]float64{
+		"docker.container.cpu_throttled_periods": 7,
+		"docker.container.cpu_throttled_seconds": 2.5,
+		"docker.container.mem_limit_bytes":       1000,
+		"docker.container.mem_rss_bytes":         90,
+		"docker.container.mem_cache_bytes":       40,
+		"docker.container.network_rx_packets":    15,
+		"docker.container.network_tx_packets":    25,
+		"docker.container.network_rx_errors":     2,
+		"docker.container.network_tx_errors":     3,
+		"docker.container.network_rx_dropped":    4,
+		"docker.container.network_tx_dropped":    5,
+		"docker.container.blkio_read_bytes":      111,
+		"docker.container.blkio_write_bytes":     50,
+		"docker.container.blkio_read_ops":        4,
+		"docker.container.blkio_write_ops":       6,
+		"docker.container.pids":                  12,
+		"docker.container.restart_count":         3,
+		"docker.container.oom_killed":            1,
+		"docker.container.health_status":         0,
+	}
+	for name, v := range want {
+		g, ok := got[name]
+		if !ok {
+			t.Errorf("missing metric %q", name)
+			continue
+		}
+		if g != v {
+			t.Errorf("%s=%v want %v", name, g, v)
+		}
+	}
+	if up := got["docker.container.uptime_seconds"]; up < 89 || up > 120 {
+		t.Errorf("uptime_seconds=%v want ~90", up)
+	}
+}
+
+// TestDockerHost_MemoryStatsCgroupV2 — cgroup v2 usa anon/file em vez de rss/cache.
+func TestDockerHost_MemoryStatsCgroupV2(t *testing.T) {
+	stats := minimalStats("v2")
+	stats.MemoryStats = container.MemoryStats{Usage: 500, Stats: map[string]uint64{"anon": 120, "file": 60}}
+	cli := &fakeDockerClient{
+		listResult: []container.Summary{{ID: "v2", Names: []string{"/v2"}, State: container.StateRunning}},
+		statsByID:  map[string]container.StatsResponse{"v2": stats},
+	}
+	metrics, err := newDockerHostWithClient("h", nil, cli).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := metricsByName(metrics, "v2")
+	if got["docker.container.mem_rss_bytes"] != 120 || got["docker.container.mem_cache_bytes"] != 60 {
+		t.Errorf("rss/cache=%v/%v want 120/60", got["docker.container.mem_rss_bytes"], got["docker.container.mem_cache_bytes"])
+	}
+	if _, ok := got["docker.container.mem_limit_bytes"]; ok {
+		t.Errorf("mem_limit_bytes não deveria sair quando Limit=0")
+	}
+	if _, ok := got["docker.container.health_status"]; ok {
+		t.Errorf("health_status não deveria sair sem healthcheck")
+	}
+}
+
+// TestDockerHost_InspectErrorSkipsInspectMetrics — sem Inspect não há restart_count (antes saía um 0 falso),
+// mas as métricas de stats continuam.
+func TestDockerHost_InspectErrorSkipsInspectMetrics(t *testing.T) {
+	cli := &fakeDockerClient{
+		listResult: []container.Summary{{ID: "x", Names: []string{"/x"}, State: container.StateRunning}},
+		statsByID:  map[string]container.StatsResponse{"x": minimalStats("x")},
+		inspectErr: errors.New("inspect: boom"),
+	}
+	metrics, err := newDockerHostWithClient("h", nil, cli).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := metricsByName(metrics, "x")
+	for _, name := range []string{"docker.container.restart_count", "docker.container.oom_killed", "docker.container.uptime_seconds"} {
+		if _, ok := got[name]; ok {
+			t.Errorf("%s não deveria sair quando o Inspect falha", name)
+		}
+	}
+	if _, ok := got["docker.container.cpu_percent"]; !ok {
+		t.Errorf("cpu_percent deveria sair mesmo sem Inspect")
+	}
+}
+
+// TestDockerHost_InfoMetricCarriesIdentity — docker.container.info (valor 1) leva imagem, comando, portas,
+// montagens e criação como tags estáveis.
+func TestDockerHost_InfoMetricCarriesIdentity(t *testing.T) {
+	cli := &fakeDockerClient{
+		listResult: []container.Summary{{
+			ID: "0123456789abcdef0123", Names: []string{"/api"}, State: container.StateRunning,
+			Image: "ghcr.io/acme/api:1.2", Command: "java -jar app.jar", Created: 1700000000,
+			Ports: []container.Port{
+				{PrivatePort: 8080, PublicPort: 18080, Type: "tcp"},
+				{PrivatePort: 8080, PublicPort: 18080, Type: "tcp"}, // duplicada (ipv4/ipv6)
+				{PrivatePort: 5432, Type: "tcp"},
+			},
+			Mounts: []container.MountPoint{
+				{Type: "volume", Name: "data", Destination: "/var/lib/data"},
+				{Type: "bind", Source: "/srv/conf", Destination: "/etc/app"},
+			},
+		}},
+		statsByID: map[string]container.StatsResponse{"0123456789abcdef0123": minimalStats("x")},
+	}
+	metrics, err := newDockerHostWithClient("h", nil, cli).Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var info *collectorv1.Metric
+	for _, m := range metrics {
+		if m.MetricName == "docker.container.info" {
+			info = m
+		}
+	}
+	if info == nil || info.Value != 1 {
+		t.Fatalf("docker.container.info ausente ou valor != 1: %+v", info)
+	}
+	want := map[string]string{
+		"container_name": "api", "container_id": "0123456789ab", "image": "ghcr.io/acme/api:1.2",
+		"command": "java -jar app.jar", "created": "1700000000",
+		"mounts": "/srv/conf:/etc/app,data:/var/lib/data",
+	}
+	for k, v := range want {
+		if info.Tags[k] != v {
+			t.Errorf("tag %s=%q want %q", k, info.Tags[k], v)
+		}
+	}
+	if got := info.Tags["ports"]; got != "18080→8080/tcp,5432/tcp" {
+		t.Errorf("ports=%q want %q", got, "18080→8080/tcp,5432/tcp")
+	}
+}
+
+// TestDockerHost_BlkioOpsOnlyWhenReported — cgroup v2: a API não informa operações; não emitir 0 fixo.
+func TestDockerHost_BlkioOpsOnlyWhenReported(t *testing.T) {
+	stats := minimalStats("o")
+	stats.BlkioStats = container.BlkioStats{IoServiceBytesRecursive: []container.BlkioStatEntry{{Op: "read", Value: 9}}}
+	cli := &fakeDockerClient{
+		listResult: []container.Summary{{ID: "o", Names: []string{"/o"}, State: container.StateRunning}},
+		statsByID:  map[string]container.StatsResponse{"o": stats},
+	}
+	metrics, _ := newDockerHostWithClient("h", nil, cli).Run(context.Background())
+	got := metricsByName(metrics, "o")
+	if got["docker.container.blkio_read_bytes"] != 9 {
+		t.Errorf("blkio_read_bytes=%v want 9", got["docker.container.blkio_read_bytes"])
+	}
+	for _, n := range []string{"docker.container.blkio_read_ops", "docker.container.blkio_write_ops"} {
+		if _, ok := got[n]; ok {
+			t.Errorf("%s não deveria sair sem io_serviced_recursive", n)
+		}
+	}
+}

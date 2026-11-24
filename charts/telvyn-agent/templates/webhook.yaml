@@ -89,6 +89,10 @@ spec:
           # roda o binário direto em modo webhook.
           command: ["/usr/local/bin/telvyn-agent"]
           args: ["--webhook"]
+          # Bypassa o entrypoint: sem isto herdaria o root da imagem.
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
           ports:
             - { name: https, containerPort: 8443 }
           env:
