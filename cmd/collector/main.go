@@ -639,6 +639,7 @@ func runIngestMode(ingestURL string) {
 		} else {
 			go resolver.Run(ctx)
 			rec.SetPodResolver(resolver)
+			rec.SetImageResolver(resolver)
 			log.Info("otlp: carimbo de pod/namespace por IP de origem ativo (kubelet)")
 
 			// Detecção de linguagem por processo: olha /proc,
