@@ -48,7 +48,7 @@ RUN go run ./cmd/package-proxmox -out /out/integrations -arch ${TARGETARCH:-amd6
 # imagem única do agent e é copiado pelo entrypoint para o volume compartilhado.
 # O bundle é publicado só para linux/amd64 e só leva arquivos independentes de arquitetura
 # (jars Java e scripts Node). Fixar a plataforma aqui deixa a build arm64 do agent resolvê-lo.
-FROM --platform=linux/amd64 ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.11 AS runtime-agents
+FROM --platform=linux/amd64 ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.12 AS runtime-agents
 
 # ---------- Stage 2: runtime ----------
 # Alpine (not distroless) so the entrypoint shell can expand env vars into
