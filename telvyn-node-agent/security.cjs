@@ -85,8 +85,8 @@ function startSecurity() {
     const destination = new URL(endpoint);
     if (finding) destination.pathname = destination.pathname.replace(/events$/, 'iast');
     const send = fetch(destination, {method: 'POST', headers: {'content-type': 'application/json'}, body, redirect: 'error', signal: AbortSignal.timeout(5000)})
-      .then(async response => { await response.arrayBuffer(); if (!response.ok) throw new Error('Delivery rejected'); })
-      .catch(() => console.warn('[Telvyn] Security event delivery failed.'))
+      .then(async response => { await response.arrayBuffer(); if (!response.ok) throw new Error('Delivery rejected (HTTP ' + response.status + ')'); })
+      .catch(error => console.warn('[Telvyn] Security event delivery failed: ' + String(error?.cause?.code || error?.message || error).slice(0, 120)))
       .finally(() => pending.delete(send));
     pending.add(send);
   }
