@@ -1,6 +1,7 @@
 package logs
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -169,5 +170,62 @@ func TestSyslogGlobsForaDoPadraoDeArquivos(t *testing.T) {
 	}
 	if len(SyslogFileGlobs) != 3 {
 		t.Fatal("syslog, messages e secure")
+	}
+}
+
+// O auth.log só é "duplicado do journal" quando o journal de fato entrega. Sem journal (container, host só com rsyslog),
+// ele e o syslog clássico são a única fonte dos eventos de SSH e sudo.
+func TestHostLogPlanSemJournalLeAuthLogESyslog(t *testing.T) {
+	files, exclude := hostLogPlan(false, DefaultHostLogGlobs, nil)
+	for _, want := range SyslogFileGlobs {
+		found := false
+		for _, f := range files {
+			found = found || f == want
+		}
+		if !found {
+			t.Errorf("sem journal o %s deve ser lido; arquivos: %v", want, files)
+		}
+	}
+	for _, e := range exclude {
+		if e == "auth.log" {
+			t.Errorf("sem journal o auth.log não pode ser excluído: %v", exclude)
+		}
+	}
+}
+
+func TestHostLogPlanComJournalExcluiOQueEleJaEntrega(t *testing.T) {
+	files, exclude := hostLogPlan(true, DefaultHostLogGlobs, []string{"/var/log/meu.log"})
+	if strings.Join(files, ",") != strings.Join(DefaultHostLogGlobs, ",") {
+		t.Errorf("com journal os globs ficam os padrão: %v", files)
+	}
+	has := func(name string) bool {
+		for _, e := range exclude {
+			if e == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("auth.log") || !has("kern.log") || !has("/var/log/meu.log") || !has("/var/log/pods/*") {
+		t.Errorf("exclusões incompletas: %v", exclude)
+	}
+}
+
+func TestHostLogPlanGlobsDoOperadorNaoGanhamSyslog(t *testing.T) {
+	files, _ := hostLogPlan(false, []string{"/srv/app/*.log"}, nil)
+	if len(files) != 1 || files[0] != "/srv/app/*.log" {
+		t.Errorf("globs escolhidos pelo operador não mudam: %v", files)
+	}
+}
+
+func TestJournalHasData(t *testing.T) {
+	if journalHasData([]byte("Failed password for root\n"), nil) != true {
+		t.Error("com registro o journal tem dados")
+	}
+	if journalHasData([]byte(""), nil) || journalHasData([]byte("  \n"), nil) {
+		t.Error("saída vazia: journal sem registros")
+	}
+	if journalHasData([]byte("registro"), errors.New("exit status 1")) {
+		t.Error("erro do journalctl: journal sem dados utilizáveis")
 	}
 }

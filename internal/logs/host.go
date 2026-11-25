@@ -55,27 +55,48 @@ func RunHostLogs(ctx context.Context, log *slog.Logger, cfg HostLogsConfig, push
 	if cfg.Journald {
 		if _, err := exec.LookPath("journalctl"); err != nil {
 			log.Info("host logs: journalctl não encontrado; journald não será lido")
+		} else if !journalHasEntries() {
+			// O binário existe, mas não há registros (container, ou host só com rsyslog): o journal não entrega nada, então
+			// auth.log, syslog e afins não são duplicados dele e precisam ser lidos.
+			log.Info("host logs: o journal não tem registros; os arquivos de /var/log viram a fonte do sistema")
 		} else {
 			journald = true
 			go runHostJournald(ctx, log, cfg.Hostname, push)
 		}
 	}
-	files := cfg.Files
-	if !journald && strings.Join(files, ",") == strings.Join(DefaultHostLogGlobs, ",") {
-		// Sem journald (host sem systemd ou journal desligado) e com os globs padrão: o syslog clássico vira a fonte do sistema.
-		files = append(append([]string{}, files...), SyslogFileGlobs...)
-	}
+	files, exclude := hostLogPlan(journald, cfg.Files, cfg.ExcludeGlobs)
 	if len(files) > 0 {
-		exclude := append([]string{"/var/log/telvyn*", "/var/log/telvyn-agent*", "/var/log/pods/*", "/var/log/containers/*", "/var/log/journal/*"}, cfg.ExcludeGlobs...)
-		if journald {
-			exclude = append(exclude, journalDuplicates...)
-		}
 		t := &hostFileTailer{log: log, hostname: cfg.Hostname, globs: files, exclude: exclude, push: push,
 			cursors: NewCursorStore(cfg.CursorPath, log), files: map[string]*hostFile{}}
 		t.run(ctx)
 		return
 	}
 	<-ctx.Done()
+}
+
+// hostLogPlan decide quais arquivos ler e quais ignorar. Com journal entregando, os arquivos que ele já traz ficam de fora;
+// sem journal e com os globs padrão, o syslog clássico (syslog, messages, secure) entra como fonte do sistema.
+func hostLogPlan(journald bool, files, extraExclude []string) ([]string, []string) {
+	if !journald && strings.Join(files, ",") == strings.Join(DefaultHostLogGlobs, ",") {
+		files = append(append([]string{}, files...), SyslogFileGlobs...)
+	}
+	exclude := append([]string{"/var/log/telvyn*", "/var/log/telvyn-agent*", "/var/log/pods/*", "/var/log/containers/*", "/var/log/journal/*"}, extraExclude...)
+	if journald {
+		exclude = append(exclude, journalDuplicates...)
+	}
+	return files, exclude
+}
+
+// journalHasEntries diz se o journal tem pelo menos um registro legível por este usuário.
+var journalHasEntries = func() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "journalctl", "-n", "1", "-q", "--no-pager", "-o", "cat").Output()
+	return journalHasData(out, err)
+}
+
+func journalHasData(out []byte, err error) bool {
+	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
 
 // ---- journald -----------------------------------------------------------------------------------------------
