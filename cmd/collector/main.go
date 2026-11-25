@@ -747,6 +747,12 @@ func runIngestMode(ingestURL string) {
 			startIngestPodLogs(ctx, log, logsExp, hostID)
 			startHostLogs(ctx, log, logsExp, hostID)
 		}
+		// Logs de containers Docker: no agent kind=docker junto com TELVYN_LOGS_ENABLED=1, ou em qualquer agent
+		// com TELVYN_LOGS_DOCKER=1 (ex.: host Linux que também roda Docker).
+		agentKind := strings.ToLower(strings.TrimSpace(getenvOr("TELVYN_AGENT_KIND", "linux")))
+		if getenvOr("TELVYN_LOGS_DOCKER", "0") == "1" || (getenvOr("TELVYN_LOGS_ENABLED", "0") == "1" && agentKind == "docker") {
+			startDockerLogs(ctx, log, logsExp)
+		}
 		if getenvOr("TELVYN_SYSLOG_ENABLED", "0") == "1" {
 			go func() {
 				if err := logs.RunSyslog(ctx, getenvOr("TELVYN_SYSLOG_ADDR", "127.0.0.1:5514"), logsExp.Push); err != nil {
@@ -830,6 +836,20 @@ func startHostLogs(ctx context.Context, log *slog.Logger, logsExp *otlp.LogsExpo
 		ExcludeGlobs: split(getenvOr("TELVYN_HOST_LOGS_EXCLUDE", "")),
 		CursorPath:   filepath.Join(cursorDir, "host_file_cursors.json"),
 	}, logsExp.Push)
+}
+
+// startDockerLogs inicia o coletor de logs dos containers Docker: lê o json-file de cada container e, onde o
+// agent não enxerga o arquivo, a API do Docker (TELVYN_DOCKER_LOGS_SOURCE=auto|file|api). Sem acesso ao
+// docker.sock apenas avisa; o resto do agent segue.
+func startDockerLogs(ctx context.Context, log *slog.Logger, logsExp *otlp.LogsExporter) {
+	cursorDir := filepath.Dir(getenvOr("TELVYN_LOGS_CURSOR_PATH", logs.DefaultCursorPath))
+	cursorPath := getenvOr("TELVYN_DOCKER_LOGS_CURSOR_PATH", filepath.Join(cursorDir, "docker_log_cursors.json"))
+	tailer, err := logs.NewDockerLogsTailer(logsExp, cursorPath, log)
+	if err != nil {
+		log.Warn("logs de containers Docker não iniciados (monte /var/run/docker.sock no agent)", "err", err)
+		return
+	}
+	go tailer.Run(ctx)
 }
 
 // startIngestPodLogs monta o pipeline de logs de pod no modo ingest: um

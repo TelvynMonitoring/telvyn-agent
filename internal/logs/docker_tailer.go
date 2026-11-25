@@ -10,12 +10,16 @@
 //   - Bridge goroutine: drena channel de LogEntry e converte pra otlp.LogRecord
 //     via Push() no exporter.
 //
-// Ativado via TELVYN_LOGS_DOCKER=1 (default off).
+// Ativado via TELVYN_LOGS_DOCKER=1 (ou TELVYN_LOGS_ENABLED=1 no agent kind=docker).
+//
+// Origem dos logs (TELVYN_DOCKER_LOGS_SOURCE): auto (padrão) lê o arquivo json-file e, quando o
+// agent não o enxerga, usa a API do Docker (ContainerLogs); "file" e "api" forçam uma só.
 package logs
 
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -49,9 +53,36 @@ const (
 	entryChannelSize = 4096
 )
 
+// Origem dos logs (TELVYN_DOCKER_LOGS_SOURCE).
+const (
+	// LogSourceAuto lê o arquivo json-file e, se o container não tiver arquivo legível, usa a API do Docker.
+	LogSourceAuto = "auto"
+	// LogSourceFile só lê o arquivo json-file.
+	LogSourceFile = "file"
+	// LogSourceAPI só usa a API do Docker (ContainerLogs).
+	LogSourceAPI = "api"
+)
+
+// dockerLogsAPI é o subconjunto da API Docker que o tailer usa (permite fake nos testes).
+type dockerLogsAPI interface {
+	ContainerList(ctx context.Context, opts container.ListOptions) ([]container.Summary, error)
+	ContainerLogs(ctx context.Context, containerID string, opts container.LogsOptions) (io.ReadCloser, error)
+	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
+	Close() error
+}
+
+// containerReader é o que o tailer precisa de cada leitor (arquivo ou API).
+type containerReader interface {
+	Run(done <-chan struct{})
+	saveCursor()
+	DroppedLines() int64
+}
+
 // DockerLogsTailer coordena a descoberta de containers e seus readers.
 type DockerLogsTailer struct {
-	cli      *client.Client
+	cli      dockerLogsAPI
+	source   string // auto | file | api
+	dir      string // diretório dos logs json-file (padrão /var/lib/docker/containers)
 	exporter *otlp.LogsExporter
 	cursors  *CursorStore
 	hostname string
@@ -70,7 +101,7 @@ type DockerLogsTailer struct {
 
 // readerHandle mantém o state de um reader ativo.
 type readerHandle struct {
-	reader *JSONFileReader
+	reader containerReader
 	done   chan struct{} // close pra parar o reader
 }
 
@@ -96,6 +127,23 @@ func NewDockerLogsTailer(
 		return nil, fmt.Errorf("docker ping: %w", err)
 	}
 
+	return newDockerLogsTailer(cli, exporter, cursorPath, log, dockerContainersDir, sourceFromEnv(log)), nil
+}
+
+// sourceFromEnv lê TELVYN_DOCKER_LOGS_SOURCE (auto por padrão; valor inválido volta para auto).
+func sourceFromEnv(log *slog.Logger) string {
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("TELVYN_DOCKER_LOGS_SOURCE"))); v {
+	case "", LogSourceAuto:
+		return LogSourceAuto
+	case LogSourceFile, LogSourceAPI:
+		return v
+	default:
+		log.Warn("TELVYN_DOCKER_LOGS_SOURCE inválido, usando auto", "valor", v)
+		return LogSourceAuto
+	}
+}
+
+func newDockerLogsTailer(cli dockerLogsAPI, exporter *otlp.LogsExporter, cursorPath string, log *slog.Logger, dir, source string) *DockerLogsTailer {
 	hostname, _ := os.Hostname()
 
 	rateLimit := int64(defaultRateLimitBytesPerSec)
@@ -107,6 +155,8 @@ func NewDockerLogsTailer(
 
 	return &DockerLogsTailer{
 		cli:            cli,
+		source:         source,
+		dir:            dir,
 		exporter:       exporter,
 		cursors:        NewCursorStore(cursorPath, log),
 		hostname:       hostname,
@@ -114,14 +164,15 @@ func NewDockerLogsTailer(
 		rateLimitBytes: rateLimit,
 		entryCh:        make(chan LogEntry, entryChannelSize),
 		readers:        make(map[string]*readerHandle),
-	}, nil
+	}
 }
 
 // Run inicia o tailer. Bloqueia até ctx ser cancelado.
 func (t *DockerLogsTailer) Run(ctx context.Context) {
 	t.log.Info("docker logs tailer starting",
 		"rate_limit_bytes_per_sec", t.rateLimitBytes,
-		"containers_dir", dockerContainersDir)
+		"source", t.source,
+		"containers_dir", t.dir)
 
 	// Bridge: LogEntry → OTLP LogRecord.
 	go t.bridge(ctx)
@@ -231,12 +282,6 @@ func (t *DockerLogsTailer) discover() {
 			continue // already tailing
 		}
 
-		logPath := filepath.Join(dockerContainersDir, id, id+"-json.log")
-		if _, err := os.Stat(logPath); err != nil {
-			// Log file doesn't exist (maybe different log driver).
-			continue
-		}
-
 		meta := ContainerMeta{
 			ContainerID:   id,
 			ContainerName: containerName(c),
@@ -244,15 +289,32 @@ func (t *DockerLogsTailer) discover() {
 			ImageName:     c.Image,
 		}
 
+		// Origem: o arquivo json-file quando legível (mais leve) e, se o agent não o enxerga
+		// (Docker Desktop, Podman, rootless, outro driver), a API do Docker.
+		logPath := filepath.Join(t.dir, id, id+"-json.log")
+		_, statErr := os.Stat(logPath)
+		useFile := t.source != LogSourceAPI && statErr == nil
+		if !useFile && t.source == LogSourceFile {
+			continue // modo "file" e sem arquivo: nada a ler
+		}
+
 		done := make(chan struct{})
-		reader := NewJSONFileReader(logPath, meta, t.cursors, t.rateLimitBytes, t.entryCh, t.log)
+		var reader containerReader
+		origin := "file"
+		if useFile {
+			reader = NewJSONFileReader(logPath, meta, t.cursors, t.rateLimitBytes, t.entryCh, t.log)
+		} else {
+			origin = "api"
+			reader = NewDockerAPIReader(t.cli, meta, t.cursors, t.rateLimitBytes, t.entryCh, t.log)
+		}
 
 		t.readers[id] = &readerHandle{reader: reader, done: done}
 
 		t.log.Debug("starting reader for container",
 			"container_id", id[:12],
 			"name", meta.ContainerName,
-			"service", meta.ServiceName)
+			"service", meta.ServiceName,
+			"origin", origin)
 
 		go reader.Run(done)
 	}
