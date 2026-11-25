@@ -47,15 +47,18 @@ function collectLiterals(source) {
   return [...found].map(([value, locations]) => ({value, locations: [...new Map(locations.sort((x, y) => (x.ident ? 1 : 0) - (y.ident ? 1 : 0)).map(item => [item.line, item])).values()]}));
 }
 
-// Raiz do código da aplicação: a pasta do package.json mais próxima do arquivo de entrada (o que o usuário mandou o node rodar).
+// Raiz do código da aplicação: o package.json mais alto acima do arquivo de entrada (o que o usuário mandou o node rodar).
+// Builds costumam copiar o package.json para build/ ou dist/; o mais próximo ficaria dentro da saída do build, e os arquivos
+// de origem mapeados (src/*.ts) ficariam fora da raiz. A raiz do sistema de arquivos não conta.
 function defaultSourceRoot(entry = process.argv[1], cwd = process.cwd()) {
-  let dir = entry ? path.dirname(path.resolve(entry)) : cwd;
+  let dir = entry ? path.dirname(path.resolve(entry)) : cwd, found = null;
   for (;;) {
-    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
     const parent = path.dirname(dir);
-    if (parent === dir) return cwd;
+    if (parent === dir) break;
+    if (fs.existsSync(path.join(dir, 'package.json'))) found = dir;
     dir = parent;
   }
+  return found || cwd;
 }
 
 // Uma flag liga o IAST (TELVYN_IAST_ENABLED=true). A raiz do código e as rotas têm padrão:

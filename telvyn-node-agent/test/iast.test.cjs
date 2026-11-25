@@ -107,11 +107,12 @@ test('padrão de rota: identificadores viram :id e nada de valor vaza', () => {
   assert.equal(routePattern('relativo'), null);
 });
 
-test('raiz do código padrão: pasta do package.json mais próximo do arquivo de entrada', () => {
+test('raiz do código padrão: o package.json mais alto, mesmo com cópia dentro da saída do build', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'telvyn-root-'));
   try {
     fs.mkdirSync(path.join(dir, 'build', 'sub'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'build', 'package.json'), '{}');
     assert.equal(defaultSourceRoot(path.join(dir, 'build', 'sub', 'app.js'), '/nowhere'), dir);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
