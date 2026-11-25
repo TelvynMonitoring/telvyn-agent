@@ -124,6 +124,10 @@ type HTTPReceiver struct {
 	// manda esses atributos tem prioridade; só preenchemos o que falta.
 	resolver PodIPResolver
 
+	// imageResolver, quando setado, carimba container.image.id (digest da imagem do container) no resource dos spans
+	// que não o trazem. É o elo que o backend usa para ligar o SBOM da imagem ao serviço.
+	imageResolver PodImageResolver
+
 	server *http.Server
 
 	// Self-metric counters. Atomic pra evitar lock no hot path. Drenados via
@@ -308,6 +312,15 @@ func traceUsageSpans(body []byte, contentType string) ([]*collectorv1.Span, bool
 type PodIPResolver interface {
 	ResolveIPMeta(ip string) (namespace, pod, workload, node string, ok bool)
 }
+
+// PodImageResolver devolve o digest da imagem em execução de um container (índice do kubelet). Opcional: sem
+// ele os spans não ganham container.image.id e o SBOM não é associado ao serviço.
+type PodImageResolver interface {
+	ImageIDForPod(namespace, pod, container string) string
+}
+
+// SetImageResolver liga o carimbo de container.image.id (digest da imagem) nos spans.
+func (h *HTTPReceiver) SetImageResolver(r PodImageResolver) { h.imageResolver = r }
 
 // SetPodResolver liga o carimbo de pod/namespace por IP de origem (item 1). Sem
 // ele, spans seguem sem identidade quando a app não anuncia os atributos k8s.
@@ -580,6 +593,15 @@ func (h *HTTPReceiver) tapAndSampleJSON(body []byte, clientIP string) (outBody [
 					if service == "" {
 						service = pod
 					}
+					injected = true
+				}
+			}
+		}
+		if h.imageResolver != nil && resourceAttrs["container.image.id"] == "" && namespace != "" && pod != "" {
+			if digest := h.imageResolver.ImageIDForPod(namespace, pod, resourceAttrs["k8s.container.name"]); digest != "" {
+				if newRaw, changed := appendResourceAttribute(rs.Resource, "container.image.id", digest); changed {
+					rs.Resource = newRaw
+					resourceAttrs["container.image.id"] = digest
 					injected = true
 				}
 			}
@@ -1421,4 +1443,31 @@ func ParsePortOrDefault(port string) string {
 		return "0.0.0.0:" + port
 	}
 	return port
+}
+
+// appendResourceAttribute acrescenta um atributo string ao resource OTLP/JSON, preservando os demais.
+func appendResourceAttribute(raw json.RawMessage, key, value string) (json.RawMessage, bool) {
+	m := map[string]json.RawMessage{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return raw, false
+		}
+	}
+	var attrs []json.RawMessage
+	if a, ok := m["attributes"]; ok && len(a) > 0 {
+		if err := json.Unmarshal(a, &attrs); err != nil {
+			return raw, false
+		}
+	}
+	attrs = append(attrs, kvJSON(key, value))
+	nb, err := json.Marshal(attrs)
+	if err != nil {
+		return raw, false
+	}
+	m["attributes"] = nb
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw, false
+	}
+	return out, true
 }

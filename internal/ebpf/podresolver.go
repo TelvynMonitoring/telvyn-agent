@@ -46,6 +46,8 @@ type PodIndex struct {
 	ByContainerID map[string]NamespacedName
 	ByPodIP       map[string]NamespacedName
 	ByNsPod       map[string]PodSvcMeta // "namespace/pod" → unified service tagging
+	// ImageIDs: "namespace/pod" → nome do container → digest (sha256:…) da imagem em execução.
+	ImageIDs map[string]map[string]string
 }
 
 type NamespacedName struct {
@@ -74,9 +76,10 @@ type PodResolverImpl struct {
 
 	mu         sync.RWMutex
 	pidToID    map[uint32]pidCacheEntry
-	idToPod    map[string]NamespacedName // containerID  → pod
-	ipToPod    map[string]NamespacedName // pod IP       → pod (lado server)
-	nsPodToSvc map[string]PodSvcMeta     // "namespace/pod" → unified service tagging
+	idToPod    map[string]NamespacedName    // containerID  → pod
+	ipToPod    map[string]NamespacedName    // pod IP       → pod (lado server)
+	nsPodToSvc map[string]PodSvcMeta        // "namespace/pod" → unified service tagging
+	nsPodImage map[string]map[string]string // "namespace/pod" → container → digest da imagem
 
 	listInterval time.Duration
 }
@@ -138,6 +141,7 @@ func (r *PodResolverImpl) refresh(ctx context.Context) {
 	r.idToPod = idx.ByContainerID
 	r.ipToPod = idx.ByPodIP
 	r.nsPodToSvc = idx.ByNsPod
+	r.nsPodImage = idx.ImageIDs
 	r.mu.Unlock()
 	r.log.Debug("kubelet /pods refresh",
 		"containers", len(idx.ByContainerID), "ips", len(idx.ByPodIP))
@@ -331,6 +335,7 @@ func (h *httpPodLister) List(ctx context.Context) (PodIndex, error) {
 	byID := make(map[string]NamespacedName, len(list.Items)*2)
 	byIP := make(map[string]NamespacedName, len(list.Items)*2)
 	byNsPod := make(map[string]PodSvcMeta, len(list.Items))
+	imageIDs := make(map[string]map[string]string, len(list.Items))
 	for _, p := range list.Items {
 		ns := NamespacedName{
 			Namespace: p.Metadata.Namespace,
@@ -349,6 +354,13 @@ func (h *httpPodLister) List(ctx context.Context) (PodIndex, error) {
 			}
 		}
 		for _, c := range p.Status.ContainerStatuses {
+			if digest := imageDigest(c.ImageID); digest != "" {
+				key := p.Metadata.Namespace + "/" + p.Metadata.Name
+				if imageIDs[key] == nil {
+					imageIDs[key] = map[string]string{}
+				}
+				imageIDs[key][c.Name] = digest
+			}
 			id := stripContainerIDPrefix(c.ContainerID)
 			if id != "" {
 				entry := ns
@@ -373,7 +385,7 @@ func (h *httpPodLister) List(ctx context.Context) (PodIndex, error) {
 			}
 		}
 	}
-	return PodIndex{ByContainerID: byID, ByPodIP: byIP, ByNsPod: byNsPod}, nil
+	return PodIndex{ByContainerID: byID, ByPodIP: byIP, ByNsPod: byNsPod, ImageIDs: imageIDs}, nil
 }
 
 func (r *PodResolverImpl) LabelsForPod(namespace, pod string) map[string]string {
@@ -452,10 +464,37 @@ type kubeletPodList struct {
 				Name        string `json:"name"`
 				Image       string `json:"image"`
 				ContainerID string `json:"containerID"`
+				ImageID     string `json:"imageID"`
 			} `json:"containerStatuses"`
 			InitContainerStatuses []struct {
 				ContainerID string `json:"containerID"`
 			} `json:"initContainerStatuses"`
 		} `json:"status"`
 	} `json:"items"`
+}
+
+// imageDigest extrai o "sha256:…" do imageID do kubelet ("repo@sha256:…", "docker-pullable://repo@sha256:…"
+// ou o próprio "sha256:…" de imagens importadas). É o mesmo valor que o scanner de SBOM envia como digest.
+func imageDigest(imageID string) string {
+	if i := strings.Index(imageID, "sha256:"); i >= 0 {
+		return imageID[i:]
+	}
+	return ""
+}
+
+// ImageIDForPod devolve o digest da imagem do container do pod. Com container vazio e um único container no
+// pod, devolve o dele; com vários e sem nome, não adivinha (devolve vazio).
+func (r *PodResolverImpl) ImageIDForPod(namespace, pod, container string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	images := r.nsPodImage[namespace+"/"+pod]
+	if container != "" {
+		return images[container]
+	}
+	if len(images) == 1 {
+		for _, digest := range images {
+			return digest
+		}
+	}
+	return ""
 }
