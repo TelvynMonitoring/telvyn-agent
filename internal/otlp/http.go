@@ -958,6 +958,7 @@ func (h *HTTPReceiver) handleTraces(w http.ResponseWriter, r *http.Request) {
 						// stats por pod) e da serialização (pra o backend gravar).
 						injected := h.stampPrimaryProto(req, clientIP)
 						injected = h.enrichResourceAttrsProto(req, clientIP) || injected
+						injected = h.enrichImageIDProto(req) || injected
 						if h.apmTap != nil {
 							if spans := convertResourceSpans(req.ResourceSpans); len(spans) > 0 {
 								h.apmTap(spans)
@@ -1470,4 +1471,40 @@ func appendResourceAttribute(raw json.RawMessage, key, value string) (json.RawMe
 		return raw, false
 	}
 	return out, true
+}
+
+// enrichImageIDProto acrescenta container.image.id (digest da imagem em execução) ao resource dos spans que
+// não o trazem. Usa namespace/pod/container já presentes no resource (da aplicação ou do carimbo por IP).
+func (h *HTTPReceiver) enrichImageIDProto(req *tracepb.ExportTraceServiceRequest) bool {
+	if h.imageResolver == nil || req == nil {
+		return false
+	}
+	injected := false
+	for _, rs := range req.ResourceSpans {
+		if rs == nil || rs.Resource == nil {
+			continue
+		}
+		var ns, pod, container string
+		have := false
+		for _, a := range rs.Resource.Attributes {
+			switch a.GetKey() {
+			case "k8s.namespace.name":
+				ns = a.GetValue().GetStringValue()
+			case "k8s.pod.name":
+				pod = a.GetValue().GetStringValue()
+			case "k8s.container.name":
+				container = a.GetValue().GetStringValue()
+			case "container.image.id":
+				have = a.GetValue().GetStringValue() != ""
+			}
+		}
+		if have || ns == "" || pod == "" {
+			continue
+		}
+		if digest := h.imageResolver.ImageIDForPod(ns, pod, container); digest != "" {
+			rs.Resource.Attributes = append(rs.Resource.Attributes, kv("container.image.id", digest))
+			injected = true
+		}
+	}
+	return injected
 }
