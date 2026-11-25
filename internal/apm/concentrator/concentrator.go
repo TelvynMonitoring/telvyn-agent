@@ -11,6 +11,7 @@ package concentrator
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/endpoint"
 	"github.com/telvynmonitoring/telvyn-agent/internal/apm/primarytags"
 	"log/slog"
 	"net"
@@ -310,6 +311,12 @@ func resourceOf(s *collectorv1.Span) string {
 	route := s.Attributes["http.route"]
 	if method != "" && route != "" {
 		return method + " " + route
+	}
+	// Sem rota (app que atende tudo num handler): span de servidor usa o caminho normalizado, senão tudo cairia em "GET".
+	if s.Kind == 2 {
+		if inferred := endpoint.Infer(s.Attributes); inferred != "" {
+			return inferred
+		}
 	}
 	return s.Name
 }

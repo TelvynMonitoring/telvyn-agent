@@ -201,3 +201,19 @@ func TestPeerDoesNotInventUnspecifiedEndpoints(t *testing.T) {
 		}
 	}
 }
+
+// App que atende tudo num handler não informa http.route: sem a inferência, todas as requisições viriam como "GET".
+func TestResourceOfInfereEndpointDoServidorSemRota(t *testing.T) {
+	server := &collectorv1.Span{Name: "GET", Kind: 2, Attributes: map[string]string{"http.request.method": "GET", "url.path": "/api/users/163"}}
+	if got := resourceOf(server); got != "GET /api/users/{id}" {
+		t.Errorf("servidor sem rota: %q", got)
+	}
+	withRoute := &collectorv1.Span{Name: "GET", Kind: 2, Attributes: map[string]string{"http.request.method": "GET", "http.route": "/api/users/:id", "url.path": "/api/users/163"}}
+	if got := resourceOf(withRoute); got != "GET /api/users/:id" {
+		t.Errorf("a rota do framework vence: %q", got)
+	}
+	client := &collectorv1.Span{Name: "GET", Kind: 3, Attributes: map[string]string{"http.request.method": "GET", "url.path": "/api/users/163"}}
+	if got := resourceOf(client); got != "GET" {
+		t.Errorf("chamada de saída não é inferida: %q", got)
+	}
+}
