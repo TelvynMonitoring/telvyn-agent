@@ -197,7 +197,7 @@ func (s *Server) decide(req *AdmissionRequest) *AdmissionResponse {
 	if !ok {
 		return out
 	}
-	javaContainers := findJavaContainers(pod.Spec.Containers)
+	javaContainers := javaTargets(pod.Spec.Containers)
 	if len(javaContainers) == 0 {
 		s.cfg.Log.Debug("webhook: workload marcado mas sem container Java", "ns", ns, "workload", workload)
 		return out
@@ -267,6 +267,20 @@ func candidateWorkloads(pod podMeta) []string {
 		add(k8smeta.WorkloadOf(o.Name + "-00000")) // ReplicaSet "app-<rs>" → "app"
 	}
 	return out
+}
+
+// javaTargets escolhe onde injetar o agent Java num workload que o usuário JÁ
+// marcou como Java. A heurística pelo nome da imagem falha em imagens como
+// webgoat/webgoat; nesse caso, com um único container, a marcação explícita
+// basta. Com vários containers e nenhum reconhecido, não adivinha.
+func javaTargets(in []container) []int {
+	if found := findJavaContainers(in); len(found) > 0 {
+		return found
+	}
+	if len(in) == 1 {
+		return []int{0}
+	}
+	return []int{}
 }
 
 // findJavaContainers heurística: image contém keyword Java ou env já
