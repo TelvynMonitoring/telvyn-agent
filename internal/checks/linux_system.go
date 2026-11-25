@@ -68,6 +68,8 @@ type linuxSystemCheck struct {
 	staticTags  map[string]string
 	root        string
 	networkProc string
+	// sysRoot é onde ficam os atributos das interfaces (/sys). Vazio = /sys; em modo "caminhos do host" vale o /host/sys.
+	sysRoot string
 
 	// lastCpu holds the previous cpu.TimesWithContext sample. CPU metrics are
 	// deltas between consecutive samples, so the first Run() call stores the
@@ -245,8 +247,17 @@ func (c *linuxSystemCheck) Run(ctx context.Context) ([]*collectorv1.Metric, erro
 				out = append(out, m)
 			}
 		}
-		if paths, ok := ctx.Value(common.EnvKey).(common.EnvMap); ok && c.root != "" {
-			iface := filepath.Join(paths[common.HostSysEnvKey], "class/net", n.Name)
+		// MTU, link e filas: o agent Linux nativo lê o /sys do próprio host; o modo de caminhos do host (DaemonSet,
+		// Docker com /proc montado) lê o /sys montado.
+		sysRoot := c.sysRoot
+		if sysRoot == "" {
+			sysRoot = "/sys"
+		}
+		if paths, ok := ctx.Value(common.EnvKey).(common.EnvMap); ok && c.root != "" && paths[common.HostSysEnvKey] != "" {
+			sysRoot = paths[common.HostSysEnvKey]
+		}
+		{
+			iface := filepath.Join(sysRoot, "class/net", n.Name)
 			for file, name := range map[string]string{"mtu": "mtu", "tx_queue_len": "tx_queue_len", "carrier": "up", "flags": "admin_up"} {
 				if value, ok := readSystemNumber(filepath.Join(iface, file)); ok {
 					if file == "flags" {
