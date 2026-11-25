@@ -135,8 +135,13 @@ public final class SpringMvcSecurity {
         return new LocalAttackReporter(Collector.url()+"/v1/security/"+channel,SnapshotSink.service(),SnapshotSink.host(),ProbeMetricSink.environment(),ProbeMetricSink.version(),"query-allowlist-1");
     }
     // Servlet routes are the request path: exact, or every path under a prefix written as "/prefix/**".
+    // With IAST on and no route list (TELVYN_SECURITY_QUERY_ROUTES), every route is analysed: the flag alone turns IAST on.
+    // The route is the framework pattern (/users/{id}), never the concrete path.
+    static boolean inScope(String verb,String route){
+        return routes.contains(verb+" "+route)||routes.isEmpty()&&Boolean.getBoolean("telvyn.iast.enabled");
+    }
     static boolean servletSelected(String verb,String path){
-        if(routes.contains(verb+" "+path))return true;
+        if(inScope(verb,path))return true;
         for(String route:routes)if(route.endsWith("/**")&&route.startsWith(verb+" ")&&(path+"/").startsWith(route.substring(verb.length()+1,route.length()-2)))return true;
         return false;
     }
@@ -289,7 +294,7 @@ public final class SpringMvcSecurity {
             var requestType=request.getClass();
             String verb=(String)requestType.getMethod("getMethod").invoke(request);
             Object pattern=requestType.getMethod("getAttribute",String.class).invoke(request,"org.springframework.web.servlet.HandlerMapping.bestMatchingPattern");
-            if(!(pattern instanceof String route)||!routes.contains(verb+" "+route))return previous;
+            if(!(pattern instanceof String route)||!inScope(verb,route))return previous;
             Method method=(Method)handler.getClass().getMethod("getMethod").invoke(handler);
             selected.set(method);selectedRoute.set(new String[]{verb,route});
         }catch(ReflectiveOperationException|RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("Spring integration unavailable");}
@@ -310,7 +315,7 @@ public final class SpringMvcSecurity {
             Object pattern=exchangeApi.getMethod("getAttribute",String.class).invoke(exchange,key);
             if(pattern==null)return new ReactiveScope(previous,null,false);
             String route=pattern instanceof String value?value:(String)Class.forName("org.springframework.web.util.pattern.PathPattern",false,loader).getMethod("getPatternString").invoke(pattern);
-            if(!routes.contains(verb+" "+route))return new ReactiveScope(previous,null,false);
+            if(!inScope(verb,route))return new ReactiveScope(previous,null,false);
             Method method=handler==null?null:(Method)Class.forName("org.springframework.web.method.HandlerMethod",false,loader).getMethod("getMethod").invoke(handler);
             if(method!=null){selected.set(method);selectedRoute.set(new String[]{verb,route});}return new ReactiveScope(previous,method,true);
         }catch(ReflectiveOperationException|RuntimeException|LinkageError failure){SecuritySensorState.iastFailed();LocalAttackReporter.reportLoss("reactive integration unavailable");return new ReactiveScope(previous,null,false);}

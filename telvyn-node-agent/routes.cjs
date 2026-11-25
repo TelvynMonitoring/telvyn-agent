@@ -13,4 +13,16 @@ function compileRoutes(list) {
     return null;
   }};
 }
-module.exports = { compileRoutes };
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Padrão de rota a partir do caminho concreto: o que parece identificador (número, UUID, hexadecimal ou token longo) vira ":id",
+// para o relatório nunca levar o valor de um parâmetro de rota.
+function routePattern(pathname) {
+  if (typeof pathname !== 'string' || !pathname.startsWith('/')) return null;
+  return pathname.slice(0, 1024).split('/')
+    .map(part => part && (/^\d+$/.test(part) || UUID.test(part) || /^[0-9a-f]{12,}$/i.test(part) || /^[\w-]{24,}$/.test(part) ? ':id' : part))
+    .join('/').replace(/[^\w/:.*{}-]/g, '_');
+}
+// Sem lista explícita de rotas, toda rota é analisada.
+function anyRoute() { return { size: 0, any: true, match: routePattern }; }
+module.exports = { compileRoutes, routePattern, anyRoute };
