@@ -36,6 +36,13 @@ test('o evento carrega o valor original da entrada, sem as transformações da r
   assert.equal(result.events[0].rule_matches[0].parameters[0].value, '../../Etc/Passwd');
 });
 
+test('evento traz o trecho que casou quando a regra é de expressão', () => {
+  const result = waf.createContext().run({ persistent: { 'server.request.query': { q: ["') UNION SELECT sql FROM t--"] } } }, 200000);
+  const withHighlight = result.events.map(event => event.rule_matches[0].parameters[0]).filter(parameter => parameter.highlight);
+  assert.ok(withHighlight.length > 0);
+  for (const parameter of withHighlight) assert.ok(parameter.value.toLowerCase().includes(parameter.highlight.toLowerCase()));
+});
+
 test('prevenção de exploit não leva a operação (caminho ou SQL) no evento', () => {
   const context = waf.createContext();
   context.run({ persistent: { 'server.request.query': { file: ['../../etc/shadow'] } } }, 200000);

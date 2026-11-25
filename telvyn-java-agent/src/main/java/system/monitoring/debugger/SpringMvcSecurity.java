@@ -108,7 +108,7 @@ public final class SpringMvcSecurity {
             iast=reporter("iast");IastRuntime.configureSources(method->method.equals(selected.get()));
             IastRuntime.configureTrace(SpringMvcSecurity::trace);
             IastRuntime.configureRequest(selectedRoute::get);
-            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;markTrace("iast");var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1],requestIdentity());});
+            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;markTrace("iast");var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1],requestIdentity(),requestEvidence());});
         }
         Runtime.getRuntime().addShutdownHook(new Thread(()->{if(worker!=null)worker.shutdownNow();if(attacks!=null)attacks.close();if(iast!=null)iast.close();if(detector!=null)detector.close();},"telvyn-spring-security-stop"));
     }
@@ -326,6 +326,11 @@ public final class SpringMvcSecurity {
         }catch(ReflectiveOperationException|LinkageError unavailable){ /* No span from this source. */ }
     }
     // IP, logged user and user agent of the request being handled (from the request inspection), or nulls.
+    /** Evidência da requisição em curso para um achado do IAST. */
+    static com.google.gson.JsonObject requestEvidence(){
+        Object[] request=current.get();
+        return request!=null&&request[2] instanceof WafInspector.State state?WafInspector.contextEvidence(state):null;
+    }
     static String[] requestIdentity(){
         Object[] request=current.get();
         if(request==null||!(request[2] instanceof WafInspector.State state))return new String[]{null,null,null};

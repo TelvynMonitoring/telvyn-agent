@@ -50,7 +50,7 @@ final class Phrases {
             node = node.next.getOrDefault(c, root);
             for (Node at = node; at != null && at != root; at = at.fail) {
                 if (at.length < 0) continue;
-                if (!wordBoundary || boundary(text, i - at.length + 1, i + 1)) return true;
+                if (!wordBoundary || boundary(text, i - at.length + 1, i + 1)) { Operators.FRAGMENT.set(text.substring(i - at.length + 1, i + 1)); return true; }
             }
         }
         return false;

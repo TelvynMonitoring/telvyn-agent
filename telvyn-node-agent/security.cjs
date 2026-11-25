@@ -111,12 +111,11 @@ function startSecurity() {
 
   // Evidence of an attack: the matched value, the query string and a short list of headers, redacted here before
   // leaving the application. TELVYN_SECURITY_EVIDENCE=false or the service's remote setting turns it off.
-  const evidenceEnabled = () => process.env.TELVYN_SECURITY_EVIDENCE !== 'false' && require('./remote.cjs').security('evidence') !== false;
   const evidenceOf = (event, request) => {
-    if (!evidenceEnabled()) return undefined;
+    if (!evidence.enabled()) return undefined;
     const first = event.rule_matches?.[0]?.parameters?.[0];
     // Only request inputs carry a value; exploit prevention names an operation, not an input.
-    return evidence.build({value: first?.address ? first.value : undefined, location: where(event), request});
+    return evidence.build({value: first?.address ? first.value : undefined, highlight: first?.highlight, location: where(event), request});
   };
 
   // Runs one phase on the request's WAF context; reports new matches and returns whether a blocking rule matched.
@@ -124,6 +123,7 @@ function startSecurity() {
   // ephemeral: data of one operation (exploit prevention), not kept in the request context.
   function evaluate(state, data, span, blockable = true, ephemeral = false) {
     if (!state.context || state.closed) return false;
+    data = evidence.withoutExcluded(data);
     const started = process.hrtime.bigint();
     let result;
     try { result = state.context.run(ephemeral ? {ephemeral: data} : {persistent: data}, BUDGET_US); }

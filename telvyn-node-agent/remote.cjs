@@ -4,7 +4,15 @@
 // IAST can only be turned off: its instrumentation is installed when modules load.
 const PROFILING = ['enabled', 'wall', 'alloc'];
 const SECURITY = ['attack', 'iast', 'evidence'];
-const state = {revision: 0, protection: '', profiling: {}, security: {}};
+const state = {revision: 0, protection: '', profiling: {}, security: {}, exclusions: {parameters: new Set(), headers: new Set()}};
+
+// Nomes que não são analisados nem enviados como evidência (configuração por serviço na tela).
+const NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+function cleanExclusions(raw) {
+  const list = value => Array.isArray(value) ? value.filter(name => typeof name === 'string' && NAME.test(name)).slice(0, 32) : [];
+  return {parameters: new Set(list(raw?.parameters)), headers: new Set(list(raw?.headers).map(name => name.toLowerCase()))};
+}
+const exclusions = () => state.exclusions;
 
 function pick(object, keys) {
   const out = {};
@@ -36,6 +44,7 @@ function startRemoteConfig(transport, apply) {
       if (body.revision === state.revision) return;
       state.profiling = pick(body.profiling, PROFILING);
       state.security = pick(body.security, SECURITY);
+      state.exclusions = cleanExclusions(body.exclusions);
       await apply(state);
       state.revision = body.revision;
       console.log(`[Telvyn] Remote configuration applied (revision ${body.revision}).`);
@@ -47,4 +56,4 @@ function startRemoteConfig(transport, apply) {
   return () => { stopped = true; clearInterval(timer); };
 }
 
-module.exports = { state, profiling, security, profileAllowed, startRemoteConfig };
+module.exports = { state, profiling, security, exclusions, profileAllowed, startRemoteConfig };

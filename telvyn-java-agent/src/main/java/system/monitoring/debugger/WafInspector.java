@@ -156,12 +156,39 @@ public final class WafInspector {
         }
     }
 
-    record Match(String rule, String address, String value) {}
+    record Match(String rule, String address, String value, String highlight) {}
+
+    /** Evidência de um achado do IAST: a requisição (consulta e cabeçalhos permitidos), já redigida. O valor da entrada não é conhecido aqui. */
+    static com.google.gson.JsonObject contextEvidence(State state) {
+        if (state == null || !AttackEvidence.enabled()) return null;
+        return AttackEvidence.build(null, null, state.requestQuery, AttackEvidence.safeHeaders(state.requestHeaders));
+    }
+
+    /** Aplica ao que o WAF vai analisar as exclusões que a tela definiu para o serviço (parâmetros e cabeçalhos). */
+    static Map<String, Object> withoutExcluded(Map<String, Object> data) {
+        var parameters = RemoteConfig.excludedParameters();
+        var headers = RemoteConfig.excludedHeaders();
+        if (parameters.isEmpty() && headers.isEmpty()) return data;
+        Map<String, Object> out = new LinkedHashMap<>(data);
+        for (String address : List.of("server.request.query", "server.request.body", "server.request.path_params", "server.request.cookies"))
+            if (out.get(address) instanceof Map<?, ?> map) out.put(address, without(map, parameters, false));
+        if (out.get("server.request.headers.no_cookies") instanceof Map<?, ?> map) out.put("server.request.headers.no_cookies", without(map, headers, true));
+        return out;
+    }
+
+    private static Map<Object, Object> without(Map<?, ?> source, java.util.Set<String> names, boolean lower) {
+        Map<Object, Object> out = new LinkedHashMap<>();
+        for (var entry : source.entrySet()) {
+            String key = String.valueOf(entry.getKey());
+            if (!names.contains(lower ? key.toLowerCase(java.util.Locale.ROOT) : key)) out.put(entry.getKey(), entry.getValue());
+        }
+        return out;
+    }
 
     /** Evidência de um match (valor original, consulta e cabeçalhos permitidos, já redigidos), ou null se estiver desligada. */
     static com.google.gson.JsonObject evidenceOf(State state, Match match) {
         if (!AttackEvidence.enabled()) return null;
-        return AttackEvidence.build(match.value(), match.address(), state.requestQuery, AttackEvidence.safeHeaders(state.requestHeaders));
+        return AttackEvidence.build(match.value(), match.address(), state.requestQuery, AttackEvidence.safeHeaders(state.requestHeaders), match.highlight(), false);
     }
     record Evaluation(String outcome, List<Match> matches, long elapsedUs) {}
 
@@ -182,6 +209,7 @@ public final class WafInspector {
     private static Evaluation runLocked(State state, Map<String, Object> data, boolean ephemeral) {
         long start = System.nanoTime();
         if (state.closed || data.isEmpty()) return new Evaluation("no_match", List.of(), 0);
+        data = withoutExcluded(data);
         if (state.requestHeaders == null && data.get("server.request.headers.no_cookies") != null) state.requestHeaders = data.get("server.request.headers.no_cookies");
         if (state.requestQuery == null && data.get("server.request.query_string") instanceof String query) state.requestQuery = query;
         try {
@@ -202,7 +230,7 @@ public final class WafInspector {
                 String rule = event.getAsJsonObject("rule").get("id").getAsString();
                 if (state.reported.contains(rule) || "disabled".equals(JavaProtection.ruleMode(rule))) continue;
                 state.reported.add(rule);
-                String address = null, value = null;
+                String address = null, value = null, highlight = null;
                 var ruleMatches = event.getAsJsonArray("rule_matches");
                 if (ruleMatches != null && !ruleMatches.isEmpty()) {
                     var parameters = ruleMatches.get(0).getAsJsonObject().getAsJsonArray("parameters");
@@ -212,13 +240,14 @@ public final class WafInspector {
                         var parameter = first.has("address") ? first : first.has("params") ? first.getAsJsonObject("params") : first.getAsJsonObject("resource");
                         address = parameter.get("address").getAsString();
                         if (first.has("address") && parameter.has("value") && !parameter.get("value").isJsonNull()) value = parameter.get("value").getAsString();
+                        if (first.has("address") && parameter.has("highlight") && !parameter.get("highlight").isJsonNull()) highlight = parameter.get("highlight").getAsString();
                         List<String> keys = new ArrayList<>();
                         if (parameter.has("key_path")) for (var key : parameter.getAsJsonArray("key_path")) keys.add(key.getAsString());
                         String key = String.join(".", keys).replaceAll("\\p{Cntrl}", "");
                         if (!key.isEmpty()) address = address + ":" + (key.length() > 200 ? key.substring(0, 200) : key);
                     }
                 }
-                matches.add(new Match(rule, address, value));
+                matches.add(new Match(rule, address, value, highlight));
             }
             return new Evaluation(matches.isEmpty() ? "no_match" : "match", matches, elapsed);
         } catch (Throwable failure) {

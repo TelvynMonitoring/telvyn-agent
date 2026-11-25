@@ -62,6 +62,31 @@ class AttackEvidenceTest {
     }
 
     @Test
+    void guardaOTrechoDestacadoQuandoEstaNoValor() {
+        var payload = AttackEvidence.build("') UNION SELECT sql FROM t--", "server.request.query:q.0", null, null, "union select", false).getAsJsonObject("payload");
+        assertEquals("union select", payload.get("highlight").getAsString());
+    }
+
+    @Test
+    void descartaOTrechoAusenteOuRedigido() {
+        assertFalse(AttackEvidence.build("abc", "server.request.query:q", null, null, "xyz", false).getAsJsonObject("payload").has("highlight"));
+        assertFalse(AttackEvidence.build("abc", "server.request.query:password", null, null, "abc", false).getAsJsonObject("payload").has("highlight"));
+    }
+
+    @Test
+    void iastSemPrefixoDeRequisicao() {
+        assertEquals("1' OR '1'='1", AttackEvidence.build("1' OR '1'='1", "query:q", null, null, null, true).getAsJsonObject("payload").get("value").getAsString());
+    }
+
+    @Test
+    void contextoDoIastTrazSoConsultaECabecalhos() {
+        var evidence = AttackEvidence.build(null, null, "q=a&password=x", Map.of("user-agent", "curl/8"));
+        assertFalse(evidence.has("payload"));
+        assertEquals("q=a&password=<redacted>", evidence.get("query").getAsString());
+        assertEquals("curl/8", evidence.getAsJsonObject("headers").get("user-agent").getAsString());
+    }
+
+    @Test
     void semNadaAMostrarDevolveNulo() {
         assertNull(AttackEvidence.build(null, null, "", Map.of()));
     }

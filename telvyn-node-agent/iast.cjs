@@ -6,6 +6,7 @@ const Module = require('node:module');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
 const { compileRoutes } = require('./routes.cjs');
+const evidence = require('./evidence.cjs');
 const { locate } = require('./sourcemap.cjs');
 
 // A request value reaches a sink when the sink's text contains it. Very short values (a digit, a letter) are in every
@@ -148,7 +149,7 @@ function startIast(report) {
     const route = stopped || event !== 'request' || active.size >= 32 ? null : routes.match(request.url?.split('?')[0]);
     if (!route) return emit.call(this, event, request, response, ...rest);
     wrapOutgoing();
-    const scope = {id: randomUUID(), reported: new Set(), inputs: new Map(), request: requestInfo(request, route)};
+    const scope = {id: randomUUID(), reported: new Set(), inputs: new Map(), request: requestInfo(request, route), raw: request};
     active.add(scope.id); scopes.set(request, scope);
     markHeaders(scope, request);
     const cleanup = () => {
@@ -172,11 +173,18 @@ function startIast(report) {
   function inputIn(scope, text) {
     if (typeof text !== 'string' || !text.length) return undefined;
     const subject = text.length > MAX_SINK_TEXT ? text.slice(0, MAX_SINK_TEXT) : text;
-    for (const [value, source] of scope.inputs) if (subject === value || value.length >= MIN_MATCH && subject.includes(value)) return source;
+    // The matched value travels with the source so the report can show it as (redacted) evidence.
+    for (const [value, source] of scope.inputs) if (subject === value || value.length >= MIN_MATCH && subject.includes(value)) return {...source, value};
     return undefined;
   }
+  // Names excluded in the service's remote configuration are never tracked: no finding, no evidence.
+  function excludedInput(type, name) {
+    const {parameters, headers} = require('./remote.cjs').exclusions();
+    if (!parameters.size && !headers.size) return false;
+    return type === 'header' ? headers.has(String(name).toLowerCase()) : parameters.has(String(name).split('.')[0]);
+  }
   function taint(value, type, name, scope = storage.getStore()) {
-    if (!scope || !active.has(scope.id) || typeof value !== 'string' || !value.length || value.length > 4096) return value;
+    if (!scope || !active.has(scope.id) || typeof value !== 'string' || !value.length || value.length > 4096 || excludedInput(type, name)) return value;
     remember(scope, value, {type, name: label(name)});
     return value;
   }
@@ -230,7 +238,8 @@ function startIast(report) {
     const key = `${rule}:${file}:${mapped.line}`;
     if (file && !scope.reported.has(key) && scope.reported.size < 8) {
       scope.reported.add(key);
-      report({rule_id: rule, code_method: `${file}#${method}`, code_line: mapped.line, sink, ...(statement === undefined ? {} : {sql: maskSql(statement)}), stack: stackFrames(stack), source: source ? `${source.type}:${source.name}` : undefined, request_method: scope.request.method, request_path: scope.request.path, user_agent: scope.request.userAgent}, Number((process.hrtime.bigint() - started) / 1000n));
+      const proof = source && evidence.enabled() ? evidence.build({value: source.value, location: `${source.type}:${source.name}`, request: scope.raw, input: true}) : undefined;
+      report({rule_id: rule, code_method: `${file}#${method}`, code_line: mapped.line, sink, ...(statement === undefined ? {} : {sql: maskSql(statement)}), stack: stackFrames(stack), source: source ? `${source.type}:${source.name}` : undefined, request_method: scope.request.method, request_path: scope.request.path, user_agent: scope.request.userAgent, ...(proof ? {evidence: proof} : {})}, Number((process.hrtime.bigint() - started) / 1000n));
     }
   }
   // Findings that need no input: the unsafe call itself. Only inside a request of a selected route, like every other finding.

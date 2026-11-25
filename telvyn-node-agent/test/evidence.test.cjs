@@ -67,3 +67,33 @@ test('sensitiveLocation', () => {
   assert.equal(sensitiveLocation('server.request.query:password'), true);
   assert.equal(sensitiveLocation(undefined), false);
 });
+
+test('destaque: guarda o trecho que casou quando ele está no valor', () => {
+  const out = payload("') UNION SELECT sql FROM t--", 'server.request.query:q.0', 'union select');
+  assert.equal(out.highlight, 'union select');
+});
+
+test('destaque: descarta o trecho ausente do valor ou quando o valor foi redigido', () => {
+  assert.equal(payload('abc', 'server.request.query:q', 'xyz').highlight, undefined);
+  assert.equal(payload('abc', 'server.request.query:password', 'abc').highlight, undefined);
+});
+
+test('entrada do IAST vale mesmo sem o prefixo server.request.', () => {
+  assert.equal(payload("1' OR '1'='1", 'query:q', undefined, true).value, "1' OR '1'='1");
+  assert.equal(payload('x', 'cookie:sid', undefined, true).value, '<redacted>');
+});
+
+test('exclusões: parâmetros e cabeçalhos não são analisados nem viram evidência', () => {
+  const remote = require('../remote.cjs');
+  const before = remote.state.exclusions;
+  remote.state.exclusions = {parameters: new Set(['campo_livre']), headers: new Set(['referer'])};
+  try {
+    const data = require('../evidence.cjs').withoutExcluded({'server.request.query': {q: ['a'], campo_livre: ['b']}, 'server.request.headers.no_cookies': {referer: 'https://x', 'user-agent': 'u'}, 'server.request.method': 'GET'});
+    assert.deepEqual(data['server.request.query'], {q: ['a']});
+    assert.deepEqual(data['server.request.headers.no_cookies'], {'user-agent': 'u'});
+    assert.equal(data['server.request.method'], 'GET');
+    const out = build({value: 'a', location: 'server.request.query:q.0', request: {url: '/x?q=a&campo_livre=b', headers: {referer: 'https://x', 'user-agent': 'u'}}});
+    assert.equal(out.query, 'q=a');
+    assert.deepEqual(out.headers, {'user-agent': 'u'});
+  } finally { remote.state.exclusions = before; }
+});

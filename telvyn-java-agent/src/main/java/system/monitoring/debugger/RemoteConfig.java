@@ -25,6 +25,9 @@ public final class RemoteConfig {
     private static volatile long revision;
     private static volatile Map<String, Boolean> profiling = Map.of();
     private static volatile Map<String, Boolean> security = Map.of();
+    private static final java.util.regex.Pattern EXCLUSION_NAME = java.util.regex.Pattern.compile("[A-Za-z0-9_.-]{1,64}");
+    private static volatile Set<String> excludedParameters = Set.of();
+    private static volatile Set<String> excludedHeaders = Set.of();
 
     private RemoteConfig() {}
 
@@ -32,6 +35,12 @@ public final class RemoteConfig {
 
     /** Valor definido na tela para a opção de perfil, ou null (vale a local). */
     public static Boolean profiling(String key) { return profiling.get(key); }
+
+    /** Nomes de parâmetros (consulta, corpo, caminho, cookies) que a tela mandou não analisar nem enviar como evidência. */
+    public static Set<String> excludedParameters() { return excludedParameters; }
+
+    /** Nomes de cabeçalhos (minúsculos) que a tela mandou não analisar nem enviar como evidência. */
+    public static Set<String> excludedHeaders() { return excludedHeaders; }
 
     /** Valor definido na tela para a opção de segurança, ou null (vale a local). */
     public static Boolean security(String key) { return security.get(key); }
@@ -77,6 +86,8 @@ public final class RemoteConfig {
         Map<String, Boolean> nextSecurity = flags(body.getAsJsonObject("security"), SECURITY);
         profiling = nextProfiling;
         security = nextSecurity;
+        excludedParameters = names(body.get("exclusions"), "parameters", false);
+        excludedHeaders = names(body.get("exclusions"), "headers", true);
         apply(nextProfiling, nextSecurity);
         revision = next;
         System.out.println("[telvyn] configuração remota aplicada (revisão " + next + ")");
@@ -93,6 +104,17 @@ public final class RemoteConfig {
         }
         Boolean attack = security.get("attack");
         if (attack != null) SpringMvcSecurity.remoteAttack(attack);
+    }
+
+    private static Set<String> names(com.google.gson.JsonElement exclusions, String kind, boolean lower) {
+        if (exclusions == null || !exclusions.isJsonObject() || !exclusions.getAsJsonObject().has(kind) || !exclusions.getAsJsonObject().get(kind).isJsonArray()) return Set.of();
+        Set<String> out = new java.util.LinkedHashSet<>();
+        for (var item : exclusions.getAsJsonObject().getAsJsonArray(kind)) {
+            if (!item.isJsonPrimitive() || out.size() >= 32) continue;
+            String name = item.getAsString();
+            if (EXCLUSION_NAME.matcher(name).matches()) out.add(lower ? name.toLowerCase(java.util.Locale.ROOT) : name);
+        }
+        return Set.copyOf(out);
     }
 
     private static Map<String, Boolean> flags(JsonObject object, Set<String> allowed) {

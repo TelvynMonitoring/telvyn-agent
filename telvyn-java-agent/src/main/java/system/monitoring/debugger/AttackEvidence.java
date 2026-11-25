@@ -40,7 +40,7 @@ final class AttackEvidence {
         if (!(headers instanceof Map<?, ?> map)) return out;
         for (String name : SAFE_HEADERS) {
             Object raw = map.get(name);
-            if (raw == null || SENSITIVE_KEY.matcher(name).find()) continue;
+            if (raw == null || SENSITIVE_KEY.matcher(name).find() || RemoteConfig.excludedHeaders().contains(name)) continue;
             String value = raw instanceof List<?> list ? String.join(", ", list.stream().map(String::valueOf).toList()) : String.valueOf(raw);
             if (value.isEmpty()) continue;
             value = redactValue(clean(value));
@@ -49,11 +49,18 @@ final class AttackEvidence {
         return out;
     }
 
-    /** Monta a evidência de um match; devolve null quando não há nada a mostrar. */
+    /** Monta a evidência de um match do WAF; devolve null quando não há nada a mostrar. */
     static JsonObject build(String value, String location, String query, Map<String, String> headers) {
+        return build(value, location, query, headers, null, false);
+    }
+
+    /**
+     * highlight: trecho do valor que a regra casou. input: a entrada já é, por definição, da requisição.
+     * Sem input, só endereços server.request.* têm valor a mostrar: um match na resposta (server.response.status) não é um payload.
+     */
+    static JsonObject build(String value, String location, String query, Map<String, String> headers, String highlight, boolean input) {
         JsonObject evidence = new JsonObject();
-        // Só entradas da requisição têm valor a mostrar: um match na resposta (ex.: server.response.status) não é um payload.
-        if (value != null && location != null && location.startsWith("server.request.")) {
+        if (value != null && (input || location != null && location.startsWith("server.request."))) {
             String text = clean(value);
             boolean truncated = false, redacted = false;
             if (text.length() > VALUE_MAX) { text = text.substring(0, VALUE_MAX); truncated = true; }
@@ -61,6 +68,12 @@ final class AttackEvidence {
             else { String cleaned = redactValue(text); if (!cleaned.equals(text)) { text = cleaned; redacted = true; } }
             JsonObject payload = new JsonObject();
             payload.addProperty("value", text); payload.addProperty("truncated", truncated); payload.addProperty("redacted", redacted);
+            // Trecho exato que casou: só vale se o valor não foi alterado pela redação e o trecho está nele (sem diferenciar maiúsculas).
+            if (!redacted && highlight != null) {
+                String fragment = clean(highlight);
+                if (fragment.length() > 128) fragment = fragment.substring(0, 128);
+                if (!fragment.isBlank() && text.toLowerCase(java.util.Locale.ROOT).contains(fragment.toLowerCase(java.util.Locale.ROOT))) payload.addProperty("highlight", fragment);
+            }
             evidence.add("payload", payload);
         }
         String redactedQuery = query == null ? "" : redactQuery(clean(query));
@@ -86,10 +99,11 @@ final class AttackEvidence {
         for (String pair : query.split("&", -1)) {
             if (pair.isEmpty()) continue;
             int equals = pair.indexOf('=');
-            if (out.length() > 0) out.append('&');
-            if (equals < 0) { out.append(redactValue(pair)); continue; }
+            if (equals < 0) { if (out.length() > 0) out.append('&'); out.append(redactValue(pair)); continue; }
             String key = pair.substring(0, equals), decoded;
             try { decoded = URLDecoder.decode(key, StandardCharsets.UTF_8); } catch (IllegalArgumentException invalid) { decoded = key; }
+            if (RemoteConfig.excludedParameters().contains(decoded)) continue;
+            if (out.length() > 0) out.append('&');
             out.append(key).append('=').append(SENSITIVE_KEY.matcher(decoded).find() ? REDACTED : redactValue(pair.substring(equals + 1)));
         }
         return out.length() > QUERY_MAX ? out.substring(0, QUERY_MAX) : out.toString();

