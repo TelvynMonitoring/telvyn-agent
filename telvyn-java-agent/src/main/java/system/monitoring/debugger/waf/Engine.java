@@ -29,8 +29,9 @@ public final class Engine {
     record Rule(String id, String name, Map<String, Object> tags, List<Condition> conditions, List<String> actions, Set<String> addresses) {}
 
     /** Onde um operador casou. */
-    record Hit(String address, List<Object> keyPath, String resourceAddress, String value, List<String> values) {
-        Hit(String address, List<Object> keyPath, String resourceAddress, String value) { this(address, keyPath, resourceAddress, value, value == null ? List.of() : List.of(value)); }
+    record Hit(String address, List<Object> keyPath, String resourceAddress, String value, List<String> values, String raw) {
+        Hit(String address, List<Object> keyPath, String resourceAddress, String value, List<String> values) { this(address, keyPath, resourceAddress, value, values, null); }
+        Hit(String address, List<Object> keyPath, String resourceAddress, String value) { this(address, keyPath, resourceAddress, value, value == null ? List.of() : List.of(value), null); }
     }
 
     /** Operador sobre os dados acumulados: devolve onde casou ou null. */
@@ -201,6 +202,8 @@ public final class Engine {
                 } else {
                     parameter.put("address", hit.address());
                     parameter.put("key_path", stringPath(hit.keyPath()));
+                    // O valor original da entrada (antes das transformações da regra); o agent o redige antes de enviar.
+                    if (hit.raw() != null) parameter.put("value", hit.raw().length() > 1024 ? hit.raw().substring(0, 1024) : hit.raw());
                 }
                 matches.add(Map.of("operator", rule.conditions().get(i).operator(), "parameters", List.of(parameter)));
             }

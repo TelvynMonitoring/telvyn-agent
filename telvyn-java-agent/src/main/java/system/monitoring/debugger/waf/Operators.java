@@ -99,14 +99,14 @@ final class Operators {
                 if (excluded(input, leaf.path())) return false;
                 String text = Transforms.apply(input.transforms(), leaf.text());
                 if (!test.test(text, budget)) return false;
-                if (!condition.collect()) { found[0] = new Engine.Hit(input.address(), leaf.path(), null, text); return true; }
+                if (!condition.collect()) { found[0] = new Engine.Hit(input.address(), leaf.path(), null, text, List.of(text), leaf.text()); return true; }
                 if (collected.size() < MAX_COLLECTED) collected.add(text);
-                if (first[0] == null) first[0] = new Engine.Hit(input.address(), leaf.path(), null, text);
+                if (first[0] == null) first[0] = new Engine.Hit(input.address(), leaf.path(), null, text, List.of(text), leaf.text());
                 return false;
             });
             if (found[0] != null) return found[0];
         }
-        if (first[0] != null) return new Engine.Hit(first[0].address(), first[0].keyPath(), null, first[0].value(), List.copyOf(collected));
+        if (first[0] != null) return new Engine.Hit(first[0].address(), first[0].keyPath(), null, first[0].value(), List.copyOf(collected), first[0].raw());
         return null;
     }
 

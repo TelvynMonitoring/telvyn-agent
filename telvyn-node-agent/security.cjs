@@ -63,6 +63,7 @@ function startSecurity() {
   if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('Invalid collector endpoint');
   endpoint.pathname = endpoint.pathname.replace(/\/$/, '') + '/v1/security/events';
   const { Waf, xmlValues } = require('./waf.cjs');
+  const evidence = require('./evidence.cjs');
   const protection = require('./protection.cjs');
   const createWaf = () => {
     try { return new Waf(WAF_RULES, {paranoia: PARANOIA}); }
@@ -98,7 +99,7 @@ function startSecurity() {
     for (const [key, value] of url.searchParams) (out[key] ??= []).push(value);
     return out;
   };
-  // Where the rule matched: address and key path, never the value.
+  // Where the rule matched: address and key path. The matched value travels only as redacted evidence (see evidenceOf).
   const where = event => {
     const first = event.rule_matches?.[0]?.parameters?.[0];
     // Exploit prevention matches name the request input (params) and the operation (resource) separately.
@@ -106,6 +107,16 @@ function startSecurity() {
     if (!parameter?.address) return undefined;
     const key = (parameter.key_path || []).map(String).join('.').replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 200);
     return key ? `${parameter.address}:${key}` : parameter.address;
+  };
+
+  // Evidence of an attack: the matched value, the query string and a short list of headers, redacted here before
+  // leaving the application. TELVYN_SECURITY_EVIDENCE=false or the service's remote setting turns it off.
+  const evidenceEnabled = () => process.env.TELVYN_SECURITY_EVIDENCE !== 'false' && require('./remote.cjs').security('evidence') !== false;
+  const evidenceOf = (event, request) => {
+    if (!evidenceEnabled()) return undefined;
+    const first = event.rule_matches?.[0]?.parameters?.[0];
+    // Only request inputs carry a value; exploit prevention names an operation, not an input.
+    return evidence.build({value: first?.address ? first.value : undefined, location: where(event), request});
   };
 
   // Runs one phase on the request's WAF context; reports new matches and returns whether a blocking rule matched.
@@ -126,7 +137,8 @@ function startSecurity() {
     for (const event of matches) {
       state.reported.add(event.rule.id);
       const blocking = block && protection.ruleMode(event.rule.id) === 'blocking';
-      report('match', event.rule.id, elapsed, span, undefined, {...state.details, ...(state.user ? {usr_id: state.user} : {}), match_address: where(event), ...(blocking ? {blocked: true, blocked_by: 'rule'} : {})});
+      const proof = evidenceOf(event, state.request);
+      report('match', event.rule.id, elapsed, span, undefined, {...state.details, ...(state.user ? {usr_id: state.user} : {}), match_address: where(event), ...(proof ? {evidence: proof} : {}), ...(blocking ? {blocked: true, blocked_by: 'rule'} : {})});
     }
     return block;
   }

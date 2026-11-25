@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class RemoteConfig {
     static final Set<String> PROFILING = Set.of("enabled", "alloc", "wall", "lock", "exceptions");
-    static final Set<String> SECURITY = Set.of("attack", "iast");
+    static final Set<String> SECURITY = Set.of("attack", "iast", "evidence");
     private static final AtomicBoolean STARTED = new AtomicBoolean();
     private static volatile long revision;
     private static volatile Map<String, Boolean> profiling = Map.of();

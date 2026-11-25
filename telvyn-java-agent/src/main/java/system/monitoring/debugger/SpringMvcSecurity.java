@@ -180,7 +180,7 @@ public final class SpringMvcSecurity {
             return false;
         }
         boolean block=blockable&&!state.blocked&&JavaProtection.allowBlocking()&&!JavaProtection.passed(state.ip)&&evaluation.matches().stream().anyMatch(m->"blocking".equals(JavaProtection.ruleMode(m.rule())));
-        for(var match:evaluation.matches())reporter.reportWaf("match",match.rule(),match.address(),evaluation.elapsedUs(),WafInspector.engineVersion(),state.ip,state.method,state.path,state.userAgent,state.user,block&&"blocking".equals(JavaProtection.ruleMode(match.rule()))?"rule":null,state.trace[0],state.trace[1]);
+        for(var match:evaluation.matches())reporter.reportWaf("match",match.rule(),match.address(),evaluation.elapsedUs(),WafInspector.engineVersion(),state.ip,state.method,state.path,state.userAgent,state.user,block&&"blocking".equals(JavaProtection.ruleMode(match.rule()))?"rule":null,state.trace[0],state.trace[1],WafInspector.evidenceOf(state,match));
         return block;
     }
     private static boolean block(WafInspector.State state,Object request,Object response,String by,LocalAttackReporter reporter){

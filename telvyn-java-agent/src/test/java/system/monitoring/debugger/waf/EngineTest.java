@@ -46,10 +46,11 @@ class EngineTest {
     }
 
     @Test
-    void eventoNaoCarregaOValorRecebido() {
-        var result = run(Map.of("server.request.query", Map.of("q", List.of("../../etc/passwd"))));
+    void eventoCarregaOValorOriginalDaEntrada() {
+        var result = run(Map.of("server.request.query", Map.of("q", List.of("../../Etc/Passwd"))));
         assertEquals("match", result.outcome());
-        assertFalse(new Gson().toJson(result.events()).contains("passwd"));
+        // O valor original (antes das transformações da regra); o agent o redige antes de enviar.
+        assertTrue(new Gson().toJson(result.events()).contains("../../Etc/Passwd"));
     }
 
     @Test

@@ -30,10 +30,18 @@ test('SQLi e XSS passam pelo libinjection', () => {
   assert.ok(ids(xss).includes('crs-941100'), ids(xss).join());
 });
 
-test('o evento não carrega o valor recebido', () => {
-  const result = waf.createContext().run({ persistent: { 'server.request.query': { q: ['../../etc/passwd'] } } }, 200000);
+test('o evento carrega o valor original da entrada, sem as transformações da regra', () => {
+  const result = waf.createContext().run({ persistent: { 'server.request.query': { q: ['../../Etc/Passwd'] } } }, 200000);
   assert.ok(result.events.length > 0);
-  assert.ok(!JSON.stringify(result.events).includes('passwd'));
+  assert.equal(result.events[0].rule_matches[0].parameters[0].value, '../../Etc/Passwd');
+});
+
+test('prevenção de exploit não leva a operação (caminho ou SQL) no evento', () => {
+  const context = waf.createContext();
+  context.run({ persistent: { 'server.request.query': { file: ['../../etc/shadow'] } } }, 200000);
+  const result = context.run({ ephemeral: { 'server.io.fs.file': '/srv/app/uploads/../../etc/shadow' } }, 200000);
+  assert.ok(result.events.length > 0);
+  assert.ok(!JSON.stringify(result.events).includes('/srv/app/uploads'));
 });
 
 test('prevenção de exploit compara a operação com a entrada', () => {

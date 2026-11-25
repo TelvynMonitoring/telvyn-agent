@@ -13,6 +13,7 @@
     "profiler.cjs",
     "profile-context.cjs",
     "sourcemap.cjs",
+    "evidence.cjs",
     "routes.cjs",
     "security.cjs",
     "iast.cjs",
