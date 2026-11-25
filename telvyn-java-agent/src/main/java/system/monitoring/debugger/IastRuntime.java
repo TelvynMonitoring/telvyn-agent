@@ -81,8 +81,8 @@ public final class IastRuntime {
     public static Object enter(Method method,Object[] arguments) {
         State previous=current.get();
         if(reporter==null)return previous;
-        String result=method.getReturnType().getName();
-        if(!method.getReturnType().equals(String.class)&&!result.equals("jakarta.ws.rs.core.Response")&&!result.equals("org.springframework.http.ResponseEntity")&&!java.util.List.class.isAssignableFrom(method.getReturnType())&&!result.equals("java.util.concurrent.Callable")&&!java.util.concurrent.CompletionStage.class.isAssignableFrom(method.getReturnType())&&!result.equals("org.springframework.web.context.request.async.DeferredResult")&&!result.equals("org.springframework.web.context.request.async.WebAsyncTask")&&!result.equals("reactor.core.publisher.Mono")&&!result.equals("reactor.core.publisher.Flux"))return previous;
+        // Qualquer handler de uma rota selecionada é acompanhado, seja o tipo que ele retorna (texto, objeto próprio, mapa, void...):
+        // o exit libera o estado e só os tipos assíncronos o carregam para outra thread (IastAsync.returned).
         try {
             boolean routeSelected=configuredSources.test(method);
             java.util.Set<String> inspected=new java.util.HashSet<>();
