@@ -11,6 +11,15 @@ func podIdentity(pod podMeta, kind string) string {
 	return k8sidentity.Lookup(pod.Metadata.Labels, pod.Metadata.Annotations, kind)
 }
 
+// podEnvironment é o ambiente do pod: rótulo ou anotação, ou o namespace da admissão como padrão.
+func podEnvironment(pod podMeta) string {
+	namespace := pod.namespace
+	if namespace == "" {
+		namespace = pod.Metadata.Namespace
+	}
+	return k8sidentity.Environment(pod.Metadata.Labels, pod.Metadata.Annotations, namespace)
+}
+
 func runtimeServiceName(pod podMeta, containerName string) string {
 	if service := podIdentity(pod, "service"); service != "" {
 		return service
@@ -122,7 +131,7 @@ func runtimePatch(pod podMeta, selected, image, endpoint, language, optionsName,
 		attributes := []string{"k8s.pod.name=$(TELVYN_POD_NAME)", "k8s.namespace.name=$(TELVYN_POD_NAMESPACE)", "k8s.container.name=" + c.Name}
 		for _, tag := range []struct{ key, value string }{
 			{"k8s.cluster.name", pod.clusterName},
-			{"deployment.environment", podIdentity(pod, "env")},
+			{"deployment.environment", podEnvironment(pod)},
 			{"service.version", podIdentity(pod, "version")},
 		} {
 			if tag.value != "" && !strings.ContainsAny(tag.value, ",=\r\n") {

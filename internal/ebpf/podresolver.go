@@ -350,7 +350,7 @@ func (h *httpPodLister) List(ctx context.Context) (PodIndex, error) {
 				Service: k8sidentity.Lookup(p.Metadata.Labels, nil, k8sidentity.Service),
 				Labels:  p.Metadata.Labels,
 				Version: k8sidentity.Lookup(p.Metadata.Labels, nil, k8sidentity.Version),
-				Env:     k8sidentity.Lookup(p.Metadata.Labels, nil, k8sidentity.Env),
+				Env:     k8sidentity.Environment(p.Metadata.Labels, nil, p.Metadata.Namespace),
 			}
 		}
 		for _, c := range p.Status.ContainerStatuses {
