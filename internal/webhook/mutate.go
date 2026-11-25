@@ -51,6 +51,7 @@ type AdmissionResponse struct {
 type podMeta struct {
 	serviceName string
 	clusterName string
+	namespace   string // do pedido de admissão: pods criados por um ReplicaSet chegam sem metadata.namespace
 	Metadata    struct {
 		Name            string            `json:"name"`
 		Namespace       string            `json:"namespace"`
@@ -152,6 +153,7 @@ func (s *Server) decide(req *AdmissionRequest) *AdmissionResponse {
 		ns = pod.Metadata.Namespace
 	}
 	pod.clusterName = s.cfg.Cluster
+	pod.namespace = ns
 	// Explicit container selection avoids guessing a runtime from an application image name.
 	type injector struct {
 		language, image string
@@ -416,7 +418,7 @@ func buildPatch(pod podMeta, javaIdx []int, agentImage, javaAgentImage, otlpEnvV
 		attributes := []string{"k8s.namespace.name=$(POD_NAMESPACE)", "k8s.pod.name=$(POD_NAME)", "k8s.container.name=" + c.Name}
 		for _, tag := range []struct{ key, value string }{
 			{"k8s.cluster.name", pod.clusterName},
-			{"deployment.environment", podIdentity(pod, "env")},
+			{"deployment.environment", podEnvironment(pod)},
 			{"service.version", podIdentity(pod, "version")},
 		} {
 			if tag.value != "" && !strings.ContainsAny(tag.value, ",=\r\n") {

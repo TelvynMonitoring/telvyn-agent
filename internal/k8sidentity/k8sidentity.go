@@ -15,6 +15,17 @@ var keys = map[string][]string{
 	Version: {"telvyn.io/version", "resource.opentelemetry.io/service.version", "app.kubernetes.io/version"},
 }
 
+// Environment devolve o ambiente do serviço: o rótulo ou a anotação de ambiente, e, se não houver nenhum,
+// o namespace. Sem esse padrão o agent pede a configuração remota para o ambiente vazio e a detecção ligada
+// na tela nunca chega à aplicação. Webhook e eBPF usam esta mesma regra para o serviço ter o mesmo ambiente
+// em todo sinal.
+func Environment(labels, annotations map[string]string, namespace string) string {
+	if env := Lookup(labels, annotations, Env); env != "" {
+		return env
+	}
+	return namespace
+}
+
 // Lookup devolve o primeiro valor não vazio entre os rótulos e as anotações; vazio se nenhum existir.
 func Lookup(labels, annotations map[string]string, kind string) string {
 	for _, key := range keys[kind] {
