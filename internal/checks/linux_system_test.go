@@ -3,11 +3,15 @@ package checks
 import (
 	"context"
 	"math"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 	"github.com/shirou/gopsutil/v4/disk"
+	gopsutilnet "github.com/shirou/gopsutil/v4/net"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -394,5 +398,47 @@ func TestLinuxSystem_AutoRegistersInDefault(t *testing.T) {
 	_, ok := Default.Get("linux.system")
 	if !ok {
 		t.Fatal("linux.system factory not found in Default registry (init() failed?)")
+	}
+}
+
+// O agent Linux nativo (systemd) não tem caminhos do host: MTU, link e filas das interfaces vêm do /sys dele.
+func TestLinuxSystem_NativeInterfaceAttributesFromSys(t *testing.T) {
+	ifaces, err := gopsutilnet.IOCountersWithContext(context.Background(), true)
+	if err != nil || len(ifaces) == 0 {
+		t.Skip("sem interfaces para testar")
+	}
+	name := ifaces[0].Name
+	sys := t.TempDir()
+	base := filepath.Join(sys, "class", "net", name)
+	for _, dir := range []string{"queues/rx-0", "queues/rx-1", "queues/tx-0"} {
+		if err := os.MkdirAll(filepath.Join(base, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for file, value := range map[string]string{"mtu": "1450\n", "tx_queue_len": "1000\n", "carrier": "1\n", "flags": "0x1003\n"} {
+		if err := os.WriteFile(filepath.Join(base, file), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, err := newLinuxSystemCheck(&collectorv1.CheckConfig{CheckId: "iface-test", CheckType: "linux.system", Interval: durationpb.New(30 * time.Second), Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.(*linuxSystemCheck).sysRoot = sys
+	out, err := c.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]float64{"net.interface.mtu": 1450, "net.interface.up": 1, "net.interface.admin_up": 1, "net.interface.num_rx_queues": 2, "net.interface.num_tx_queues": 1, "net.interface.tx_queue_len": 1000}
+	got := map[string]float64{}
+	for _, m := range out {
+		if m.InterfaceName == name && strings.HasPrefix(m.MetricName, "net.interface.") {
+			got[m.MetricName] = m.Value
+		}
+	}
+	for metric, value := range want {
+		if got[metric] != value {
+			t.Errorf("%s = %v, esperado %v (interface %s); recebidas: %v", metric, got[metric], value, name, got)
+		}
 	}
 }
