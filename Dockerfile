@@ -46,7 +46,9 @@ RUN go run ./cmd/package-proxmox -out /out/integrations -arch ${TARGETARCH:-amd6
 # ---------- Stage 1b: agentes de linguagem (Java/Node) ----------
 # Mesma imagem que o webhook usa no Kubernetes; aqui seu conteúdo viaja dentro da
 # imagem única do agent e é copiado pelo entrypoint para o volume compartilhado.
-FROM ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.11 AS runtime-agents
+# O bundle é publicado só para linux/amd64 e só leva arquivos independentes de arquitetura
+# (jars Java e scripts Node). Fixar a plataforma aqui deixa a build arm64 do agent resolvê-lo.
+FROM --platform=linux/amd64 ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.11 AS runtime-agents
 
 # ---------- Stage 2: runtime ----------
 # Alpine (not distroless) so the entrypoint shell can expand env vars into
@@ -95,8 +97,8 @@ COPY --from=build /out/telvyn-agent /usr/local/bin/telvyn-agent
 COPY --from=build /out/integrations /opt/telvyn/integrations
 # Agentes de linguagem (Java e Node) que o entrypoint publica em /opt/telvyn-shared quando
 # TELVYN_LANGUAGE_AGENTS está definida. O jar do OpenTelemetry baixado acima acompanha o do Java.
-COPY --from=ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.11 /opt/telvyn/java /opt/telvyn/java
-COPY --from=ghcr.io/telvynmonitoring/telvyn-runtime-agents:0.5.11 /opt/telvyn/node /opt/telvyn/node
+COPY --from=runtime-agents /opt/telvyn/java /opt/telvyn/java
+COPY --from=runtime-agents /opt/telvyn/node /opt/telvyn/node
 RUN cp /opt/otel/javaagent.jar /opt/telvyn/java/opentelemetry-javaagent.jar
 ENV TELVYN_EXTERNAL_PACKAGE_DIR=/opt/telvyn/integrations/packages \
     TELVYN_EXTERNAL_TRUST_DIR=/opt/telvyn/integrations/trust \
