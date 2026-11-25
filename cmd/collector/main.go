@@ -496,6 +496,7 @@ func runIngestMode(ingestURL string) {
 			} else {
 				log.Info("máquina docker registrada", "host_id", dockerHostID, "hostname", hostID)
 				startDockerCheck(ctx, log, out, dockerHostID)
+				startDockerHostSystem(ctx, log, out, dockerHostID)
 			}
 		}
 	}
@@ -1548,6 +1549,28 @@ func startKubeletCheck(ctx context.Context, log *slog.Logger, out chan<- []*coll
 // emite docker.container.* com o host_id da máquina registrada. As métricas
 // saem pelo mesmo canal `out` (→ PostMetrics Bearer). A factory já faz Ping
 // cedo — sem socket montado, loga o hint e não sobe (best-effort).
+// dockerHostProc é onde o /proc do host é montado no container do agent (igual ao DaemonSet do Kubernetes).
+const dockerHostProc = "/host/proc"
+
+// hostProcMounted diz se o /proc do host está visível: precisa do PID 1 do host e do disco dele (/proc/1/root).
+func hostProcMounted(procRoot string) bool {
+	_, err := os.Stat(filepath.Join(procRoot, "1", "root"))
+	return err == nil
+}
+
+// startDockerHostSystem coleta CPU, memória, carga e disco da MÁQUINA do agent Docker. Sem o /proc do host
+// montado o agent só vê o container, e as métricas seriam as dele: nesse caso não coleta e avisa.
+func startDockerHostSystem(ctx context.Context, log *slog.Logger, out chan<- []*collectorv1.Metric, hostID string) {
+	if strings.EqualFold(getenvOr("TELVYN_HOST_METRICS", "1"), "0") {
+		return
+	}
+	if !hostProcMounted(dockerHostProc) {
+		log.Info("docker: CPU, memória e disco da máquina não são coletados; rode o agent com --pid=host e -v /proc:/host/proc:ro -v /sys:/host/sys:ro")
+		return
+	}
+	checks.StartNodeSystem(ctx, log, out, hostID, dockerHostProc, 30*time.Second)
+}
+
 func startDockerCheck(ctx context.Context, log *slog.Logger, out chan<- []*collectorv1.Metric, hostID string) {
 	factory, ok := checks.Default.Get("docker.host")
 	if !ok {
