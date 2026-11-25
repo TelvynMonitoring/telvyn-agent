@@ -51,8 +51,11 @@ function sensitiveLocation(location) {
   return colon >= 0 && SENSITIVE_KEY.test(location.slice(colon + 1));
 }
 
+// Só entradas da requisição têm valor a mostrar: um match na resposta (ex.: server.response.status) não é um payload.
+const isRequestInput = location => typeof location === 'string' && location.startsWith('server.request.');
+
 function payload(value, location) {
-  if (typeof value !== 'string') return undefined;
+  if (typeof value !== 'string' || !isRequestInput(location)) return undefined;
   let text = clean(value);
   let truncated = false;
   let redacted = false;

@@ -52,7 +52,8 @@ final class AttackEvidence {
     /** Monta a evidência de um match; devolve null quando não há nada a mostrar. */
     static JsonObject build(String value, String location, String query, Map<String, String> headers) {
         JsonObject evidence = new JsonObject();
-        if (value != null) {
+        // Só entradas da requisição têm valor a mostrar: um match na resposta (ex.: server.response.status) não é um payload.
+        if (value != null && location != null && location.startsWith("server.request.")) {
             String text = clean(value);
             boolean truncated = false, redacted = false;
             if (text.length() > VALUE_MAX) { text = text.substring(0, VALUE_MAX); truncated = true; }

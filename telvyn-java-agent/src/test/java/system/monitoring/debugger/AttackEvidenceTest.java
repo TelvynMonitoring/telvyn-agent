@@ -57,6 +57,11 @@ class AttackEvidenceTest {
     }
 
     @Test
+    void matchNaRespostaNaoEhPayload() {
+        assertNull(AttackEvidence.build("500", "server.response.status", null, Map.of()));
+    }
+
+    @Test
     void semNadaAMostrarDevolveNulo() {
         assertNull(AttackEvidence.build(null, null, "", Map.of()));
     }

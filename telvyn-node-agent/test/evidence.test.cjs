@@ -57,6 +57,11 @@ test('sem nada a mostrar devolve undefined', () => {
   assert.equal(build({value: undefined, location: undefined, request: {url: '/x', headers: {}}}), undefined);
 });
 
+test('match na resposta não é payload', () => {
+  assert.equal(payload('500', 'server.response.status'), undefined);
+  assert.equal(build({value: '500', location: 'server.response.status', request: {url: '/x', headers: {}}}), undefined);
+});
+
 test('sensitiveLocation', () => {
   assert.equal(sensitiveLocation('server.request.query:q.0'), false);
   assert.equal(sensitiveLocation('server.request.query:password'), true);
