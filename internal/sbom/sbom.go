@@ -202,6 +202,9 @@ func (s *Scanner) post(ctx context.Context, img RunningImage, digest string, com
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Components:  comps,
 	}
+	if source := s.imageSource(ctx, img.Ref); source.URL != "" {
+		payload.VcsURL, payload.VcsRevision = source.URL, source.Revision
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -212,12 +215,15 @@ func (s *Scanner) post(ctx context.Context, img RunningImage, digest string, com
 // ---- payload do ingest (espelha SbomIngestResource) ---------------------
 
 type ingestPayload struct {
-	HostID      int64             `json:"host_id"`
-	ImageRef    string            `json:"image_ref"`
-	ImageDigest string            `json:"image_digest"`
-	Namespace   string            `json:"namespace,omitempty"`
-	Service     string            `json:"service,omitempty"`
-	GeneratedAt string            `json:"generated_at,omitempty"`
+	HostID      int64  `json:"host_id"`
+	ImageRef    string `json:"image_ref"`
+	ImageDigest string `json:"image_digest"`
+	Namespace   string `json:"namespace,omitempty"`
+	Service     string `json:"service,omitempty"`
+	GeneratedAt string `json:"generated_at,omitempty"`
+	// Origem declarada pela imagem (rótulos OCI): repositório https e commit (completo ou abreviado).
+	VcsURL      string            `json:"vcs_url,omitempty"`
+	VcsRevision string            `json:"vcs_revision,omitempty"`
 	Components  []ingestComponent `json:"components"`
 }
 

@@ -63,6 +63,7 @@ function startSecurity() {
   if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('Invalid collector endpoint');
   endpoint.pathname = endpoint.pathname.replace(/\/$/, '') + '/v1/security/events';
   const { Waf, xmlValues } = require('./waf.cjs');
+  const evidence = require('./evidence.cjs');
   const protection = require('./protection.cjs');
   const createWaf = () => {
     try { return new Waf(WAF_RULES, {paranoia: PARANOIA}); }
@@ -84,8 +85,8 @@ function startSecurity() {
     const destination = new URL(endpoint);
     if (finding) destination.pathname = destination.pathname.replace(/events$/, 'iast');
     const send = fetch(destination, {method: 'POST', headers: {'content-type': 'application/json'}, body, redirect: 'error', signal: AbortSignal.timeout(5000)})
-      .then(async response => { await response.arrayBuffer(); if (!response.ok) throw new Error('Delivery rejected'); })
-      .catch(() => console.warn('[Telvyn] Security event delivery failed.'))
+      .then(async response => { await response.arrayBuffer(); if (!response.ok) throw new Error('Delivery rejected (HTTP ' + response.status + ')'); })
+      .catch(error => console.warn('[Telvyn] Security event delivery failed: ' + String(error?.cause?.code || error?.message || error).slice(0, 120)))
       .finally(() => pending.delete(send));
     pending.add(send);
   }
@@ -98,7 +99,7 @@ function startSecurity() {
     for (const [key, value] of url.searchParams) (out[key] ??= []).push(value);
     return out;
   };
-  // Where the rule matched: address and key path, never the value.
+  // Where the rule matched: address and key path. The matched value travels only as redacted evidence (see evidenceOf).
   const where = event => {
     const first = event.rule_matches?.[0]?.parameters?.[0];
     // Exploit prevention matches name the request input (params) and the operation (resource) separately.
@@ -108,11 +109,21 @@ function startSecurity() {
     return key ? `${parameter.address}:${key}` : parameter.address;
   };
 
+  // Evidence of an attack: the matched value, the query string and a short list of headers, redacted here before
+  // leaving the application. TELVYN_SECURITY_EVIDENCE=false or the service's remote setting turns it off.
+  const evidenceOf = (event, request) => {
+    if (!evidence.enabled()) return undefined;
+    const first = event.rule_matches?.[0]?.parameters?.[0];
+    // Only request inputs carry a value; exploit prevention names an operation, not an input.
+    return evidence.build({value: first?.address ? first.value : undefined, highlight: first?.highlight, location: where(event), request});
+  };
+
   // Runs one phase on the request's WAF context; reports new matches and returns whether a blocking rule matched.
   // blockable=false: detection only (a phase where answering would break the framework's own response).
   // ephemeral: data of one operation (exploit prevention), not kept in the request context.
   function evaluate(state, data, span, blockable = true, ephemeral = false) {
     if (!state.context || state.closed) return false;
+    data = evidence.withoutExcluded(data);
     const started = process.hrtime.bigint();
     let result;
     try { result = state.context.run(ephemeral ? {ephemeral: data} : {persistent: data}, BUDGET_US); }
@@ -126,7 +137,8 @@ function startSecurity() {
     for (const event of matches) {
       state.reported.add(event.rule.id);
       const blocking = block && protection.ruleMode(event.rule.id) === 'blocking';
-      report('match', event.rule.id, elapsed, span, undefined, {...state.details, ...(state.user ? {usr_id: state.user} : {}), match_address: where(event), ...(blocking ? {blocked: true, blocked_by: 'rule'} : {})});
+      const proof = evidenceOf(event, state.request);
+      report('match', event.rule.id, elapsed, span, undefined, {...state.details, ...(state.user ? {usr_id: state.user} : {}), match_address: where(event), ...(proof ? {evidence: proof} : {}), ...(blocking ? {blocked: true, blocked_by: 'rule'} : {})});
     }
     return block;
   }

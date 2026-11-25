@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { collectLiterals } = require('../iast.cjs');
+const { collectLiterals, defaultSourceRoot } = require('../iast.cjs');
+const { routePattern } = require('../routes.cjs');
 const { originalPosition } = require('../sourcemap.cjs');
 const { cpuProfile, wallSamples, heapObjects } = require('../profiler.cjs');
 
@@ -96,5 +97,49 @@ test('IAST: entrada da requisição que chega ao sink, sem reescrita de código'
     assert.deepEqual(traversal.map(finding => [finding.source, finding.code_line]), [['query:name', 6], ['query:name', 6]], result.stdout + result.stderr);
     const secret = findings.filter(finding => finding.rule_id === 'HARDCODED_PASSWORD');
     assert.deepEqual(secret.map(finding => finding.code_line), [2]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('padrão de rota: identificadores viram :id e nada de valor vaza', () => {
+  assert.equal(routePattern('/api/Products/42'), '/api/Products/:id');
+  assert.equal(routePattern('/users/3f2b8c1e-1111-4222-8333-444455556666/orders'), '/users/:id/orders');
+  assert.equal(routePattern('/rest/user/login'), '/rest/user/login');
+  assert.equal(routePattern('relativo'), null);
+});
+
+test('raiz do código padrão: o package.json mais alto, mesmo com cópia dentro da saída do build', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'telvyn-root-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'build', 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'build', 'package.json'), '{}');
+    assert.equal(defaultSourceRoot(path.join(dir, 'build', 'sub', 'app.js'), '/nowhere'), dir);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('IAST liga só pela flag: sem raiz nem rotas configuradas, a rota vem do caminho', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'telvyn-iast-flag-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{}');
+    fs.writeFileSync(path.join(dir, 'run.cjs'), [
+      "const { startIast } = require(" + JSON.stringify(path.resolve(__dirname, '..', 'iast.cjs')) + ');',
+      "const http = require('node:http'), fs = require('node:fs'), path = require('node:path');",
+      'const findings = [];',
+      'startIast(finding => findings.push(finding));',
+      "const server = http.createServer((req, res) => {",
+      "  const name = new URL(req.url, 'http://x').searchParams.get('name');",
+      "  try { fs.readFileSync(path.join(__dirname, 'data', name)); } catch (_) {}",
+      "  res.end('ok');",
+      '});',
+      "server.listen(0, async () => {",
+      "  await fetch('http://127.0.0.1:' + server.address().port + '/item/42?name=..%2F..%2Fetc%2Fpasswd');",
+      "  console.log(JSON.stringify(findings.filter(f => f.rule_id === 'PATH_TRAVERSAL').map(f => [f.request_path, f.code_line])));",
+      "  process.exit(0);",
+      '});',
+    ].join('\n'));
+    const env = { ...process.env, TELVYN_IAST_ENABLED: 'true' };
+    delete env.TELVYN_PROFILE_SOURCE_ROOT; delete env.TELVYN_SECURITY_ROUTES;
+    const result = spawnSync(process.execPath, ['run.cjs'], { cwd: dir, encoding: 'utf8', timeout: 30000, env });
+    assert.deepEqual(JSON.parse(result.stdout.trim().split('\n').pop()), [['/item/:id', 7]], result.stdout + result.stderr);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

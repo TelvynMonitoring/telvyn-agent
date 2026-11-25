@@ -17,6 +17,9 @@ final class Operators {
     /** Teste de um valor; o orçamento de tempo vai junto para a regex conferir o prazo enquanto roda. */
     interface Test { boolean test(String value, Values.Budget budget); }
 
+    /** Trecho que o último teste casou (match_regex e phrase_match); os demais não preenchem. Uma execução por thread. */
+    static final ThreadLocal<String> FRAGMENT = new ThreadLocal<>();
+
     @SuppressWarnings("unchecked")
     static Engine.Operator compile(String name, Map<String, Object> parameters) {
         String operator = name.contains("@") ? name.substring(0, name.indexOf('@')) : name;
@@ -27,7 +30,13 @@ final class Operators {
         Test test = switch (operator) {
             case "match_regex" -> {
                 Pattern pattern = Engine.regex((String) parameters.get("regex"), Boolean.TRUE.equals(options.get("case_sensitive")));
-                yield (value, budget) -> value.length() >= minLength && pattern.matcher(value.length() > 64 ? budget.guard(value) : value).find();
+                yield (value, budget) -> {
+                    if (value.length() < minLength) return false;
+                    var matcher = pattern.matcher(value.length() > 64 ? budget.guard(value) : value);
+                    if (!matcher.find()) return false;
+                    FRAGMENT.set(matcher.group());
+                    return true;
+                };
             }
             case "phrase_match" -> {
                 var phrases = new Phrases(Phrases.list(parameters.get("list")), Boolean.TRUE.equals(options.get("enforce_word_boundary")));
@@ -98,15 +107,17 @@ final class Operators {
             Values.walk(value, input.keyPath(), input.keys(), limits, budget, leaf -> {
                 if (excluded(input, leaf.path())) return false;
                 String text = Transforms.apply(input.transforms(), leaf.text());
+                FRAGMENT.remove();
                 if (!test.test(text, budget)) return false;
-                if (!condition.collect()) { found[0] = new Engine.Hit(input.address(), leaf.path(), null, text); return true; }
+                String highlight = FRAGMENT.get();
+                if (!condition.collect()) { found[0] = new Engine.Hit(input.address(), leaf.path(), null, text, List.of(text), leaf.text(), highlight); return true; }
                 if (collected.size() < MAX_COLLECTED) collected.add(text);
-                if (first[0] == null) first[0] = new Engine.Hit(input.address(), leaf.path(), null, text);
+                if (first[0] == null) first[0] = new Engine.Hit(input.address(), leaf.path(), null, text, List.of(text), leaf.text(), highlight);
                 return false;
             });
             if (found[0] != null) return found[0];
         }
-        if (first[0] != null) return new Engine.Hit(first[0].address(), first[0].keyPath(), null, first[0].value(), List.copyOf(collected));
+        if (first[0] != null) return new Engine.Hit(first[0].address(), first[0].keyPath(), null, first[0].value(), List.copyOf(collected), first[0].raw(), first[0].highlight());
         return null;
     }
 

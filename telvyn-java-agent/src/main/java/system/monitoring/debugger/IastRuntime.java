@@ -5,9 +5,13 @@ import java.lang.reflect.Method;
 import java.util.IdentityHashMap;
 import java.util.function.Consumer;
 
-/** Request-local provenance. Values never cross into a finding or the export queue. */
+/**
+ * Request-local provenance. The taint map holds the request's values only as object keys and is never exported.
+ * The first value of each input source is also kept (bounded) so a finding can carry it as redacted evidence:
+ * it leaves the application only through AttackEvidence, which redacts sensitive fields and values.
+ */
 public final class IastRuntime {
-    public record Finding(String method,Integer line,long elapsedUs,String rulesVersion,String sink,String sql,java.util.List<String> stack,String ruleId,String source) {}
+    public record Finding(String method,Integer line,long elapsedUs,String rulesVersion,String sink,String sql,java.util.List<String> stack,String ruleId,String source,String value) {}
     private static volatile Consumer<Finding> reporter;
     private static volatile java.util.function.Predicate<Method> configuredSources=method->false;
     private static final ThreadLocal<State> current=new ThreadLocal<>();
@@ -16,6 +20,8 @@ public final class IastRuntime {
     private static volatile java.util.function.Supplier<String[]> requestSource=()->null;
     private static final class State {
         final java.util.Map<Object,String> tainted=java.util.Collections.synchronizedMap(new IdentityHashMap<>());
+        /** Primeiro valor de cada fonte ("query:q" -> texto), para a evidência do achado. */
+        final java.util.Map<String,String> inputs=java.util.Collections.synchronizedMap(new java.util.HashMap<>());
         final String[] trace=traceSource.get();
         String[] request=requestSource.get();
         final java.util.Set<Object> writers=java.util.Collections.newSetFromMap(java.util.Collections.synchronizedMap(new IdentityHashMap<>()));
@@ -23,6 +29,15 @@ public final class IastRuntime {
         final java.util.Set<String> reported=new java.util.HashSet<>(); volatile boolean closed;
     }
     private IastRuntime() {}
+    /** Guarda o valor original de uma fonte: só texto, até 2048 caracteres e 64 fontes por requisição. */
+    private static void keepInput(State state,String label,Object value){
+        if(value instanceof String text&&!text.isEmpty()&&text.length()<=2048&&state.inputs.size()<64)state.inputs.putIfAbsent(label,text);
+    }
+    /** Nomes que a tela mandou não analisar (parâmetros e cabeçalhos): nunca viram fonte nem evidência. */
+    private static boolean excluded(String kind,String name){
+        if(name==null)return false;
+        return "header".equals(kind)?RemoteConfig.excludedHeaders().contains(name.toLowerCase(java.util.Locale.ROOT)):RemoteConfig.excludedParameters().contains(name);
+    }
     public static void configure(Consumer<Finding> sink){
         reporter=sink;SecuritySensorState.iastIntegration(sink!=null);
         if(sink==null)return;
@@ -40,7 +55,7 @@ public final class IastRuntime {
     private static final java.util.List<Finding> PENDING=new java.util.ArrayList<>();
     public static void once(String rule,String method,int line,String sink){
         if(ONCE.size()>=512||!ONCE.add(rule+"@"+method+":"+line))return;
-        var finding=new Finding(method,line>0?line:null,0,"iast-jvm-flaws-1",sinkLabel(sink),null,java.util.List.of(),rule,null);
+        var finding=new Finding(method,line>0?line:null,0,"iast-jvm-flaws-1",sinkLabel(sink),null,java.util.List.of(),rule,null,null);
         var report=reporter;
         if(report==null){synchronized(PENDING){if(PENDING.size()<64)PENDING.add(finding);else LocalAttackReporter.reportLoss("IAST pending limit");}return;}
         try{report.accept(finding);}catch(RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("IAST report failure");}
@@ -60,13 +75,14 @@ public final class IastRuntime {
     public static void functionalParameter(String name,Object result){
         var state=current.get();
         if(state==null||!"q".equals(name)||!(result instanceof java.util.Optional<?> optional)||!(optional.orElse(null) instanceof String value)||value.isEmpty())return;
-        synchronized(state){if(state.closed)return;if(value.length()<=2048&&(state.tainted.size()<256||state.tainted.containsKey(value)))state.tainted.put(value,"query:q");else LocalAttackReporter.reportLoss("IAST source limit");}
+        if(excluded("query","q"))return;
+        synchronized(state){if(state.closed)return;if(value.length()<=2048&&(state.tainted.size()<256||state.tainted.containsKey(value))){state.tainted.put(value,"query:q");keepInput(state,"query:q",value);}else LocalAttackReporter.reportLoss("IAST source limit");}
     }
     public static Object enter(Method method,Object[] arguments) {
         State previous=current.get();
         if(reporter==null)return previous;
-        String result=method.getReturnType().getName();
-        if(!method.getReturnType().equals(String.class)&&!result.equals("jakarta.ws.rs.core.Response")&&!result.equals("org.springframework.http.ResponseEntity")&&!java.util.List.class.isAssignableFrom(method.getReturnType())&&!result.equals("java.util.concurrent.Callable")&&!java.util.concurrent.CompletionStage.class.isAssignableFrom(method.getReturnType())&&!result.equals("org.springframework.web.context.request.async.DeferredResult")&&!result.equals("org.springframework.web.context.request.async.WebAsyncTask")&&!result.equals("reactor.core.publisher.Mono")&&!result.equals("reactor.core.publisher.Flux"))return previous;
+        // Qualquer handler de uma rota selecionada é acompanhado, seja o tipo que ele retorna (texto, objeto próprio, mapa, void...):
+        // o exit libera o estado e só os tipos assíncronos o carregam para outra thread (IastAsync.returned).
         try {
             boolean routeSelected=configuredSources.test(method);
             java.util.Set<String> inspected=new java.util.HashSet<>();
@@ -85,8 +101,10 @@ public final class IastRuntime {
                 String name=body?"body":sourceName(annotation,parameters[i]);
                 // A configured route exposes every supported input; the annotation only exposes the query names it lists.
                 if(!routeSelected&&!(kind.equals("query")&&inspected.contains(name)))continue;
+                if(excluded(kind,name))continue;
                 if(!body&&((String)arguments[i]).length()>2048||state.tainted.size()>=256){LocalAttackReporter.reportLoss("IAST source limit");continue;}
                 state.tainted.put(arguments[i],kind+":"+name);
+                keepInput(state,kind+":"+name,arguments[i]);
             }
         }catch(ReflectiveOperationException failure){LocalAttackReporter.reportLoss("IAST source unavailable");}
         return previous;
@@ -119,8 +137,8 @@ public final class IastRuntime {
     private static String clean(String name){String text=name==null||name.isBlank()?"unnamed":name.replaceAll("[^A-Za-z0-9_.-]","_");return text.length()>64?text.substring(0,64):text;}
     private static void mark(Object value,String kind,String name){
         var state=current.get();
-        if(state==null||!(value instanceof String text)||text.isEmpty())return;
-        synchronized(state){if(state.closed)return;if(text.length()<=2048&&(state.tainted.size()<256||state.tainted.containsKey(text)))state.tainted.put(text,kind+":"+clean(name));else LocalAttackReporter.reportLoss("IAST source limit");}
+        if(state==null||!(value instanceof String text)||text.isEmpty()||excluded(kind,name))return;
+        synchronized(state){if(state.closed)return;if(text.length()<=2048&&(state.tainted.size()<256||state.tainted.containsKey(text))){state.tainted.put(text,kind+":"+clean(name));keepInput(state,kind+":"+clean(name),text);}else LocalAttackReporter.reportLoss("IAST source limit");}
     }
     public static String sourceParameter(String name,String value){mark(value,"parameter",name);return value;}
     public static String sourceHeader(String name,String value){mark(value,"header",name);return value;}
@@ -229,9 +247,9 @@ public final class IastRuntime {
         try {
             var state=current.get();var report=reporter;
             if(state==null||report==null)return;
-            String source;
-            synchronized(state){if(state.closed||!tainted(sql)||!state.reported.add("SQL_INJECTION"))return;source=origin(state.tainted.get(sql));}
-            report.accept(new Finding(method,line>0?line:null,(System.nanoTime()-state.started)/1000,rulesVersion,sinkLabel(sink),SqlMask.mask(sql),stack(),"SQL_INJECTION",source));
+            String source,input;
+            synchronized(state){if(state.closed||!tainted(sql)||!state.reported.add("SQL_INJECTION"))return;source=origin(state.tainted.get(sql));input=source==null?null:state.inputs.get(source);}
+            report.accept(new Finding(method,line>0?line:null,(System.nanoTime()-state.started)/1000,rulesVersion,sinkLabel(sink),SqlMask.mask(sql),stack(),"SQL_INJECTION",source,input));
         }catch(RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("IAST report failure");}
     }
     public static void command(Object value,String method,int line,String sink){flaw(value,method,line,sink,"COMMAND_INJECTION");}
@@ -250,9 +268,9 @@ public final class IastRuntime {
             // HTML escaping protects the page and the e-mail alike.
             Object found=taintedPart(value,0,rule.equals("XSS")||rule.equals("EMAIL_HTML_INJECTION"));
             if(found==null)return;
-            String source;
-            synchronized(state){if(state.closed||!state.reported.add(rule+"@"+method+":"+line))return;source=origin(state.tainted.get(found));}
-            report.accept(new Finding(method,line>0?line:null,(System.nanoTime()-state.started)/1000,"iast-q-jvm-sinks-1",sinkLabel(sink),null,stack(),rule,source));
+            String source,input;
+            synchronized(state){if(state.closed||!state.reported.add(rule+"@"+method+":"+line))return;source=origin(state.tainted.get(found));input=source==null?null:state.inputs.get(source);}
+            report.accept(new Finding(method,line>0?line:null,(System.nanoTime()-state.started)/1000,"iast-q-jvm-sinks-1",sinkLabel(sink),null,stack(),rule,source,input));
         }catch(RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("IAST report failure");}
     }
     public static void code(Object value,String method,int line,String sink){flaw(value,method,line,sink,"CODE_INJECTION");}
@@ -326,7 +344,7 @@ public final class IastRuntime {
             var state=current.get();var report=reporter;
             if(state==null||report==null)return;
             synchronized(state){if(state.closed||!state.reported.add(rule+"@"+method+":"+line))return;}
-            report.accept(new Finding(method,line>0?line:null,(System.nanoTime()-state.started)/1000,"iast-jvm-flaws-1",sinkLabel(sink),null,stack(),rule,null));
+            report.accept(new Finding(method,line>0?line:null,(System.nanoTime()-state.started)/1000,"iast-jvm-flaws-1",sinkLabel(sink),null,stack(),rule,null,null));
         }catch(RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("IAST report failure");}
     }
     // The tainted value itself, or the first tainted element when a command or path arrives as an array or a list.

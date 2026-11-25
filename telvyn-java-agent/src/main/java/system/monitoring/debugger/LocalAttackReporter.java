@@ -52,8 +52,12 @@ public final class LocalAttackReporter implements AutoCloseable {
         if(request.method()!=null&&request.method().matches("[A-Z]{1,20}"))report.addProperty("request_method",request.method());
         if(request.path()!=null&&request.path().length()<=1024&&request.path().indexOf('?')<0)report.addProperty("request_path",request.path());
     }
-    /** Evento das regras completas (WafInspector): regra, onde encontrou, usuário e motivo do bloqueio. Nunca o valor. */
+    /** Evento das regras completas (WafInspector) sem evidência: regra, onde encontrou, usuário e motivo do bloqueio. */
     public boolean reportWaf(String outcome,String rule,String address,long elapsedUs,String engine,String ip,String method,String path,String userAgent,String user,String blockedBy,String trace,String span) {
+        return reportWaf(outcome,rule,address,elapsedUs,engine,ip,method,path,userAgent,user,blockedBy,trace,span,null);
+    }
+    /** Com evidência: o valor original que casou, a consulta e cabeçalhos permitidos, já redigidos pelo AttackEvidence. */
+    public boolean reportWaf(String outcome,String rule,String address,long elapsedUs,String engine,String ip,String method,String path,String userAgent,String user,String blockedBy,String trace,String span,JsonObject evidence) {
         var report=new JsonObject();report.addProperty("id",UUID.randomUUID().toString());report.addProperty("service",service);report.addProperty("host",host);report.addProperty("environment",environment);report.addProperty("service_version",version);
         report.addProperty("outcome",outcome);if(rule!=null)report.addProperty("rule_id",rule);report.addProperty("rules_version",rulesVersion);if(engine!=null)report.addProperty("engine_version",engine);report.addProperty("elapsed_us",Math.max(0,elapsedUs));
         request(report,new Request(ip,method,path,java.util.Set.of()));
@@ -61,6 +65,7 @@ public final class LocalAttackReporter implements AutoCloseable {
         if(user!=null)report.addProperty("usr_id",user.length()>255?user.substring(0,255):user);
         if(address!=null&&address.length()<=300)report.addProperty("match_address",address);
         if(blockedBy!=null){report.addProperty("blocked",true);report.addProperty("blocked_by",blockedBy);}
+        if(evidence!=null)report.add("evidence",evidence);
         if(trace!=null&&span!=null){report.addProperty("trace_id",trace);report.addProperty("span_id",span);}
         boolean queued=queue.offer(report.toString());if(!queued)reportLoss("report queue full");return queued;
     }
@@ -111,7 +116,9 @@ public final class LocalAttackReporter implements AutoCloseable {
         return queued;
     }
     public boolean reportIast(IastRuntime.Finding finding,String trace,String span) {return reportIast(finding,trace,span,new String[]{null,null,null});}
-    public boolean reportIast(IastRuntime.Finding finding,String trace,String span,String[] identity) {
+    public boolean reportIast(IastRuntime.Finding finding,String trace,String span,String[] identity) {return reportIast(finding,trace,span,identity,null);}
+    /** Com evidência: a requisição em que o achado ocorreu (consulta e cabeçalhos permitidos, já redigidos). */
+    public boolean reportIast(IastRuntime.Finding finding,String trace,String span,String[] identity,JsonObject evidence) {
         var report=new JsonObject();report.addProperty("id",UUID.randomUUID().toString());report.addProperty("service",service);report.addProperty("host",host);report.addProperty("environment",environment);report.addProperty("service_version",version);
         report.addProperty("outcome","match");report.addProperty("rule_id",finding.ruleId()==null?"SQL_INJECTION":finding.ruleId());report.addProperty("rules_version",finding.rulesVersion());report.addProperty("engine_version","telvyn-iast-2");report.addProperty("elapsed_us",finding.elapsedUs());
         report.addProperty("code_method",finding.method());report.addProperty("code_line",finding.line());
@@ -129,6 +136,7 @@ public final class LocalAttackReporter implements AutoCloseable {
             if(identity[1]!=null)report.addProperty("usr_id",identity[1].length()>255?identity[1].substring(0,255):identity[1]);
             if(identity[2]!=null)report.addProperty("user_agent",identity[2].length()>512?identity[2].substring(0,512):identity[2]);
         }
+        if(evidence!=null)report.add("evidence",evidence);
         if(trace!=null&&span!=null){report.addProperty("trace_id",trace);report.addProperty("span_id",span);}
         boolean accepted=queue.offer(report.toString());if(!accepted)reportLoss("IAST report queue full");return accepted;
     }

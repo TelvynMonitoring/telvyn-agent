@@ -108,7 +108,7 @@ public final class SpringMvcSecurity {
             iast=reporter("iast");IastRuntime.configureSources(method->method.equals(selected.get()));
             IastRuntime.configureTrace(SpringMvcSecurity::trace);
             IastRuntime.configureRequest(selectedRoute::get);
-            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;markTrace("iast");var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1],requestIdentity());});
+            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;markTrace("iast");var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1],requestIdentity(),requestEvidence(finding));});
         }
         Runtime.getRuntime().addShutdownHook(new Thread(()->{if(worker!=null)worker.shutdownNow();if(attacks!=null)attacks.close();if(iast!=null)iast.close();if(detector!=null)detector.close();},"telvyn-spring-security-stop"));
     }
@@ -135,8 +135,13 @@ public final class SpringMvcSecurity {
         return new LocalAttackReporter(Collector.url()+"/v1/security/"+channel,SnapshotSink.service(),SnapshotSink.host(),ProbeMetricSink.environment(),ProbeMetricSink.version(),"query-allowlist-1");
     }
     // Servlet routes are the request path: exact, or every path under a prefix written as "/prefix/**".
+    // With IAST on and no route list (TELVYN_SECURITY_QUERY_ROUTES), every route is analysed: the flag alone turns IAST on.
+    // The route is the framework pattern (/users/{id}), never the concrete path.
+    static boolean inScope(String verb,String route){
+        return routes.contains(verb+" "+route)||routes.isEmpty()&&Boolean.getBoolean("telvyn.iast.enabled");
+    }
     static boolean servletSelected(String verb,String path){
-        if(routes.contains(verb+" "+path))return true;
+        if(inScope(verb,path))return true;
         for(String route:routes)if(route.endsWith("/**")&&route.startsWith(verb+" ")&&(path+"/").startsWith(route.substring(verb.length()+1,route.length()-2)))return true;
         return false;
     }
@@ -180,7 +185,7 @@ public final class SpringMvcSecurity {
             return false;
         }
         boolean block=blockable&&!state.blocked&&JavaProtection.allowBlocking()&&!JavaProtection.passed(state.ip)&&evaluation.matches().stream().anyMatch(m->"blocking".equals(JavaProtection.ruleMode(m.rule())));
-        for(var match:evaluation.matches())reporter.reportWaf("match",match.rule(),match.address(),evaluation.elapsedUs(),WafInspector.engineVersion(),state.ip,state.method,state.path,state.userAgent,state.user,block&&"blocking".equals(JavaProtection.ruleMode(match.rule()))?"rule":null,state.trace[0],state.trace[1]);
+        for(var match:evaluation.matches())reporter.reportWaf("match",match.rule(),match.address(),evaluation.elapsedUs(),WafInspector.engineVersion(),state.ip,state.method,state.path,state.userAgent,state.user,block&&"blocking".equals(JavaProtection.ruleMode(match.rule()))?"rule":null,state.trace[0],state.trace[1],WafInspector.evidenceOf(state,match));
         return block;
     }
     private static boolean block(WafInspector.State state,Object request,Object response,String by,LocalAttackReporter reporter){
@@ -289,7 +294,7 @@ public final class SpringMvcSecurity {
             var requestType=request.getClass();
             String verb=(String)requestType.getMethod("getMethod").invoke(request);
             Object pattern=requestType.getMethod("getAttribute",String.class).invoke(request,"org.springframework.web.servlet.HandlerMapping.bestMatchingPattern");
-            if(!(pattern instanceof String route)||!routes.contains(verb+" "+route))return previous;
+            if(!(pattern instanceof String route)||!inScope(verb,route))return previous;
             Method method=(Method)handler.getClass().getMethod("getMethod").invoke(handler);
             selected.set(method);selectedRoute.set(new String[]{verb,route});
         }catch(ReflectiveOperationException|RuntimeException|LinkageError failure){LocalAttackReporter.reportLoss("Spring integration unavailable");}
@@ -310,7 +315,7 @@ public final class SpringMvcSecurity {
             Object pattern=exchangeApi.getMethod("getAttribute",String.class).invoke(exchange,key);
             if(pattern==null)return new ReactiveScope(previous,null,false);
             String route=pattern instanceof String value?value:(String)Class.forName("org.springframework.web.util.pattern.PathPattern",false,loader).getMethod("getPatternString").invoke(pattern);
-            if(!routes.contains(verb+" "+route))return new ReactiveScope(previous,null,false);
+            if(!inScope(verb,route))return new ReactiveScope(previous,null,false);
             Method method=handler==null?null:(Method)Class.forName("org.springframework.web.method.HandlerMethod",false,loader).getMethod("getMethod").invoke(handler);
             if(method!=null){selected.set(method);selectedRoute.set(new String[]{verb,route});}return new ReactiveScope(previous,method,true);
         }catch(ReflectiveOperationException|RuntimeException|LinkageError failure){SecuritySensorState.iastFailed();LocalAttackReporter.reportLoss("reactive integration unavailable");return new ReactiveScope(previous,null,false);}
@@ -326,6 +331,11 @@ public final class SpringMvcSecurity {
         }catch(ReflectiveOperationException|LinkageError unavailable){ /* No span from this source. */ }
     }
     // IP, logged user and user agent of the request being handled (from the request inspection), or nulls.
+    /** Evidência da requisição em curso para um achado do IAST. */
+    static com.google.gson.JsonObject requestEvidence(IastRuntime.Finding finding){
+        Object[] request=current.get();
+        return request!=null&&request[2] instanceof WafInspector.State state?WafInspector.iastEvidence(state,finding.value(),finding.source()):null;
+    }
     static String[] requestIdentity(){
         Object[] request=current.get();
         if(request==null||!(request[2] instanceof WafInspector.State state))return new String[]{null,null,null};

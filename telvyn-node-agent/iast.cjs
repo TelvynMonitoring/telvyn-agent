@@ -1,11 +1,13 @@
 'use strict';
 const { AsyncLocalStorage } = require('node:async_hooks');
+const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { Server } = require('node:http');
 const Module = require('node:module');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
-const { compileRoutes } = require('./routes.cjs');
+const { compileRoutes, anyRoute } = require('./routes.cjs');
+const evidence = require('./evidence.cjs');
 const { locate } = require('./sourcemap.cjs');
 
 // A request value reaches a sink when the sink's text contains it. Very short values (a digit, a letter) are in every
@@ -45,12 +47,31 @@ function collectLiterals(source) {
   return [...found].map(([value, locations]) => ({value, locations: [...new Map(locations.sort((x, y) => (x.ident ? 1 : 0) - (y.ident ? 1 : 0)).map(item => [item.line, item])).values()]}));
 }
 
+// Raiz do código da aplicação: o package.json mais alto acima do arquivo de entrada (o que o usuário mandou o node rodar).
+// Builds costumam copiar o package.json para build/ ou dist/; o mais próximo ficaria dentro da saída do build, e os arquivos
+// de origem mapeados (src/*.ts) ficariam fora da raiz. A raiz do sistema de arquivos não conta.
+function defaultSourceRoot(entry = process.argv[1], cwd = process.cwd()) {
+  let dir = entry ? path.dirname(path.resolve(entry)) : cwd, found = null;
+  for (;;) {
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    if (fs.existsSync(path.join(dir, 'package.json'))) found = dir;
+    dir = parent;
+  }
+  return found || cwd;
+}
+
+// Uma flag liga o IAST (TELVYN_IAST_ENABLED=true). A raiz do código e as rotas têm padrão:
+// TELVYN_PROFILE_SOURCE_ROOT e TELVYN_SECURITY_ROUTES só existem para quem quiser mudá-los.
 function startIast(report) {
   if (process.env.TELVYN_IAST_ENABLED !== 'true') return { state: 'disabled', request() {}, stop() {} };
-  const root = process.env.TELVYN_PROFILE_SOURCE_ROOT;
-  const routes = compileRoutes(process.env.TELVYN_SECURITY_ROUTES);
-  if (!root || !routes.size) throw new Error('IAST requires a source root and selected routes');
-  const sourceRoot = path.resolve(root);
+  const sourceRoot = path.resolve(process.env.TELVYN_PROFILE_SOURCE_ROOT || defaultSourceRoot());
+  const explicit = compileRoutes(process.env.TELVYN_SECURITY_ROUTES);
+  const routes = explicit.size ? explicit : anyRoute();
+  // Requisições analisadas ao mesmo tempo: teto geral e um por rota, para uma rota lenta não deixar as outras sem análise.
+  const maxConcurrent = Math.max(1, Number.parseInt(process.env.TELVYN_IAST_MAX_CONCURRENT, 10) || 32);
+  const maxPerRoute = Math.max(1, Math.ceil(maxConcurrent / 4));
+  const perRoute = new Map();
   const storage = new AsyncLocalStorage();
   const active = new Set();
   let stopped = false;
@@ -145,15 +166,20 @@ function startIast(report) {
   };
   const emit = Server.prototype.emit;
   Server.prototype.emit = function (event, request, response, ...rest) {
-    const route = stopped || event !== 'request' || active.size >= 32 ? null : routes.match(request.url?.split('?')[0]);
-    if (!route) return emit.call(this, event, request, response, ...rest);
+    const route = stopped || event !== 'request' || active.size >= maxConcurrent ? null : routes.match(request.url?.split('?')[0]);
+    if (!route || (perRoute.get(route) || 0) >= maxPerRoute) return emit.call(this, event, request, response, ...rest);
     wrapOutgoing();
-    const scope = {id: randomUUID(), reported: new Set(), inputs: new Map(), request: requestInfo(request, route)};
+    const scope = {id: randomUUID(), reported: new Set(), inputs: new Map(), request: requestInfo(request, route), raw: request};
     active.add(scope.id); scopes.set(request, scope);
+    perRoute.set(route, (perRoute.get(route) || 0) + 1);
     markHeaders(scope, request);
     const cleanup = () => {
       clearTimeout(timer);
-      if (active.delete(scope.id)) scope.inputs.clear();
+      if (active.delete(scope.id)) {
+        scope.inputs.clear();
+        const left = (perRoute.get(route) || 1) - 1;
+        if (left > 0) perRoute.set(route, left); else perRoute.delete(route);
+      }
     };
     const timer = setTimeout(cleanup, 60000); timer.unref();
     response.once('finish', cleanup); response.once('close', cleanup);
@@ -172,11 +198,18 @@ function startIast(report) {
   function inputIn(scope, text) {
     if (typeof text !== 'string' || !text.length) return undefined;
     const subject = text.length > MAX_SINK_TEXT ? text.slice(0, MAX_SINK_TEXT) : text;
-    for (const [value, source] of scope.inputs) if (subject === value || value.length >= MIN_MATCH && subject.includes(value)) return source;
+    // The matched value travels with the source so the report can show it as (redacted) evidence.
+    for (const [value, source] of scope.inputs) if (subject === value || value.length >= MIN_MATCH && subject.includes(value)) return {...source, value};
     return undefined;
   }
+  // Names excluded in the service's remote configuration are never tracked: no finding, no evidence.
+  function excludedInput(type, name) {
+    const {parameters, headers} = require('./remote.cjs').exclusions();
+    if (!parameters.size && !headers.size) return false;
+    return type === 'header' ? headers.has(String(name).toLowerCase()) : parameters.has(String(name).split('.')[0]);
+  }
   function taint(value, type, name, scope = storage.getStore()) {
-    if (!scope || !active.has(scope.id) || typeof value !== 'string' || !value.length || value.length > 4096) return value;
+    if (!scope || !active.has(scope.id) || typeof value !== 'string' || !value.length || value.length > 4096 || excludedInput(type, name)) return value;
     remember(scope, value, {type, name: label(name)});
     return value;
   }
@@ -220,6 +253,15 @@ function startIast(report) {
     } catch (_) { console.warn('[Telvyn] IAST finding could not be reported.'); }
   }
   // The finding is placed at the first application frame of the stack; one report per rule and code line per request.
+  // The route the framework matched (Express: /api/Products/:id) when it is known by now; otherwise the pattern seen at arrival.
+  function routeOf(scope) {
+    const route = scope.raw?.route?.path;
+    if (typeof route === 'string') {
+      const full = (typeof scope.raw.baseUrl === 'string' ? scope.raw.baseUrl : '') + route;
+      if (/^\/[\w/.:*{}-]{0,1023}$/.test(full)) return full;
+    }
+    return scope.request.path;
+  }
   function reportAt(scope, rule, sink, started, stack, statement, source) {
     const location = stack.split('\n').map(line => line.match(/^\s*at (?:(.*?) \()?([^()]+):(\d+):(\d+)\)?$/)).find(match => match && relativeFile(match[2]));
     if (!location) return;
@@ -230,7 +272,8 @@ function startIast(report) {
     const key = `${rule}:${file}:${mapped.line}`;
     if (file && !scope.reported.has(key) && scope.reported.size < 8) {
       scope.reported.add(key);
-      report({rule_id: rule, code_method: `${file}#${method}`, code_line: mapped.line, sink, ...(statement === undefined ? {} : {sql: maskSql(statement)}), stack: stackFrames(stack), source: source ? `${source.type}:${source.name}` : undefined, request_method: scope.request.method, request_path: scope.request.path, user_agent: scope.request.userAgent}, Number((process.hrtime.bigint() - started) / 1000n));
+      const proof = source && evidence.enabled() ? evidence.build({value: source.value, location: `${source.type}:${source.name}`, request: scope.raw, input: true}) : undefined;
+      report({rule_id: rule, code_method: `${file}#${method}`, code_line: mapped.line, sink, ...(statement === undefined ? {} : {sql: maskSql(statement)}), stack: stackFrames(stack), source: source ? `${source.type}:${source.name}` : undefined, request_method: scope.request.method, request_path: routeOf(scope), user_agent: scope.request.userAgent, ...(proof ? {evidence: proof} : {})}, Number((process.hrtime.bigint() - started) / 1000n));
     }
   }
   // Findings that need no input: the unsafe call itself. Only inside a request of a selected route, like every other finding.
@@ -598,4 +641,4 @@ function startIast(report) {
     stop() { stopped = true; sqlHook.unhook(); active.clear(); },
   };
 }
-module.exports = { startIast, collectLiterals };
+module.exports = { startIast, collectLiterals, defaultSourceRoot };

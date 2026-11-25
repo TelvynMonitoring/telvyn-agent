@@ -139,6 +139,9 @@ public final class WafInspector {
         final String[] trace;
         final Set<String> reported = new LinkedHashSet<>();
         String user;
+        /** Cabeçalhos e consulta bruta da requisição, guardados por referência para a evidência de um ataque (nada é processado sem um match). */
+        Object requestHeaders;
+        String requestQuery;
         boolean blocked, closed, routeInspected, bodyInspected, filesInspected, timeoutReported;
         /** Corpo lido do ServletInputStream até o limite, e quantos bytes já foram lidos. */
         java.io.ByteArrayOutputStream rawBody;
@@ -153,7 +156,40 @@ public final class WafInspector {
         }
     }
 
-    record Match(String rule, String address) {}
+    record Match(String rule, String address, String value, String highlight) {}
+
+    /** Evidência de um achado do IAST: o valor da entrada (se a fonte é conhecida), a consulta e os cabeçalhos permitidos, já redigidos. */
+    static com.google.gson.JsonObject iastEvidence(State state, String value, String source) {
+        if (state == null || !AttackEvidence.enabled()) return null;
+        return AttackEvidence.build(value, source, state.requestQuery, AttackEvidence.safeHeaders(state.requestHeaders), null, true);
+    }
+
+    /** Aplica ao que o WAF vai analisar as exclusões que a tela definiu para o serviço (parâmetros e cabeçalhos). */
+    static Map<String, Object> withoutExcluded(Map<String, Object> data) {
+        var parameters = RemoteConfig.excludedParameters();
+        var headers = RemoteConfig.excludedHeaders();
+        if (parameters.isEmpty() && headers.isEmpty()) return data;
+        Map<String, Object> out = new LinkedHashMap<>(data);
+        for (String address : List.of("server.request.query", "server.request.body", "server.request.path_params", "server.request.cookies"))
+            if (out.get(address) instanceof Map<?, ?> map) out.put(address, without(map, parameters, false));
+        if (out.get("server.request.headers.no_cookies") instanceof Map<?, ?> map) out.put("server.request.headers.no_cookies", without(map, headers, true));
+        return out;
+    }
+
+    private static Map<Object, Object> without(Map<?, ?> source, java.util.Set<String> names, boolean lower) {
+        Map<Object, Object> out = new LinkedHashMap<>();
+        for (var entry : source.entrySet()) {
+            String key = String.valueOf(entry.getKey());
+            if (!names.contains(lower ? key.toLowerCase(java.util.Locale.ROOT) : key)) out.put(entry.getKey(), entry.getValue());
+        }
+        return out;
+    }
+
+    /** Evidência de um match (valor original, consulta e cabeçalhos permitidos, já redigidos), ou null se estiver desligada. */
+    static com.google.gson.JsonObject evidenceOf(State state, Match match) {
+        if (!AttackEvidence.enabled()) return null;
+        return AttackEvidence.build(match.value(), match.address(), state.requestQuery, AttackEvidence.safeHeaders(state.requestHeaders), match.highlight(), false);
+    }
     record Evaluation(String outcome, List<Match> matches, long elapsedUs) {}
 
     static State open(String ip, String method, String path, String userAgent, String[] trace) throws Exception {
@@ -173,6 +209,9 @@ public final class WafInspector {
     private static Evaluation runLocked(State state, Map<String, Object> data, boolean ephemeral) {
         long start = System.nanoTime();
         if (state.closed || data.isEmpty()) return new Evaluation("no_match", List.of(), 0);
+        data = withoutExcluded(data);
+        if (state.requestHeaders == null && data.get("server.request.headers.no_cookies") != null) state.requestHeaders = data.get("server.request.headers.no_cookies");
+        if (state.requestQuery == null && data.get("server.request.query_string") instanceof String query) state.requestQuery = query;
         try {
             Object[] result = WafEngines.run(state.context, data, LIMITS, ephemeral);
             long elapsed = (System.nanoTime() - start) / 1000;
@@ -185,13 +224,13 @@ public final class WafInspector {
             if ("match".equals(result[0]) && result[1] == null) return new Evaluation("no_match", List.of(), elapsed);
             if (!"match".equals(result[0])) return new Evaluation("error", List.of(), elapsed);
             List<Match> matches = new ArrayList<>();
-            // Os dados de match trazem o valor recebido: só a regra, o endereço e a chave saem daqui.
+            // O motor devolve o valor original da entrada; ele só sai como evidência redigida (AttackEvidence), nunca cru.
             for (var item : JsonParser.parseString((String) result[1]).getAsJsonArray()) {
                 var event = item.getAsJsonObject();
                 String rule = event.getAsJsonObject("rule").get("id").getAsString();
                 if (state.reported.contains(rule) || "disabled".equals(JavaProtection.ruleMode(rule))) continue;
                 state.reported.add(rule);
-                String address = null;
+                String address = null, value = null, highlight = null;
                 var ruleMatches = event.getAsJsonArray("rule_matches");
                 if (ruleMatches != null && !ruleMatches.isEmpty()) {
                     var parameters = ruleMatches.get(0).getAsJsonObject().getAsJsonArray("parameters");
@@ -200,13 +239,15 @@ public final class WafInspector {
                         // Exploit prevention: a entrada da requisição (params) e a operação (resource) vêm separadas.
                         var parameter = first.has("address") ? first : first.has("params") ? first.getAsJsonObject("params") : first.getAsJsonObject("resource");
                         address = parameter.get("address").getAsString();
+                        if (first.has("address") && parameter.has("value") && !parameter.get("value").isJsonNull()) value = parameter.get("value").getAsString();
+                        if (first.has("address") && parameter.has("highlight") && !parameter.get("highlight").isJsonNull()) highlight = parameter.get("highlight").getAsString();
                         List<String> keys = new ArrayList<>();
                         if (parameter.has("key_path")) for (var key : parameter.getAsJsonArray("key_path")) keys.add(key.getAsString());
                         String key = String.join(".", keys).replaceAll("\\p{Cntrl}", "");
                         if (!key.isEmpty()) address = address + ":" + (key.length() > 200 ? key.substring(0, 200) : key);
                     }
                 }
-                matches.add(new Match(rule, address));
+                matches.add(new Match(rule, address, value, highlight));
             }
             return new Evaluation(matches.isEmpty() ? "no_match" : "match", matches, elapsed);
         } catch (Throwable failure) {
