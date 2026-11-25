@@ -158,10 +158,10 @@ public final class WafInspector {
 
     record Match(String rule, String address, String value, String highlight) {}
 
-    /** Evidência de um achado do IAST: a requisição (consulta e cabeçalhos permitidos), já redigida. O valor da entrada não é conhecido aqui. */
-    static com.google.gson.JsonObject contextEvidence(State state) {
+    /** Evidência de um achado do IAST: o valor da entrada (se a fonte é conhecida), a consulta e os cabeçalhos permitidos, já redigidos. */
+    static com.google.gson.JsonObject iastEvidence(State state, String value, String source) {
         if (state == null || !AttackEvidence.enabled()) return null;
-        return AttackEvidence.build(null, null, state.requestQuery, AttackEvidence.safeHeaders(state.requestHeaders));
+        return AttackEvidence.build(value, source, state.requestQuery, AttackEvidence.safeHeaders(state.requestHeaders), null, true);
     }
 
     /** Aplica ao que o WAF vai analisar as exclusões que a tela definiu para o serviço (parâmetros e cabeçalhos). */

@@ -108,7 +108,7 @@ public final class SpringMvcSecurity {
             iast=reporter("iast");IastRuntime.configureSources(method->method.equals(selected.get()));
             IastRuntime.configureTrace(SpringMvcSecurity::trace);
             IastRuntime.configureRequest(selectedRoute::get);
-            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;markTrace("iast");var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1],requestIdentity(),requestEvidence());});
+            IastRuntime.configure(finding->{if(Boolean.FALSE.equals(RemoteConfig.security("iast")))return;markTrace("iast");var ids=IastRuntime.traceIds();if(ids==null)ids=trace();iast.reportIast(finding,ids[0],ids[1],requestIdentity(),requestEvidence(finding));});
         }
         Runtime.getRuntime().addShutdownHook(new Thread(()->{if(worker!=null)worker.shutdownNow();if(attacks!=null)attacks.close();if(iast!=null)iast.close();if(detector!=null)detector.close();},"telvyn-spring-security-stop"));
     }
@@ -327,9 +327,9 @@ public final class SpringMvcSecurity {
     }
     // IP, logged user and user agent of the request being handled (from the request inspection), or nulls.
     /** Evidência da requisição em curso para um achado do IAST. */
-    static com.google.gson.JsonObject requestEvidence(){
+    static com.google.gson.JsonObject requestEvidence(IastRuntime.Finding finding){
         Object[] request=current.get();
-        return request!=null&&request[2] instanceof WafInspector.State state?WafInspector.contextEvidence(state):null;
+        return request!=null&&request[2] instanceof WafInspector.State state?WafInspector.iastEvidence(state,finding.value(),finding.source()):null;
     }
     static String[] requestIdentity(){
         Object[] request=current.get();
