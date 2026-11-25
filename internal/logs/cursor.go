@@ -20,6 +20,8 @@ const DefaultCursorPath = "/var/lib/telvyn/log_cursors.json"
 type CursorEntry struct {
 	Offset int64  `json:"offset"`
 	Inode  uint64 `json:"inode"`
+	// SinceNano é o timestamp da última linha lida pela API do Docker (DockerAPIReader); 0 no leitor de arquivo.
+	SinceNano int64 `json:"since_nano,omitempty"`
 }
 
 // CursorStore gerencia persistência de cursors em disco.

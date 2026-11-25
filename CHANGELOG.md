@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Logs de containers Docker: o `DockerLogsTailer` passa a ser iniciado (estava no código, mas nunca era chamado). Liga com
+  `TELVYN_LOGS_ENABLED=1` no agent `kind=docker`, ou com `TELVYN_LOGS_DOCKER=1` em qualquer agent. Cada linha sai com
+  `container_name`, `container_id`, `image`, `service_name` e `stream` (stdout = INFO, stderr = WARN). Sem cursor anterior começa
+  a partir de agora, sem reenviar o histórico.
+- Duas origens para os logs, com alternativa automática (`TELVYN_DOCKER_LOGS_SOURCE`): `auto` (padrão) lê o arquivo json-file de
+  `/var/lib/docker/containers` e, para o container cujo arquivo o agent não enxerga (Docker Desktop, Podman, rootless, outro log
+  driver), usa a API do Docker (`ContainerLogs`, com reconexão e cursor por timestamp); `file` só lê arquivo; `api` só usa a API.
+  Cursor em `docker_log_cursors.json` ao lado do cursor de logs (`TELVYN_DOCKER_LOGS_CURSOR_PATH` para mudar).
 - Check `docker.host`: novas métricas por container (`docker.container.*`): `cpu_throttled_periods/seconds`, `mem_limit_bytes`,
   `mem_rss_bytes`, `mem_cache_bytes` (cgroup v1 `rss/cache`, v2 `anon/file`), `network_{rx,tx}_{packets,errors,dropped}`,
   `blkio_{read,write}_bytes`, `pids`, `oom_killed`, `uptime_seconds` e `health_status` (1 saudável, 0 com falha; só com healthcheck).
