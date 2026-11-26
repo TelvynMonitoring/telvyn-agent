@@ -141,6 +141,11 @@ function startIast(report) {
     for (const count of counts.values()) { const share = count / text.length; bits -= share * Math.log2(share); }
     return bits;
   }
+  // String literals of the application's own modules (never libraries), read from the same syntax tree as the secret check.
+  const appConstants = new Set();
+  function rememberConstants(literals) {
+    for (const {value} of literals) if (typeof value === 'string' && value.length <= 256 && appConstants.size < 50000) appConstants.add(value);
+  }
   function inspectLiterals({literals}, filename) {
     const file = relativeFile(filename, COMPILED_FILE);
     if (!file || stopped || !Array.isArray(literals)) return;
@@ -159,7 +164,7 @@ function startIast(report) {
   }
   Module.prototype._compile = function (source, filename) {
     if (!stopped && relativeFile(filename, COMPILED_FILE)) {
-      try { inspectLiterals({literals: collectLiterals(source)}, filename); }
+      try { const literals = collectLiterals(source); rememberConstants(literals); inspectLiterals({literals}, filename); }
       catch (_) { console.warn('[Telvyn] IAST could not inspect an application module.'); }
     }
     return originalCompile.call(this, source, filename);
@@ -194,12 +199,12 @@ function startIast(report) {
       if (variant.length && scope.inputs.size < MAX_INPUTS && !scope.inputs.has(variant)) scope.inputs.set(variant, source);
     }
   }
-  // The first input that the text is, or contains.
-  function inputIn(scope, text) {
+  // The first input that the text is, or contains, and `accept` (when given) lets through.
+  function inputIn(scope, text, accept) {
     if (typeof text !== 'string' || !text.length) return undefined;
     const subject = text.length > MAX_SINK_TEXT ? text.slice(0, MAX_SINK_TEXT) : text;
     // The matched value travels with the source so the report can show it as (redacted) evidence.
-    for (const [value, source] of scope.inputs) if (subject === value || value.length >= MIN_MATCH && subject.includes(value)) return {...source, value};
+    for (const [value, source] of scope.inputs) if ((subject === value || value.length >= MIN_MATCH && subject.includes(value)) && (!accept || accept(value))) return {...source, value};
     return undefined;
   }
   // Names excluded in the service's remote configuration are never tracked: no finding, no evidence.
@@ -245,7 +250,10 @@ function startIast(report) {
     const started = process.hrtime.bigint();
     try {
       let source;
-      for (const item of values) if ((source = inputIn(scope, item))) break;
+      // An SSRF input that is exactly a string the application's own code spells out (an allow-list entry, a fixed backend name) picks a
+      // destination the developer wrote; what the requester chooses beyond that still counts, so a known value never hides another input.
+      const accept = rule === 'SSRF' ? value => !appConstants.has(value) : undefined;
+      for (const item of values) if ((source = inputIn(scope, item, accept))) break;
       if (!source) return;
       // Echoing a request header under the same name is the usual proxy behaviour, not an injection.
       if (header && source.type === 'header' && source.name === label(header)) return;
