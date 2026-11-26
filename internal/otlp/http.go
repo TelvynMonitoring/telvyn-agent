@@ -58,6 +58,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/telvynmonitoring/telvyn-agent/internal/apm/endpoint"
 	"github.com/telvynmonitoring/telvyn-agent/internal/apm/usage"
 	collectorv1 "github.com/telvynmonitoring/telvyn-agent/proto/v1"
 )
@@ -270,7 +271,8 @@ func (h *HTTPReceiver) sampleTraceScope(id, service, env, resource string, statu
 	return h.sampleTrace(id, service, status, duration)
 }
 
-func samplingScope(name string, attrs map[string]string) (env, resource string) {
+// samplingScope é o escopo (ambiente e recurso) pelo qual a amostragem decide. kind 2 = span de servidor.
+func samplingScope(name string, kind int32, attrs map[string]string) (env, resource string) {
 	env = attrs["deployment.environment"]
 	if env == "" {
 		env = attrs["deployment.environment.name"]
@@ -283,6 +285,9 @@ func samplingScope(name string, attrs map[string]string) (env, resource string) 
 		}
 		if method != "" && attrs["http.route"] != "" {
 			resource = method + " " + attrs["http.route"]
+		} else if inferred := endpoint.Infer(attrs); kind == 2 && inferred != "" {
+			// Sem rota (handler único): o caminho normalizado, igual ao concentrador, senão tudo cairia sob "GET".
+			resource = inferred
 		} else {
 			resource = name
 		}
@@ -375,7 +380,7 @@ func filterScopeSampledSpans(req *tracepb.ExportTraceServiceRequest, keep func(t
 				for _, attr := range s.Attributes {
 					attrs[attr.Key] = attr.Value.GetStringValue()
 				}
-				env, resource := samplingScope(s.Name, attrs)
+				env, resource := samplingScope(s.Name, int32(s.Kind), attrs)
 				keepSpan := keep(id, spanService, env, resource, status, int32(s.Kind), int64(s.EndTimeUnixNano)-int64(s.StartTimeUnixNano))
 				if len(security) > 0 && security[0] != nil {
 					keepSpan = security[0](id, attrs["telvyn.security.event"] != "") || keepSpan
@@ -528,7 +533,7 @@ func (h *HTTPReceiver) tapAndSampleJSON(body []byte, clientIP string) (outBody [
 							attrs[key] = value
 						}
 					}
-					env, resource := samplingScope(f.Name, attrs)
+					env, resource := samplingScope(f.Name, int32(f.Kind), attrs)
 					keepSpan := h.sampleTraceScope(id, spanService, env, resource, status, int32(f.Kind), atoiNano(f.EndTimeUnixNano)-atoiNano(f.StartTimeUnixNano))
 					keepSpan = h.securityTrace(id, attrs["telvyn.security.event"] != "") || keepSpan
 					decisions[id] = decisions[id] || keepSpan
