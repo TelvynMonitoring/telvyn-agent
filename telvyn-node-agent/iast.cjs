@@ -14,7 +14,7 @@ const { locate } = require('./sourcemap.cjs');
 // statement, so below this size only a sink value that is the whole input counts.
 const MIN_MATCH = 4, MAX_INPUTS = 1024, MAX_SINK_TEXT = 65536;
 
-// String literals of a module with the names they are assigned to, as { value, locations: [{ ident, line }] }.
+// String literals of a module with the names they are assigned to, as { value, locations: [{ ident, line, column }] } (column is 1-based, like a stack trace).
 // Read from the syntax tree when the module loads; the module itself runs as written.
 function collectLiterals(source) {
   if (source.length > 2 * 1024 * 1024) return [];
@@ -31,7 +31,7 @@ function collectLiterals(source) {
     const value = text(node);
     if (typeof value !== 'string') return;
     if (!found.has(value)) found.set(value, []);
-    found.get(value).push({ident, line: node.loc.start.line});
+    found.get(value).push({ident, line: node.loc.start.line, column: node.loc.start.column + 1});
   };
   (function visit(node) {
     if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier') add(node.init, node.id.name);
@@ -148,12 +148,14 @@ function startIast(report) {
     for (const {value, locations} of literals) {
       if (typeof value !== 'string' || value.length < 8 || value.length > 4096) continue;
       const secret = SECRET_FORMATS.some(format => format.test(value));
-      for (const {ident, line} of locations || []) {
+      for (const {ident, line, column} of locations || []) {
         // A password is a literal whose variable or property name says so; placeholders and low-variety text are not.
         const password = !secret && typeof ident === 'string' && passwordName(ident) && value.length <= 256 && !/\s/.test(value) && !PLACEHOLDER.test(value) && entropy(value) >= 2.5;
         if (!secret && !password || !(line >= 1) || found >= 32) continue;
         found++;
-        report({rule_id: secret ? 'HARDCODED_SECRET' : 'HARDCODED_PASSWORD', code_method: `${file}#module`, code_line: line}, 0);
+        // Compiled JavaScript with a source map reports the original file and line; without one (or outside the root) the compiled position stands.
+        const mapped = locate(filename, line, column), origin = relativeFile(mapped.path);
+        report({rule_id: secret ? 'HARDCODED_SECRET' : 'HARDCODED_PASSWORD', code_method: `${origin ?? file}#module`, code_line: origin ? mapped.line : line}, 0);
       }
     }
   }

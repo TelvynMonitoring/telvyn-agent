@@ -13,9 +13,9 @@ const { cpuProfile, wallSamples, heapObjects } = require('../profiler.cjs');
 test('literais do módulo com o nome a que são atribuídos', () => {
   const found = collectLiterals('const dbPassword = "Zx9!kLp2#qR";\nconst cfg = { api: { adminPwd: `Qw8$rT5&yU` } };\nrun("AKIAIOSFODNN7EXAMPLE");\n');
   const by = value => found.find(item => item.value === value)?.locations;
-  assert.deepEqual(by('Zx9!kLp2#qR'), [{ ident: 'dbPassword', line: 1 }]);
-  assert.deepEqual(by('Qw8$rT5&yU'), [{ ident: 'adminPwd', line: 2 }]);
-  assert.deepEqual(by('AKIAIOSFODNN7EXAMPLE'), [{ ident: undefined, line: 3 }]);
+  assert.deepEqual(by('Zx9!kLp2#qR'), [{ ident: 'dbPassword', line: 1, column: 20 }]);
+  assert.deepEqual(by('Qw8$rT5&yU'), [{ ident: 'adminPwd', line: 2, column: 32 }]);
+  assert.deepEqual(by('AKIAIOSFODNN7EXAMPLE'), [{ ident: undefined, line: 3, column: 5 }]);
 });
 
 test('posição original pelo mapa de fontes', () => {
@@ -97,6 +97,36 @@ test('IAST: entrada da requisição que chega ao sink, sem reescrita de código'
     assert.deepEqual(traversal.map(finding => [finding.source, finding.code_line]), [['query:name', 6], ['query:name', 6]], result.stdout + result.stderr);
     const secret = findings.filter(finding => finding.rule_id === 'HARDCODED_PASSWORD');
     assert.deepEqual(secret.map(finding => finding.code_line), [2]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('IAST: segredo fixo em JavaScript compilado aponta para o fonte pelo mapa, e sem mapa fica no compilado', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'telvyn-iast-map-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'dist'));
+    fs.mkdirSync(path.join(dir, 'src'));
+    // A linha 3 do JavaScript gerado vem da linha 5 de src/app.ts (mapeamento 'AAIA' na terceira linha gerada).
+    const map = { version: 3, file: 'app.js', sources: ['../src/app.ts'], names: [], mappings: ';;AAIA' };
+    const body = ['"use strict";', "const http = require('node:http');", "const adminPassword = 'Zx9!kLp2#qR';", 'module.exports = http;'].join('\n');
+    fs.writeFileSync(path.join(dir, 'dist', 'app.js'), body + '\n//# sourceMappingURL=data:application/json;base64,' + Buffer.from(JSON.stringify(map)).toString('base64') + '\n');
+    fs.writeFileSync(path.join(dir, 'dist', 'plain.js'), body + '\n');
+    fs.writeFileSync(path.join(dir, 'run.cjs'), [
+      "const { startIast } = require(" + JSON.stringify(path.resolve(__dirname, '..', 'iast.cjs')) + ');',
+      'const findings = [];',
+      'startIast(finding => findings.push(finding));',
+      "require('./dist/app.js'); require('./dist/plain.js');",
+      "console.log(JSON.stringify(findings.filter(f => f.rule_id === 'HARDCODED_PASSWORD').map(({ code_method, code_line }) => ({ code_method, code_line }))));",
+      'process.exit(0);',
+    ].join('\n'));
+    const result = spawnSync(process.execPath, ['run.cjs'], {
+      cwd: dir, encoding: 'utf8', timeout: 30000,
+      env: { ...process.env, TELVYN_IAST_ENABLED: 'true', TELVYN_PROFILE_SOURCE_ROOT: dir },
+    });
+    const found = JSON.parse(result.stdout.trim().split('\n').pop());
+    assert.deepEqual(found.sort((a, b) => a.code_method.localeCompare(b.code_method)), [
+      { code_method: 'dist/plain.js#module', code_line: 3 },
+      { code_method: 'src/app.ts#module', code_line: 5 },
+    ], result.stdout + result.stderr);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
