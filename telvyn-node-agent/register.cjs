@@ -1,4 +1,6 @@
-if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true') {
+// module.register() cria uma thread interna para os hooks do loader ESM e o --require também roda nela: sem esta guarda o agente
+// inteiro (sensores, exportadores, configuração remota) iniciaria duas vezes. Um Worker da aplicação não é interna e segue instrumentado.
+if ((process.env.OTEL_SDK_DISABLED || '').toLowerCase() !== 'true' && !require('node:worker_threads').isInternalThread) {
   const { NodeSDK } = require('@opentelemetry/sdk-node');
   const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks');
   const profileContext = require('./profile-context.cjs');
